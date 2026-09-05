@@ -1,0 +1,96 @@
+# مسار Core — البنية التحتية للمرحلتين 1 و2
+# الخدمات: postgres (قاعدة البيانات)، gotenberg (تحويل HTML إلى PDF)،
+# core (خدمة FastAPI)، core-scheduler (الجامع الدوري كل 30 دقيقة، المرحلة 2)،
+# caddy (HTTPS تلقائي عبر دومين).
+#
+# قبل التشغيل: انسخ .env.example إلى .env وعدّل القيم (خصوصًا كلمة مرور
+# Postgres والدومين المستخدم لـ Caddy).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-masar}
+      POSTGRES_USER: ${POSTGRES_USER:-masar}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?يجب تعيين POSTGRES_PASSWORD في .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-masar}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - masar_internal
+    # لا نفتح المنفذ للخارج — فقط الخدمات داخل الشبكة الداخلية تصل له
+
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    restart: unless-stopped
+    command:
+      - "gotenberg"
+      - "--chromium-disable-javascript=false"
+      - "--api-timeout=60s"
+    networks:
+      - masar_internal
+
+  core:
+    build:
+      context: ./core
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-masar}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-masar}
+      GOTENBERG_URL: http://gotenberg:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      gotenberg:
+        condition: service_started
+    networks:
+      - masar_internal
+      - masar_public
+    expose:
+      - "8000"
+
+  core-scheduler:
+    build:
+      context: ./core
+    command: ["python", "-m", "app.scheduler_main"]
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-masar}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-masar}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - masar_internal
+      - masar_public   # الجامع يحتاج وصولًا للإنترنت لقراءة المصادر (masar_internal شبكة مغلقة)
+    # لا يحتاج منفذًا خارجيًا — عملية خلفية فقط (الجامع كل 30 دقيقة)
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    environment:
+      MASAR_DOMAIN: "${MASAR_DOMAIN:?يجب تعيين MASAR_DOMAIN في .env (مثال - core.example.com)}"
+    depends_on:
+      - core
+    networks:
+      - masar_public
+
+networks:
+  masar_internal:
+    internal: true
+  masar_public:
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:

@@ -1,0 +1,10 @@
+{$MASAR_DOMAIN} {
+	reverse_proxy core:8000
+
+	encode gzip
+
+	log {
+		output stdout
+		format console
+	}
+}
