@@ -79,11 +79,14 @@ if [ ! -f "$BACKUP_ENV_FILE" ]; then
   chmod 600 "$BACKUP_ENV_FILE"
 fi
 CRON_MARKER="# masar-core (يُدار تلقائيًا بواسطة bootstrap.sh)"
-( crontab -l 2>/dev/null | grep -vF "$CRON_MARKER" ; \
-  echo "$CRON_MARKER" ; \
-  echo "*/2 * * * * $APP_DIR/deploy/autodeploy.sh >> /var/log/masar-autodeploy.log 2>&1" ; \
-  echo "0 3 * * * $APP_DIR/deploy/backup.sh >> /var/log/masar-backup.log 2>&1" \
-) | crontab -
+# ملاحظة: grep يعيد 1 عند عدم وجود سطور (crontab فارغ) — نضيف "|| true" حتى لا يوقف set -e/pipefail السكربت.
+# ونستدعي السكربتات عبر bash حتى لا نعتمد على صلاحية التنفيذ (تضيع عند الرفع من واجهة GitHub).
+EXISTING_CRON=$( (crontab -l 2>/dev/null || true) | grep -vF "$CRON_MARKER" | grep -v "masar-core/deploy/" || true )
+{ [ -n "$EXISTING_CRON" ] && echo "$EXISTING_CRON"; \
+  echo "$CRON_MARKER"; \
+  echo "*/2 * * * * bash $APP_DIR/deploy/autodeploy.sh >> /var/log/masar-autodeploy.log 2>&1"; \
+  echo "0 3 * * * bash $APP_DIR/deploy/backup.sh >> /var/log/masar-backup.log 2>&1"; \
+} | crontab -
 
 echo ""
 echo "=================================================================="
