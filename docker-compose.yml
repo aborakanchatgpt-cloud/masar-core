@@ -42,6 +42,8 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-masar}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-masar}
       GOTENBERG_URL: http://gotenberg:3000
+      CORE_ADMIN_TOKEN: ${CORE_ADMIN_TOKEN:?يجب تعيين CORE_ADMIN_TOKEN في .env}
+      MASAR_DOMAIN: ${MASAR_DOMAIN:-}
     depends_on:
       postgres:
         condition: service_healthy
