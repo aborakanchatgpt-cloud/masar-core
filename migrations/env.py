@@ -17,6 +17,9 @@ if config.config_file_name is not None:
 
 database_url = os.environ.get("DATABASE_URL")
 if database_url:
+    # SQLAlchemy يفترض psycopg2 مع "postgresql://"؛ المثبّت لدينا psycopg (v3)
+    if database_url.startswith("postgresql://"):
+        database_url = "postgresql+psycopg://" + database_url[len("postgresql://"):]
     config.set_main_option("sqlalchemy.url", database_url)
 
 target_metadata = None
