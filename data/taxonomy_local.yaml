@@ -1,0 +1,69 @@
+# taxonomy_local.yaml — معجم العائلات المهنية المستهدفة (مسودة أولى، المرحلة 2)
+#
+# كل عائلة: قائمة كلمات مفتاحية (عربي/إنجليزي) تُستخدم في مرحلة الوسم الأولي
+# (Taxonomy Tagger) قبل الاعتماد الكامل على ESCO. Source Curator (جلسة Claude
+# أسبوعية) يراجع ويوسّع هذه القوائم تدريجيًا مع كل دفعة شركات جديدة — هذا الملف
+# بداية معقولة مبنية على مجال أحمد (الهندسة الكيميائية) والعائلات المطلوبة في
+# الدليل، وليس نهائيًا.
+
+families:
+  chem_process:
+    label_ar: "الهندسة الكيميائية / العمليات"
+    keywords_ar: [مهندس عمليات, مهندس كيميائي, مهندس إنتاج كيميائي, مشغل وحدة, مهندس مصنع]
+    keywords_en: [process engineer, chemical engineer, process technologist, plant engineer, unit operations]
+
+  quality:
+    label_ar: "الجودة"
+    keywords_ar: [مهندس جودة, ضمان الجودة, مراقبة الجودة, أخصائي جودة, نظام إدارة الجودة]
+    keywords_en: [quality engineer, QA, QC, quality assurance, quality control, ISO 9001]
+
+  hse:
+    label_ar: "الصحة والسلامة والبيئة"
+    keywords_ar: [مهندس سلامة, أخصائي HSE, السلامة المهنية, الصحة والسلامة, سلامة العمليات]
+    keywords_en: [HSE engineer, safety engineer, occupational health, process safety, EHS]
+
+  maintenance_ops:
+    label_ar: "الصيانة والتشغيل"
+    keywords_ar: [مهندس صيانة, مشرف تشغيل, صيانة ميكانيكية, موثوقية المعدات, مهندس موثوقية]
+    keywords_en: [maintenance engineer, reliability engineer, operations supervisor, rotating equipment]
+
+  coatings:
+    label_ar: "الطلاءات والدهانات"
+    keywords_ar: [مهندس طلاء, مهندس دهانات, مختبر طلاءات, حماية من التآكل]
+    keywords_en: [coatings engineer, paint engineer, corrosion protection, coatings formulation]
+
+  production:
+    label_ar: "الإنتاج"
+    keywords_ar: [مهندس إنتاج, مشرف إنتاج, خط إنتاج, تخطيط إنتاج]
+    keywords_en: [production engineer, production supervisor, manufacturing engineer]
+
+  project_controls:
+    label_ar: "ضبط المشاريع"
+    keywords_ar: [مهندس تخطيط مشاريع, ضبط تكاليف, جدولة مشاريع, مهندس مشاريع]
+    keywords_en: [project controls engineer, planning engineer, cost control, scheduling engineer]
+
+  lab_chemistry:
+    label_ar: "المختبرات والكيمياء التحليلية"
+    keywords_ar: [كيميائي مختبر, فني مختبر, تحليل كيميائي, ضبط جودة مختبر]
+    keywords_en: [lab chemist, laboratory technician, analytical chemist, QC lab]
+
+  water_treatment:
+    label_ar: "معالجة المياه"
+    keywords_ar: [مهندس معالجة مياه, محطة تحلية, معالجة صرف صحي, مهندس مياه]
+    keywords_en: [water treatment engineer, desalination, wastewater engineer, water quality]
+
+  supply_chain:
+    label_ar: "سلسلة الإمداد"
+    keywords_ar: [مهندس سلسلة إمداد, تخطيط مواد, مشتريات فنية, لوجستيات صناعية]
+    keywords_en: [supply chain engineer, materials planning, procurement engineer, logistics]
+
+  admin:
+    label_ar: "إداري/دعم (فرص عامة ذات صلة)"
+    keywords_ar: [منسق إداري, منسق مشاريع, دعم فني إداري]
+    keywords_en: [administrative coordinator, project coordinator, technical support coordinator]
+
+  sales_excluded:
+    label_ar: "مبيعات (مستبعدة صراحةً)"
+    keywords_ar: [مندوب مبيعات, تسويق, مبيعات ميدانية, أخصائي تسويق]
+    keywords_en: [sales representative, sales executive, marketing specialist, business development]
+    excluded: true
