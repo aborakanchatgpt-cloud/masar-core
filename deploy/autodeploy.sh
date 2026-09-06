@@ -11,6 +11,10 @@ set -euo pipefail
 APP_DIR="/opt/masar-core"
 cd "$APP_DIR"
 
+# قائمة انتظار "ops" (B1a): نخدم أي أوامر مُنتظرة أولًا (قبل أي pull) حتى لا
+# ينتظر طلب أُرسل للتو اكتمال دورة النشر كاملة.
+bash "$APP_DIR/deploy/ops/run_queue.sh" || true
+
 BEFORE=$(git rev-parse HEAD)
 git fetch origin --quiet
 git reset --hard origin/main --quiet
@@ -27,6 +31,8 @@ if [ "$BEFORE" != "$AFTER" ]; then
   docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
     || docker compose restart caddy || true
   echo "$(date -u +%FT%TZ) — تم النشر بنجاح."
+  # نخدم أي أوامر ops تراكمت أثناء النشر فورًا بدل انتظار التكة التالية.
+  bash "$APP_DIR/deploy/ops/run_queue.sh" || true
 else
   : # لا شي جديد — صمت تام (يمنع تضخم اللوق)
 fi
