@@ -70,7 +70,7 @@ services:
       - masar_public   # الجامع يحتاج وصولًا للإنترنت لقراءة المصادر (masar_internal شبكة مغلقة)
     # لا يحتاج منفذًا خارجيًا — عملية خلفية فقط (الجامع كل 30 دقيقة)
 
-  # n8n-db-init: خدمة تُشغَّل مرة واحدة عند كل تشغيل (idempotent) لإنشاء قاعدة
+  # n8n-db-init: خدمة تُشغّل مرة واحدة عند كل تشغيل (idempotent) لإنشاء قاعدة
   # بيانات "n8n" داخل نفس خادم Postgres المشترك، إن لم تكن موجودة أصلًا.
   n8n-db-init:
     image: postgres:16-alpine
@@ -116,10 +116,9 @@ services:
       N8N_PROXY_HOPS: "1"
       GENERIC_TIMEZONE: Asia/Riyadh
       TZ: Asia/Riyadh
-      # مفتاح التشفير: افتراضي فارغ حتى لا يفشل "compose up" إن لم يكن موجودًا
-      # بـ .env بعد؛ autodeploy.sh وbootstrap.sh يولّدانه تلقائيًا إن كان غائبًا،
-      # وبعدها n8n نفسه يولّد ويحفظ مفتاحه الخاص داخل volume عند أول إقلاع.
-      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:-}
+      # مفتاح التشفير: لا نمرّره كمتغير بيئة عمدًا — n8n يولّده عند أول إقلاع
+      # ويحفظه في /home/node/.n8n/config داخل volume n8n_data (مصدر الحقيقة
+      # الوحيد؛ backup.sh ينسخه). تمرير مفتاح مختلف عبر البيئة يمنع n8n من الإقلاع.
       DB_TYPE: postgresdb
       DB_POSTGRESDB_HOST: postgres
       DB_POSTGRESDB_PORT: "5432"
