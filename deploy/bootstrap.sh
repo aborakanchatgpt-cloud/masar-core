@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# bootstrap.sh — يُشغَّل مرة واحدة فقط على خادم Ubuntu 24.04 جديد (Hetzner CX22)
+# bootstrap.sh — يُشغّل مرة واحدة فقط على خادم Ubuntu 24.04 جديد (Hetzner CX22)
 # يجهّز الخادم بالكامل تلقائيًا من الصفر: Docker، جدار الحماية، استنساخ
 # المستودع، تشغيل الحزمة، تطبيق الترحيلات، وجدولة autodeploy.sh (نموذج
 # السحب كل دقيقتين) وbackup.sh (نسخة يومية مشفّرة) — بدون أي خطوة يدوية
@@ -50,7 +50,7 @@ cd "$APP_DIR"
 
 if [ ! -f .env ]; then
   cp .env.example .env
-  # كلمة مرور Postgres + توكن أدمن Core عشوائيان قويان — يُولَّدان مرة واحدة فقط
+  # كلمة مرور Postgres + توكن أدمن Core عشوائيان قويان — يُولّدان مرة واحدة فقط
   RANDOM_PW=$(openssl rand -hex 24)
   ADMIN_TOKEN=$(openssl rand -hex 32)
   sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=${RANDOM_PW}/" .env
@@ -60,6 +60,10 @@ fi
 if grep -q '^MASAR_DOMAIN=core.example.com' .env; then
   PUBLIC_IP=$(curl -4 -fsS https://api.ipify.org || curl -4 -fsS https://ifconfig.me)
   sed -i "s/^MASAR_DOMAIN=.*/MASAR_DOMAIN=${PUBLIC_IP}.sslip.io/" .env
+fi
+# n8n يحتاج N8N_ENCRYPTION_KEY — نولّده مرة واحدة فقط إن كان غائبًا عن .env
+if ! grep -q '^N8N_ENCRYPTION_KEY=' .env; then
+  echo "N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
 fi
 MASAR_DOMAIN_VALUE=$(grep '^MASAR_DOMAIN=' .env | cut -d= -f2-)
 # القيمة تُقرأ من .env (سواء وُلّدت الآن أو بتشغيل سابق) لطباعتها بالنهاية
