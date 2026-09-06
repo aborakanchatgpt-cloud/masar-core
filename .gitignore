@@ -4,3 +4,7 @@ __pycache__/
 .DS_Store
 *.log
 backups/
+
+# ops runner (B1a): مجلد المضيف المشترك مع الحاوية core (queue/results
+# runtime) — ليس /deploy/ops الذي يحوي السكربتات المُثبَّتة بالمستودع.
+/ops/
