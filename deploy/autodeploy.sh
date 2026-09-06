@@ -16,22 +16,16 @@ git fetch origin --quiet
 git reset --hard origin/main --quiet
 AFTER=$(git rev-parse HEAD)
 
-# n8n يحتاج N8N_ENCRYPTION_KEY — نولّده مرة واحدة فقط إن كان غائبًا عن .env
-# (idempotent؛ compose نفسه يحتوي قيمة افتراضية فارغة حتى لا يفشل التشغيل
-# قبل وصول هذا السطر لأول مرة).
-if [ -f .env ] && ! grep -q '^N8N_ENCRYPTION_KEY=' .env; then
-  if command -v openssl &>/dev/null; then
-    echo "N8N_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
-  else
-    echo "N8N_ENCRYPTION_KEY=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')" >> .env
-  fi
-fi
-
 if [ "$BEFORE" != "$AFTER" ]; then
   echo "$(date -u +%FT%TZ) — تحديث جديد ($BEFORE -> $AFTER)، إعادة البناء والتشغيل..."
   docker compose up -d --build
   echo "$(date -u +%FT%TZ) — تطبيق ترحيلات قاعدة البيانات (alembic upgrade head)..."
   docker compose run --rm -v "$APP_DIR/migrations:/migrations" core sh -c "cd /migrations && alembic upgrade head"
+  # Caddyfile مربوط كملف (bind mount) فلا يلاحظ compose تغيّره — نعيد تحميل
+  # إعدادات Caddy صراحةً بعد كل نشر (idempotent)، وإن فشل نعيد تشغيل الحاوية.
+  echo "$(date -u +%FT%TZ) — إعادة تحميل إعدادات Caddy..."
+  docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
+    || docker compose restart caddy || true
   echo "$(date -u +%FT%TZ) — تم النشر بنجاح."
 else
   : # لا شي جديد — صمت تام (يمنع تضخم اللوق)
