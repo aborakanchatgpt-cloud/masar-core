@@ -12,12 +12,15 @@ from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 
 from app.auth import require_admin_token
+from app.ops import router as ops_router
 
 app = FastAPI(
     title="Masar Core",
     description="الخدمة الأساسية الجديدة لنظام مسار — تحل تدريجيًا محل منطق n8n/Claude Code Remote",
     version="0.1.0",
 )
+
+app.include_router(ops_router)
 
 
 class HealthResponse(BaseModel):
