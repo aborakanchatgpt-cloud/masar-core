@@ -44,6 +44,13 @@ services:
       GOTENBERG_URL: http://gotenberg:3000
       CORE_ADMIN_TOKEN: ${CORE_ADMIN_TOKEN:?يجب تعيين CORE_ADMIN_TOKEN في .env}
       MASAR_DOMAIN: ${MASAR_DOMAIN:-}
+      OPS_DIR: /ops
+    volumes:
+      # مجلد "ops runner" (B1a): مشترك مع المضيف — core يكتب طلبات تنفيذ
+      # هنا (/ops/queue) وسكربت autodeploy على المضيف (خارج أي حاوية) يقرأها
+      # وينفّذها وحده، ثم يكتب النتيجة (/ops/results) ليقرأها core. هذا بديل
+      # عن SSH أو تركيب Docker socket داخل الحاوية.
+      - ./ops:/ops
     depends_on:
       postgres:
         condition: service_healthy
