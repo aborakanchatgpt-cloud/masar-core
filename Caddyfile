@@ -8,3 +8,12 @@
 		format console
 	}
 }
+
+n8n.{$MASAR_DOMAIN} {
+	reverse_proxy n8n:5678
+	encode gzip
+	log {
+		output stdout
+		format console
+	}
+}
