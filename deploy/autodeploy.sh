@@ -25,11 +25,14 @@ if [ "$BEFORE" != "$AFTER" ]; then
   docker compose up -d --build
   echo "$(date -u +%FT%TZ) — تطبيق ترحيلات قاعدة البيانات (alembic upgrade head)..."
   docker compose run --rm -v "$APP_DIR/migrations:/migrations" core sh -c "cd /migrations && alembic upgrade head"
-  # Caddyfile مربوط كملف (bind mount) فلا يلاحظ compose تغيّره — نعيد تحميل
-  # إعدادات Caddy صراحةً بعد كل نشر (idempotent)، وإن فشل نعيد تشغيل الحاوية.
-  echo "$(date -u +%FT%TZ) — إعادة تحميل إعدادات Caddy..."
-  docker compose exec -T caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile \
-    || docker compose restart caddy || true
+  # Caddyfile مربوط كملف واحد (bind mount): بعد "git reset" يصبح الملف على المضيف
+  # inode جديدًا بينما الحاوية ما زالت ترى النسخة القديمة — لذلك "caddy reload"
+  # داخل الحاوية لا يرى التغيير. الحل الصحيح: إعادة إنشاء حاوية Caddy عندما
+  # يتغيّر Caddyfile في هذا التحديث (ثوانٍ من الانقطاع فقط، والشهادات محفوظة في volume).
+  if git diff --name-only "$BEFORE" "$AFTER" | grep -qx 'Caddyfile'; then
+    echo "$(date -u +%FT%TZ) — تغيّر Caddyfile: إعادة إنشاء حاوية Caddy..."
+    docker compose up -d --force-recreate --no-deps caddy || true
+  fi
   echo "$(date -u +%FT%TZ) — تم النشر بنجاح."
   # نخدم أي أوامر ops تراكمت أثناء النشر فورًا بدل انتظار التكة التالية.
   bash "$APP_DIR/deploy/ops/run_queue.sh" || true
