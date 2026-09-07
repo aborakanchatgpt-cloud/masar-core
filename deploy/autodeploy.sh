@@ -9,9 +9,17 @@
 # B1b: (أ) يولّد MCP_BRIDGE_TOKEN مرة واحدة في .env (idempotent) — جسر MCP
 # (core/app/mcp_bridge.py) معطّل (503) طالما لم يُعرّف هذا المتغيّر. (ب) يُعيد
 # البناء أيضًا عند وجود علامة ops/.deploy_needed — يضعها أمر "commit" في
-# run_queue.sh بعد push ناجح من المضيف نفسه (حالة يكون فيها git fetch/reset
-# أدناه بلا أثر لأن HEAD يساوي origin/main أصلًا، فلا يوجد فرق BEFORE/AFTER
-# ليُشغّل النشر لولا العلامة).
+run_queue.sh بعد push ناجح من المضيف نفسه (حالة يكون فيها git fetch/reset
+# أدناه بلا أثر لأن HEAD يساوي origin/main أصلاً، فلا يوجد فرق BEFORE/AFTER
+# ليُشغّل النشر لولا العلامة.
+#
+# B4: (ج) يولّد MAIL_FERNET_KEY مرة واحدة في .env (idempotent، نفس نمط
+MCP_BRIDGE_TOKEN تمامًا) — مفتاح Fernet صالح (32 بايت عشوائي بترميز
+base64 آمن للروابط) يُستخدم لتشفير كلمات مرور تطبيق Gmail بجدول
+mail_links (core/app/mail_crypto.py). `openssl rand -base64 32` ينتج نفس
+طول/بنية `Fernet.generate_key()` (32 بايت خام مُرمّزة base64)؛ `tr '+/' '-_'`
+يحوّل الأبجدية القياسية base64 لأبجدية base64 الآمنة للروابط التي يشترطها Fernet
+تحديدًا — لا حاجة لتثبيت حزمة cryptography على المضيف نفسه لتوليد المفتاح.
 
 set -euo pipefail
 
@@ -23,7 +31,13 @@ if ! grep -q '^MCP_BRIDGE_TOKEN=' "$APP_DIR/.env" 2>/dev/null; then
   echo "MCP_BRIDGE_TOKEN=$(openssl rand -hex 32)" >>"$APP_DIR/.env"
 fi
 
-# قائمة انتظار "ops" (B1a): نخدم أي أوامر مُنتظرة أولًا (قبل أي pull) حتى لا
+# B4: توليد MAIL_FERNET_KEY مرة واحدة فقط — idempotent، لا يُستبدل إن كان
+# موجودًا (استبداله يُفقد القدرة على فك تشفير أي كلمة مرور تطبيق مخزّنة أصلاً).
+if ! grep -q '^MAIL_FERNET_KEY=' "$APP_DIR/.env" 2>/dev/null; then
+  echo "MAIL_FERNET_KEY=$(openssl rand -base64 32 | tr '+/' '-_')" >>"$APP_DIR/.env"
+fi
+
+# قائمة انتظار "ops" (B1a): نخدم أي أوامر مُنتظرة أولاً (قبل أي pull) حتى لا
 # ينتظر طلب أُرسل للتو اكتمال دورة النشر كاملة.
 bash "$APP_DIR/deploy/ops/run_queue.sh" || true
 
