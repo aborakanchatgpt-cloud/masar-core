@@ -4,12 +4,13 @@ Masar Core — نقاط نهاية إدارة الاكتشاف (B2، الدلي�
     POST /admin/sources                 إضافة مصدر (تحقّق بجلب فوري)
     GET  /admin/sources?active=true|false  سرد المصادر
     POST /admin/sources/{id}/disable    تعطيل يدوي
-    POST /admin/sources/{id}/purge-jobs حذف وظائف مصدر مُلوّث (يدوي عمدي)
+    POST /admin/sources/{id}/purge-jobs حذف وظائف مصدر مُلوِّث (يدوي عمدي)
     POST /admin/sources/{id}/enable     إعادة تفعيل يدوي
     GET  /admin/stats                   مقاييس الاكتشاف الكاملة
     POST /admin/discovery/run-now       جولة فورية بالخلفية (لا تنتظر)
     POST /admin/discovery/seed-sources  إعادة بذر data/sources_seed.csv يدويًا
     GET  /admin/quality-sample?n=50     عينة أحدث الوظائف بحقولها المستخرجة
+    GET  /admin/dup-breakdown?limit=20  تشخيص أكثر مجموعات التكرار (لأي مصدر) خلال 24 ساعة
 """
 from __future__ import annotations
 
@@ -139,10 +140,10 @@ async def disable_source(source_id: int) -> dict:
 @router.post("/sources/{source_id}/purge-jobs")
 async def purge_source_jobs(source_id: int) -> dict:
     """يحذف كل الوظائف التي أدرجها هذا المصدر تحديدًا من jobs — للاستخدام
-    عند تبيّن أن مصدرًا (مُعطّلًا عادة) لوّث الجدول بوظائف غير مناسبة (مثال
+    عند تبيّن أن مصدرًا (مُعطَّلًا عادة) لوّث الجدول بوظائف غير مناسبة (مثال
     B2: Jobgether وكالة إعادة نشر تكرّر نفس المسمى بمدن/دول مختلفة بلا مدينة
     مستخرجة، ما ضخّم dup_ratio_24h زورًا). لا يمسّ صفّ المصدر نفسه ولا صحته —
-    فقط صفوف jobs المرتبطة به. لا يُفعّل تلقائيًا؛ استدعاء يدوي عمدي فقط."""
+    فقط صفوف jobs المرتبطة به. لا يُفعَّل تلقائيًا؛ استدعاء يدوي عمدي فقط."""
     engine = discovery.get_engine()
     with engine.begin() as conn:
         result = conn.execute(
@@ -296,6 +297,42 @@ async def seed_sources_now() -> dict:
     """يعيد قراءة data/sources_seed.csv ويطبّق upsert idempotent — مفيد
     للتحقق اليدوي بعد تحديث ملف البذر بلا انتظار إعادة تشغيل core-scheduler."""
     return discovery.seed_sources()
+
+
+@router.get("/dup-breakdown")
+async def dup_breakdown(limit: int = Query(default=20, ge=1, le=200)) -> list[dict]:
+    """تشخيص dup_ratio_24h: يُرجع أكثر مجموعات (شركة+مسمى+مدينة) المطبَّعة
+    تكرارًا خلال آخر 24 ساعة، مع اسم المصدر ومعرّفه — لتحديد أي مصدر يسبب
+    التضخّم دون الحاجة لاستعلام psql يدوي (القناة عبر ops للقراءة فقط وبطيئة)."""
+    engine = discovery.get_engine()
+    since_24h = datetime.now(timezone.utc) - timedelta(hours=24)
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                WITH recent AS (
+                    SELECT j.source_id, s.source_type, c.name AS company_src,
+                           lower(regexp_replace(coalesce(j.company_name, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi'))
+                           || '::' ||
+                           lower(regexp_replace(coalesce(j.title, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi'))
+                           || '::' ||
+                           lower(regexp_replace(coalesce(j.city, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi')) AS k
+                    FROM jobs j
+                    JOIN sources s ON s.id = j.source_id
+                    JOIN companies c ON c.id = s.company_id
+                    WHERE j.first_seen_at >= :since
+                )
+                SELECT k, source_id, source_type, company_src, count(*) AS n
+                FROM recent
+                GROUP BY k, source_id, source_type, company_src
+                HAVING count(*) > 1
+                ORDER BY n DESC
+                LIMIT :limit
+                """
+            ),
+            {"since": since_24h, "limit": limit},
+        ).mappings().all()
+    return [dict(r) for r in rows]
 
 
 @router.get("/quality-sample")
