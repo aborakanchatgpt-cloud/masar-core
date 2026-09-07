@@ -11,6 +11,15 @@
         (شركة، مسمى، مدينة، مسار apply_url بلا سلسلة استعلام)؛ استُبدل
         اختباري external_key القديمين باختبارات تعكس السلوك الجديد.
 
+مراجعة B2 الثانية (docs/reports/B2-review-2.md، REJECT → R10-R15):
+    R10: dedup_key الجديد يعتمد apply_url وحده (مطبّعًا بـnormalize_apply_url،
+        مقيّدًا بـsource_id) حين متوفر — لا يعود location_text جزءًا من
+        المفتاح في هذه الحالة (كان هذا سبب التكرار الحقيقي ~55%: مصادر
+        Workable لوكالات التوظيف تُعيد نفس apply_url لعدة مدن ضمن نفس الجلبة).
+    R11: compute_region/extract_country_code لا يلجآن لنص إضافي (extra_text)
+        إلا حين location_text فارغًا تمامًا — ذكر عرَضي لدولة خليجية بالوصف
+        لا يجوز أن يتجاوز موقعًا خامًا واضحًا غير خليجي.
+
 يُشغّل محليًا بـpytest قبل كل commit (الدليل التنفيذي، القسم "الاختبار قبل
 DONE"). لا يحتاج قاعدة بيانات ولا شبكة — دوال نقية فقط.
 
@@ -21,13 +30,14 @@ from __future__ import annotations
 import pytest
 
 from app.collectors.field_extractor import (
+    compute_region,
     extract_cities,
     extract_seniority,
     extract_skills,
     extract_years_required,
     is_saudi_only,
 )
-from app.collectors.normalizer import company_key, dedup_key, normalize_text
+from app.collectors.normalizer import company_key, dedup_key, normalize_apply_url, normalize_text
 
 
 # ---------------------------------------------------------------------------
@@ -125,9 +135,9 @@ def test_no_years_mentioned_returns_none() -> None:
 # ---------------------------------------------------------------------------
 # مراجعة B2 R2/R7 — انحدار مطابقة الأقدمية بحدود كلمة صريحة (لا سلسلة فرعية)
 #
-# الحالات الخمس المحدَّدة صراحةً بتقرير المراجعة (docs/reports/B2-review.md):
+# الحالات الخمس المحددة صراحةً بتقرير المراجعة (docs/reports/B2-review.md):
 # كانت "intern" تُطابق داخل "internal"/"international" بمطابقة السلسلة
-# الفرعية القديمة — الحل: تعابير نمطية بحدود كلمة (\b...\b) مُجمَّعة مسبقًا.
+# الفرعية القديمة — الحل: تعابير نمطية بحدود كلمة (\b...\b) مُجمّعة مسبقًا.
 # ---------------------------------------------------------------------------
 
 SENIORITY_REGRESSION_CASES: list[tuple[str, str | None]] = [
@@ -153,7 +163,7 @@ def test_seniority_word_boundary_regression(title: str, expected_seniority: str 
 
 def test_seniority_substring_false_positive_regression_within_longer_text() -> None:
     """التأكد أن 'intern' لا يُطابق داخل نص أطول يحتوي 'international'/
-    'internal' حتى حين لا تُمرَّر title (المسار الاحتياطي على النص الكامل)."""
+    'internal' حتى حين لا تُمرّر title (المسار الاحتياطي على النص الكامل)."""
     text = "We are hiring for our International Sales division — Internal Auditor role based in Riyadh"
     assert extract_seniority(text) != "intern"
 
@@ -238,3 +248,101 @@ def test_dedup_key_deterministic() -> None:
     """نفس المدخلات تمامًا → نفس المفتاح دائمًا (بلا عشوائية بالتنفيذ)."""
     args = ("Aramco", "Process Engineer", "Dhahran", "https://x.com/jobs/1")
     assert dedup_key(*args) == dedup_key(*args)
+
+
+# ---------------------------------------------------------------------------
+# مراجعة B2 الثانية R10 — normalize_apply_url + dedup_key المعتمد على
+# apply_url وحده (بلا location_text) حين متوفر
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_apply_url_strips_query_and_fragment_keeps_scheme_host_path() -> None:
+    """R10: الهوية = مخطط+مضيف+مسار فقط — بلا سلسلة استعلام ولا جزء، مع
+    تصغير حروف المخطط/المضيف فقط (المسار يبقى كما هو، حسّاس لحالة الأحرف)."""
+    normalized = normalize_apply_url(
+        "HTTPS://Apply.Workable.com/eram-talent/j/05EAA33D35?utm_source=linkedin&ref=abc#section"
+    )
+    assert normalized == "https://apply.workable.com/eram-talent/j/05EAA33D35"
+
+
+def test_normalize_apply_url_empty_for_missing_or_hostless_url() -> None:
+    assert normalize_apply_url(None) == ""
+    assert normalize_apply_url("") == ""
+    assert normalize_apply_url("not a url") == ""
+
+
+def test_dedup_key_same_apply_url_different_location_same_key() -> None:
+    """R10 — جوهر الإصلاح: نفس apply_url (نفس رابط تقديم فعلي) مذكور بعدة
+    مدن ضمن نفس الجلبة (نمط Eram Talent/Hudson Manpower على Workable) يجب
+    أن يُنتج dedup_key واحدًا — لا صفًا منفصلًا لكل مدينة."""
+    url = "https://apply.workable.com/eram-talent/j/05EAA33D35"
+    key_jeddah = dedup_key("Eram Talent", "IT Asset Management Analyst (Saudi Arabia)", "Jeddah", url, source_id=7)
+    key_riyadh = dedup_key("Eram Talent", "IT Asset Management Analyst (Saudi Arabia)", "Riyadh", url, source_id=7)
+    key_tabuk = dedup_key("Eram Talent", "IT Asset Management Analyst (Saudi Arabia)", "Tabuk", url, source_id=7)
+    assert key_jeddah == key_riyadh == key_tabuk
+
+
+def test_dedup_key_apply_url_scoped_by_source_id() -> None:
+    """R10: تضمين source_id يمنع تصادمًا نظريًا لو تطابق رابطان مطبّعان
+    صدفة من مصدرين مختلفين تمامًا (لا علاقة لأحدهما بالآخر)."""
+    url = "https://boards-api.greenhouse.io/v1/boards/acme/jobs/123"
+    key_source_a = dedup_key("Acme", "Engineer", "Riyadh", url, source_id=1)
+    key_source_b = dedup_key("Acme", "Engineer", "Riyadh", url, source_id=2)
+    assert key_source_a != key_source_b
+
+
+def test_dedup_key_apply_url_ignores_company_and_title_differences() -> None:
+    """R10: apply_url هو الهوية — حتى لو اختلف اسم الشركة/المسمى المستخرجان
+    (خطأ استخراج طفيف، أو تحديث بسيط بالعنوان بين جولتين) فإن نفس apply_url
+    لنفس source_id يبقى نفس الإعلان الفعلي."""
+    url = "https://apply.workable.com/hudson-manpower/j/06954AB530"
+    key_a = dedup_key("Hudson Manpower", "Maintenance Engineer-Biomedical (Saudi Arabia)", "Jeddah", url, source_id=3)
+    key_b = dedup_key("Hudson Manpower", "Maintenance Engineer - Biomedical", "Lusail, Qatar", url, source_id=3)
+    assert key_a == key_b
+
+
+# ---------------------------------------------------------------------------
+# مراجعة B2 الثانية R11 — compute_region لا يلجأ لنص إضافي إلا حين
+# location_text فارغًا تمامًا؛ ذكر عرَضي بالوصف لا يجوز موقعًا خامًا واضحًا
+# ---------------------------------------------------------------------------
+
+
+def test_compute_region_ignores_incidental_country_mention_in_description() -> None:
+    """R11 — الحالة المطلوبة تحديدًا بالتكليف: موقع خام "Singapore" مع ذكر
+    "Saudi Arabia" ضمن نص الوصف (نمط شائع بوكالات التوظيف: فقرة "نغطي
+    المملكة العربية السعودية والإمارات..." تصف مناطق عمل الوكالة، لا مكان
+    الوظيفة الفعلي) يجب أن يبقى out_of_region=True — لا يجوز لذكر الوصف أن
+    يتجاوز location_text الصريح."""
+    location_text = "Singapore"
+    extra_text = (
+        "IT Asset Management Analyst — We are hiring across the region, covering "
+        "Saudi Arabia, UAE and Qatar for our enterprise clients."
+    )
+    code, out_of_region = compute_region(location_text, extra_text)
+    assert out_of_region is True
+    assert code != "SA"
+
+
+def test_compute_region_falls_back_to_text_only_when_location_missing() -> None:
+    """location_text فارغًا تمامًا (None) → يجوز عندها فقط الرجوع لنص العنوان/
+    الوصف كملاذ أخير."""
+    code, out_of_region = compute_region(None, "Process Engineer role based in Riyadh, Saudi Arabia")
+    assert code == "SA"
+    assert out_of_region is False
+
+
+def test_compute_region_unrecognized_location_stays_out_of_region_even_with_gcc_mention_in_description() -> None:
+    """موقع خام معروف غير خليجي (Romania) مع ذكر دولة خليجية بالوصف (نمط
+    Elastic: 'Remote — Romania' مع فقرة توظيف عامة تذكر السعودية) يبقى خارج
+    النطاق — location_text الصريح غير الخليجي أقوى من أي إشارة بالوصف."""
+    location_text = "Romania"
+    extra_text = "Elastic is hiring globally including Saudi Arabia, UAE, and other GCC markets."
+    code, out_of_region = compute_region(location_text, extra_text)
+    assert out_of_region is True
+    assert code != "SA"
+
+
+def test_compute_region_recognizes_gcc_location_directly() -> None:
+    code, out_of_region = compute_region("Riyadh, sa", None)
+    assert code == "SA"
+    assert out_of_region is False
