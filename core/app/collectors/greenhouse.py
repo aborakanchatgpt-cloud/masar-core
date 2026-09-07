@@ -13,7 +13,7 @@ board_token عادةً هو الاسم الظاهر برابط صفحة الوظ
 """
 from __future__ import annotations
 
-import httpx
+from app.collectors.http_client import get as http_get
 
 GREENHOUSE_JOBS_URL = "{api_base}/v1/boards/{board}/jobs"
 DEFAULT_API_BASE = "https://boards-api.greenhouse.io"
@@ -22,12 +22,7 @@ DEFAULT_API_BASE = "https://boards-api.greenhouse.io"
 def fetch_jobs(board_token: str, timeout: float = 20.0, api_base: str = DEFAULT_API_BASE) -> list[dict]:
     """يرجع قائمة وظائف خام من Greenhouse لشركة واحدة (board_token)."""
     url = GREENHOUSE_JOBS_URL.format(api_base=api_base, board=board_token)
-    response = httpx.get(
-        url,
-        params={"content": "true"},
-        timeout=timeout,
-        headers={"User-Agent": "MasarCoreBot/0.1 (+contact via masar)"},
-    )
+    response = http_get(url, params={"content": "true"}, timeout=timeout)
     response.raise_for_status()
     payload = response.json()
 
