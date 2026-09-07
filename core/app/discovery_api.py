@@ -204,13 +204,17 @@ async def stats() -> dict:
         ).mappings().all()
         companies_total = conn.execute(text("SELECT count(*) FROM companies")).scalar()
 
-        # dup_ratio_24h: نسبة صفوف آخر 24 ساعة التي تتكرر فيها (شركة+مسمى+مدينة)
+        # dup_ratio_24h: نسبة صفوف آخر 24 ساعة التي تتكرر فيها (شركة+مسمى+موقع)
         # المطبَّعان — تقريب مستقل عن dedup_key نفسه (الذي يفترض منع هذا
         # التكرار أصلًا)، يكشف أي تسرّب فعلي (رابط منصّة بمعرّفين مختلفين
-        # لنفس الإعلان، أو اختلاف طفيف بالعنوان الخام). المدينة مُضمَّنة هنا
-        # عمدًا (تطابقًا مع مكوّنات dedup_key الفعلية) لأن نفس الشركة قد
-        # تنشر نفس المسمى الوظيفي بمدن مختلفة فعليًا (وظائف حقيقية منفصلة
-        # وليست تكرارًا) — تجاهل المدينة كان يُضخّم هذا المقياس زورًا.
+        # لنفس الإعلان، أو اختلاف طفيف بالعنوان الخام). نستخدم city إن
+        # وُجدت، وإلا نرجع لِـ location الخام كاملًا (وليس فراغًا) — لأن
+        # field_extractor.extract_cities() يتعرّف فقط على مدن سعودية/خليجية؛
+        # شركات عالمية كبرى (MongoDB, Pure Storage, Hopper...) تنشر نفس
+        # المسمى بمكاتب حقيقية مختلفة عالميًا (بوسطن، أوستن...) فتُستخرج
+        # city=NULL لكل هذه المدن غير الخليجية، وكان استخدام city فقط
+        # يُسقطها كلّها بنفس الصندوق ويُخرج تكرارًا وهميًا — استخدام
+        # location الخام يفرّق بينها ما دامت السلاسل النصية مختلفة فعليًا.
         dup_row = conn.execute(
             text(
                 """
@@ -219,7 +223,7 @@ async def stats() -> dict:
                            || '::' ||
                            lower(regexp_replace(coalesce(title, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi'))
                            || '::' ||
-                           lower(regexp_replace(coalesce(city, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi')) AS k
+                           lower(regexp_replace(coalesce(nullif(city, ''), location, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi')) AS k
                     FROM jobs WHERE first_seen_at >= :since
                 ),
                 counted AS (
@@ -301,7 +305,7 @@ async def seed_sources_now() -> dict:
 
 @router.get("/dup-breakdown")
 async def dup_breakdown(limit: int = Query(default=20, ge=1, le=200)) -> list[dict]:
-    """تشخيص dup_ratio_24h: يُرجع أكثر مجموعات (شركة+مسمى+مدينة) المطبَّعة
+    """تشخيص dup_ratio_24h: يُرجع أكثر مجموعات (شركة+مسمى+موقع) المطبَّعة
     تكرارًا خلال آخر 24 ساعة، مع اسم المصدر ومعرّفه — لتحديد أي مصدر يسبب
     التضخّم دون الحاجة لاستعلام psql يدوي (القناة عبر ops للقراءة فقط وبطيئة)."""
     engine = discovery.get_engine()
@@ -316,7 +320,7 @@ async def dup_breakdown(limit: int = Query(default=20, ge=1, le=200)) -> list[di
                            || '::' ||
                            lower(regexp_replace(coalesce(j.title, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi'))
                            || '::' ||
-                           lower(regexp_replace(coalesce(j.city, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi')) AS k
+                           lower(regexp_replace(coalesce(nullif(j.city, ''), j.location, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi')) AS k
                     FROM jobs j
                     JOIN sources s ON s.id = j.source_id
                     JOIN companies c ON c.id = s.company_id
