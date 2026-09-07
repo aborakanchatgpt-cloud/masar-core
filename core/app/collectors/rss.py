@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 import httpx
 
 _ATOM_NS = {"atom": "http://www.w3.org/2005/Atom"}
+_HEADERS = {"User-Agent": "MasarCoreBot/0.1 (+contact via masar)"}
 
 
 def _text(el, tag, namespaces=None) -> str | None:
@@ -19,7 +20,7 @@ def _text(el, tag, namespaces=None) -> str | None:
 
 def fetch_jobs(feed_url: str, timeout: float = 20.0) -> list[dict]:
     """يجلب خلاصة RSS أو Atom واحدة ويحوّل كل عنصر لصيغة وظيفة موحّدة."""
-    response = httpx.get(feed_url, timeout=timeout)
+    response = httpx.get(feed_url, timeout=timeout, headers=_HEADERS)
     response.raise_for_status()
     root = ET.fromstring(response.content)
 
