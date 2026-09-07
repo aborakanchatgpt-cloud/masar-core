@@ -5,12 +5,20 @@ Masar Core — الخدمة الأساسية.
 discovery_api.py (نقاط /admin/sources, /admin/stats, /admin/discovery/*,
 /admin/quality-sample) — انظر core/app/discovery.py للمنطق الكامل.
 
-الوحدات الأخرى (identity, billing, profile, matching, planning, sending,
-inbox, reporting) تُبنى بالمراحل 3-6 حسب دليل مسار v5.
+B3 (المرحلة 3): وحدة العملاء/الملف الشخصي/المحفظة/المطابقة/الخطة عبر
+customers_api.py (core/app/matching.py + core/app/planner.py للمنطق).
+
+الوحدات الأخرى (sending, inbox — B4) تُبنى بالتوازي على فروع/ملفات منفصلة
+(core/app/mail_api.py، core/app/inbox_api.py، core/app/mail*، core/app/collectors/
+اللاحقة) ولا تُلمَس من هنا؛ تُضمَّن أدناه بـimport محروس (try/except) حتى
+يستطيع منفّذ B4 دفع ملفاته لاحقًا بلا الحاجة لتعديل main.py نفسه إطلاقًا —
+غياب الملفات الآن أمر متوقع وطبيعي (لا يعطّل main.py: كل مسار غير موجود
+يُتخطَّى بصمت بالسجلّ فقط).
 
 B1b: أُضيف جسر MCP (app/mcp_bridge.py) — يجعل جلسات Claude مستقلة عن n8n
 Cloud لعمليات القراءة/الكتابة بالمستودع وتشغيل أوامر المضيف.
 """
+import logging
 import os
 from datetime import datetime, timezone
 
@@ -18,19 +26,35 @@ from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 
 from app.auth import require_admin_token
+from app.customers_api import router as customers_router
 from app.discovery_api import router as discovery_router
 from app.mcp_bridge import router as mcp_router
 from app.ops import router as ops_router
 
+logger = logging.getLogger("masar.main")
+
 app = FastAPI(
     title="Masar Core",
     description="الخدمة الأساسية الجديدة لنظام مسار — تحل تدريجيًا محل منطق n8n/Claude Code Remote",
-    version="0.2.0",
+    version="0.3.0",
 )
 
 app.include_router(ops_router)
 app.include_router(mcp_router)
 app.include_router(discovery_router)
+app.include_router(customers_router)
+
+# B4 (يعمل بالتوازي على core/app/mail_api.pyوcore/app/inbox_api.py — منفّذ
+# آخر يملك هذين الملفين، لا نلمسهما من هنا): إدراج محروس بحيث يبدأ عملهما
+# فور دفع ملفاتهما بلا أي تعديل إضافي بـmain.py — غيابهما الآن ImportError
+# متوقع، يُسجّل معلوماتيًا فقط ولا يوقف إقلاع الخدمة.
+for mod_name in ("app.mail_api", "app.inbox_api"):
+    try:
+        module = __import__(mod_name, fromlist=["router"])
+        app.include_router(module.router)
+        logger.info("تم تحميل راوتر %s", mod_name)
+    except ImportError:
+        logger.info("راوتر %s غير موجود بعد (متوقّع قبل اكتمال B4) — تخطّي", mod_name)
 
 
 class HealthResponse(BaseModel):
