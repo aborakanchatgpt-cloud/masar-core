@@ -1,0 +1,548 @@
+{
+  "name": "Claude Autopilot - Build & Send Application",
+  "nodes": [
+    {
+      "id": "3a945bda-6b46-4513-b24d-3c2febcf911e",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "claude-apply-send",
+        "authentication": "none",
+        "responseMode": "onReceived",
+        "options": {
+          "responseData": "OK"
+        }
+      },
+      "webhookId": "d3205d95-341f-451e-9510-f738306bf952"
+    },
+    {
+      "id": "726eb26d-55b2-4da2-a7f6-da1a10302bf0",
+      "name": "Build CV HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const cv = $json.cv || {};\nconst customerName = $json.customerName || '';\n\nfunction esc(s) { return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }\nfunction isArabic(s) { return /[؀-ۿ]/.test(s || ''); }\nconst arabic = isArabic(cv.tailoredSummary) || isArabic(cv.name);\nconst labels = arabic\n  ? { summary: 'الملخص المهني', experience: 'الخبرة المهنية', education: 'التعليم', certifications: 'الشهادات', skills: 'المهارات', languages: 'اللغات' }\n  : { summary: 'Professional Summary', experience: 'Experience', education: 'Education', certifications: 'Certifications', skills: 'Skills', languages: 'Languages' };\n\nfunction section(title, inner) { return inner ? ('<div class=\"section\"><div class=\"section-title\">' + esc(title) + '</div>' + inner + '</div>') : ''; }\n\nconst summaryHtml = cv.tailoredSummary ? ('<p>' + esc(cv.tailoredSummary) + '</p>') : '';\n\nconst experienceHtml = (cv.experience || []).map(function(e){ return '\\n  <div class=\"exp-entry\">\\n    <div class=\"exp-head\"><span class=\"exp-title\">' + esc(e.title) + '</span><span class=\"exp-dates\">' + esc(e.dates) + '</span></div>\\n    <div class=\"exp-company\">' + esc(e.company) + '</div>\\n    <ul>' + (e.bullets || []).map(function(b){ return '<li>' + esc(b) + '</li>'; }).join('') + '</ul>\\n  </div>'; }).join('');\n\nconst educationHtml = (cv.education || []).map(function(ed){ return '<p><strong>' + esc(ed.degree) + '</strong> — ' + esc(ed.institution) + (ed.details ? (' <span class=\"muted\">(' + esc(ed.details) + ')</span>') : '') + '</p>'; }).join('');\n\nconst certificationsHtml = (cv.certifications || []).length ? ('<ul>' + cv.certifications.map(function(c){ return '<li>' + esc(c) + '</li>'; }).join('') + '</ul>') : '';\n\nconst skillsHtml = (cv.skills || []).length ? ('<p class=\"pills\">' + cv.skills.map(esc).join(' | ') + '</p>') : '';\n\nconst languagesHtml = (cv.languages || []).length ? ('<p>' + cv.languages.map(esc).join(' | ') + '</p>') : '';\n\nconst bodyHtml = [\n  section(labels.summary, summaryHtml),\n  section(labels.experience, experienceHtml),\n  section(labels.education, educationHtml),\n  section(labels.certifications, certificationsHtml),\n  section(labels.skills, skillsHtml),\n  section(labels.languages, languagesHtml)\n].join('\\n');\n\nconst cvHtml = '<!doctype html>\\n<html lang=\"' + (arabic ? 'ar' : 'en') + '\" dir=\"' + (arabic ? 'rtl' : 'ltr') + '\"><head><meta charset=\"utf-8\">\\n<title>' + esc(cv.name || customerName) + '</title>\\n<style>\\n  * { box-sizing: border-box; }\\n  body { margin:0; padding:0; background:#ffffff; font-family: Calibri, \\'Segoe UI\\', Arial, sans-serif; color:#111111; }\\n  .page { max-width:800px; margin:0 auto; background:#ffffff; }\\n  .header { padding:36px 50px 20px; border-bottom:2px solid #111111; }\\n  .header h1 { margin:0 0 6px; font-size:26px; font-weight:700; color:#111111; letter-spacing:0.3px; }\\n  .header .title2 { font-size:14px; font-weight:600; color:#333333; margin:0 0 8px; }\\n  .header .contact { font-size:12.5px; color:#444444; }\\n  .body { padding:10px 50px 44px; }\\n  .section { margin-top:22px; }\\n  .section-title { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:1px; color:#111111; border-bottom:1px solid #999999; padding-bottom:5px; margin-bottom:12px; }\\n  .section p { margin:6px 0; font-size:13.5px; line-height:1.7; color:#222222; }\\n  .section ul { margin:6px 0; padding-inline-start:20px; }\\n  .section li { margin:5px 0; font-size:13px; line-height:1.6; color:#222222; }\\n  .exp-entry { margin-bottom:16px; }\\n  .exp-entry:last-child { margin-bottom:0; }\\n  .exp-head { display:flex; justify-content:space-between; align-items:baseline; gap:12px; }\\n  .exp-title { font-weight:700; font-size:14.5px; color:#111111; }\\n  .exp-dates { font-size:12px; color:#555555; white-space:nowrap; }\\n  .exp-company { font-size:13px; color:#333333; font-style:italic; margin:2px 0 8px; }\\n  .muted { color:#555555; font-weight:400; font-size:12.5px; }\\n</style></head>\\n<body>\\n  <div class=\"page\">\\n    <div class=\"header\">\\n      <h1>' + esc(cv.name || customerName) + '</h1>\\n      ' + (cv.professionalTitle ? ('<div class=\"title2\">' + esc(cv.professionalTitle) + '</div>') : '') + '\\n      <div class=\"contact\">' + esc(cv.contactLine) + '</div>\\n    </div>\\n    <div class=\"body\">\\n      ' + bodyHtml + '\\n    </div>\\n  </div>\\n</body></html>';\n\nreturn { json: Object.assign({}, $json, { cvHtml: cvHtml }) };"
+      }
+    },
+    {
+      "id": "120115df-4ac4-4180-a7cb-8513fea001bf",
+      "name": "Convert CV to Attachment",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [
+        448,
+        0
+      ],
+      "parameters": {
+        "operation": "toText",
+        "sourceProperty": "cvHtml",
+        "options": {
+          "fileName": "index.html"
+        }
+      }
+    },
+    {
+      "id": "76659407-0f38-476d-a9fa-024e57d4d833",
+      "name": "Convert HTML to PDF (Gotenberg)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        672,
+        0
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://gotenberg-pdf-5abo.onrender.com/forms/chromium/convert/html",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "index.html",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 5000
+    },
+    {
+      "id": "c7c09e90-3186-4479-a51a-a6df1b864634",
+      "name": "Fix PDF Filename",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        0
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "const item = $input.item;\nconst bin = (item.binary && item.binary.data) ? Object.assign({}, item.binary.data) : {};\nconst customerName = $('Quality Check & Build Email').item.json.customerName;\nconst jobTitle = $('Quality Check & Build Email').item.json.jobTitle || 'Application';\nconst safe = function (s) { return String(s).replace(/[\\\\/:*?\"<>|]/g, '-'); };\nbin.fileName = 'CV - ' + safe(customerName) + ' - ' + safe(jobTitle) + '.pdf';\nbin.mimeType = 'application/pdf';\nbin.fileExtension = 'pdf';\nreturn { json: item.json, binary: { data: bin } };"
+      }
+    },
+    {
+      "id": "e3f61495-cda9-441f-80d8-769427547d47",
+      "name": "Send Application Email",
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        0
+      ],
+      "parameters": {
+        "resource": "message",
+        "operation": "send",
+        "sendTo": "={{ $('Quality Check & Build Email').item.json.applyEmail }}",
+        "subject": "={{ $('Quality Check & Build Email').item.json.emailSubject }}",
+        "emailType": "text",
+        "message": "={{ $('Quality Check & Build Email').item.json.emailBody }}",
+        "options": {
+          "replyTo": "={{ $('Quality Check & Build Email').item.json.customerEmail }}",
+          "senderName": "={{ $('Quality Check & Build Email').item.json.customerName }}",
+          "appendAttribution": false,
+          "attachmentsUi": {
+            "attachmentsBinary": [
+              {
+                "property": "data"
+              }
+            ]
+          },
+          "ccList": "={{ $('Quality Check & Build Email').item.json.customerEmail }}"
+        }
+      },
+      "webhookId": "4ae271d1-7234-46fa-aaf6-b49f7a45231c",
+      "credentials": {
+        "gmailOAuth2": {
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "id": "ec97e2d9-9652-4c8f-8e4b-ce032437b821",
+      "name": "Log Application - Sent",
+      "type": "n8n-nodes-base.dataTable",
+      "typeVersion": 1.1,
+      "position": [
+        1344,
+        0
+      ],
+      "parameters": {
+        "resource": "row",
+        "operation": "insert",
+        "dataTableId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "2vlFuz9bzENT5uru",
+          "cachedResultName": "Job Applications Tracker"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "applicationDate": "={{ $now.toISODate() }}",
+            "company": "={{ $('Quality Check & Build Email').item.json.company }}",
+            "jobTitle": "={{ $('Quality Check & Build Email').item.json.jobTitle }}",
+            "status": "Applied via Email (Claude tailoring)",
+            "keywordsUsed": "={{ $('Quality Check & Build Email').item.json.keywordsUsed }}",
+            "applyUrl": "={{ $('Quality Check & Build Email').item.json.applyUrl }}",
+            "source": "={{ $('Quality Check & Build Email').item.json.source }}",
+            "applyEmail": "={{ $('Quality Check & Build Email').item.json.applyEmail }}",
+            "emailSubject": "={{ $('Quality Check & Build Email').item.json.emailSubject }}",
+            "emailBody": "={{ $('Quality Check & Build Email').item.json.emailBody }}",
+            "tailoredCv": "={{ $('Quality Check & Build Email').item.json.tailoredCv }}",
+            "customerId": "={{ Number($('Quality Check & Build Email').item.json.customerId) }}"
+          }
+        },
+        "schema": [
+          {
+            "id": "applicationDate",
+            "displayName": "applicationDate",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "company",
+            "displayName": "company",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "jobTitle",
+            "displayName": "jobTitle",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "status",
+            "displayName": "status",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "keywordsUsed",
+            "displayName": "keywordsUsed",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "applyUrl",
+            "displayName": "applyUrl",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "source",
+            "displayName": "source",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "applyEmail",
+            "displayName": "applyEmail",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "emailSubject",
+            "displayName": "emailSubject",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "emailBody",
+            "displayName": "emailBody",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "tailoredCv",
+            "displayName": "tailoredCv",
+            "type": "string",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          },
+          {
+            "id": "customerId",
+            "displayName": "customerId",
+            "type": "number",
+            "canBeUsedToMatch": true,
+            "required": false,
+            "defaultMatch": false,
+            "display": true
+          }
+        ]
+      }
+    },
+    {
+      "id": "bec5efe3-38f7-411f-85a7-d58d0aaeadf5",
+      "name": "Quality Check & Build Email",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        -220
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "language": "javaScript",
+        "jsCode": "const body = $json.body;\nconst cv = body.cv || {};\nconst job = { jobTitle: body.jobTitle, company: body.company, applyUrl: body.applyUrl, source: body.source, applyEmail: body.applyEmail };\nconst customerName = body.customerName || cv.name || '';\nconst customerEmail = body.customerEmail || '';\nconst customerPhone = body.customerPhone ? ('+' + String(body.customerPhone).replace(/^\\+/, '')) : '';\nconst cachedPdfBase64 = body.cachedPdfBase64 || '';\n\nconst matchedKeywords = Array.isArray(body.matchedKeywords) ? body.matchedKeywords.filter(Boolean) : [];\nconst personalizationLine = (body.personalizationLine || '').trim();\nconst emailSubject = body.emailSubject || (job.jobTitle + ' - ' + customerName);\n\nfunction isArabicText(s) { return /[؀-ۿ]/.test(s || ''); }\nconst arabic = isArabicText(cv.tailoredSummary) || isArabicText(cv.name);\n\nconst variantSeed = (job.applyUrl || job.company || '').split('').reduce(function (s, c) { return s + c.charCodeAt(0); }, 0);\nconst variant = (variantSeed % 2 === 0) ? 'A' : 'B';\n\nlet emailBody;\nif (arabic) {\n  emailBody = variant === 'A'\n    ? ('السلام عليكم ورحمة الله،\\n\\nأتقدم لشغل وظيفة ' + job.jobTitle + ' لدى ' + job.company + '، حيث تتوافق خبرتي في ' + personalizationLine + ' مع متطلبات هذه الوظيفة.\\n\\nأرفق سيرتي الذاتية للاطلاع، وأتطلع لفرصة مناقشة كيف يمكنني إضافة قيمة لفريقكم.\\n\\nمع خالص التقدير،\\n' + customerName + ' — ' + customerPhone)\n    : ('تحية طيبة وبعد،\\n\\nيسعدني تقديم طلبي للانضمام كـ ' + job.jobTitle + ' في ' + job.company + '، حيث أمتلك خبرة عملية مباشرة في ' + personalizationLine + '، وهي من المجالات الأساسية لهذا الدور.\\n\\nسيرتي الذاتية مرفقة، وأرحب بأي تواصل لمناقشة التفاصيل.\\n\\nوتفضلوا بقبول فائق الاحترام،\\n' + customerName + ' — ' + customerPhone);\n} else {\n  emailBody = variant === 'A'\n    ? ('Dear Hiring Manager,\\n\\nI am applying for the ' + job.jobTitle + ' position at ' + job.company + ', where my experience in ' + personalizationLine + ' aligns directly with this role\\'s requirements.\\n\\nMy CV is attached for your review, and I would welcome the opportunity to discuss how I can contribute to your team.\\n\\nBest regards,\\n' + customerName + ' — ' + customerPhone)\n    : ('Hello,\\n\\nI would like to express my interest in the ' + job.jobTitle + ' role at ' + job.company + ', where I bring hands-on experience in ' + personalizationLine + ', a core area for this position.\\n\\nPlease find my CV attached; I look forward to the possibility of speaking further.\\n\\nKind regards,\\n' + customerName + ' — ' + customerPhone);\n}\n\nconst keywordsUsed = matchedKeywords.join(', ');\n\nfunction flattenCv(c) {\n  const lines = [];\n  if (c.name) lines.push(c.name);\n  if (c.professionalTitle) lines.push(c.professionalTitle);\n  if (c.contactLine) lines.push(c.contactLine);\n  lines.push('');\n  if (c.tailoredSummary) { lines.push('Professional Summary'); lines.push(c.tailoredSummary); lines.push(''); }\n  if ((c.experience||[]).length) {\n    lines.push('Experience');\n    for (const e of c.experience) {\n      lines.push((e.title||'') + ' - ' + (e.company||'') + ' (' + (e.dates||'') + ')');\n      for (const b of (e.bullets||[])) lines.push('- ' + b);\n    }\n    lines.push('');\n  }\n  if ((c.education||[]).length) {\n    lines.push('Education');\n    for (const ed of c.education) lines.push((ed.degree||'') + ' - ' + (ed.institution||'') + (ed.details ? ' (' + ed.details + ')' : ''));\n    lines.push('');\n  }\n  if ((c.certifications||[]).length) { lines.push('Certifications'); for (const cert of c.certifications) lines.push('- ' + cert); lines.push(''); }\n  if ((c.skills||[]).length) { lines.push('Skills'); lines.push(c.skills.join(', ')); lines.push(''); }\n  if ((c.languages||[]).length) { lines.push('Languages'); lines.push(c.languages.join(', ')); }\n  return lines.join('\\n').trim();\n}\nconst tailoredCv = flattenCv(cv);\n\nlet qualityPassed = true;\nlet qualityReason = '';\nif (!cv.tailoredSummary || !(cv.experience||[]).length) { qualityPassed = false; qualityReason = 'CV missing summary or experience entries'; }\nelse if (!personalizationLine || personalizationLine.length < 8) { qualityPassed = false; qualityReason = 'personalizationLine too short or missing'; }\nelse if (matchedKeywords.length === 0) { qualityPassed = false; qualityReason = 'no matched keywords returned'; }\nelse if (/\\[.*?\\]/.test(personalizationLine) || /\\{\\{.*?\\}\\}/.test(personalizationLine)) { qualityPassed = false; qualityReason = 'leftover placeholder text detected'; }\n\nreturn { json: {\n  customerId: body.customerId,\n  customerName: customerName,\n  customerEmail: customerEmail,\n  cv: cv,\n  company: job.company,\n  jobTitle: job.jobTitle,\n  applyUrl: job.applyUrl,\n  source: job.source,\n  applyEmail: job.applyEmail,\n  tailoredCv: tailoredCv,\n  emailSubject: emailSubject,\n  emailBody: emailBody,\n  keywordsUsed: keywordsUsed,\n  cachedPdfBase64: cachedPdfBase64,\n  qualityPassed: qualityPassed,\n  qualityReason: qualityReason\n} };"
+      }
+    },
+    {
+      "id": "7f3d3ba9-fad0-45d0-9f20-4c150f1d03d5",
+      "name": "Quality OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        448,
+        -220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.qualityPassed }}",
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              },
+              "rightValue": true
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "57d67a2f-db4f-42f6-8e07-7c728bed1679",
+      "name": "Has Email?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        672,
+        -220
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.applyEmail }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "26e826cc-3047-4fad-ba35-5cd08c955ada",
+      "name": "Has Cached PDF?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        672,
+        0
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.cachedPdfBase64 }}",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "4ec84842-631c-4f01-b866-d9f515d1c450",
+      "name": "Decode Cached PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        100
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "language": "javaScript",
+        "jsCode": "return { json: $json, binary: { data: { data: $json.cachedPdfBase64, mimeType: 'application/pdf', fileName: 'cv.pdf', fileExtension: 'pdf' } } };"
+      }
+    }
+  ],
+  "connections": {
+    "Build CV HTML": {
+      "main": [
+        [
+          {
+            "node": "Convert CV to Attachment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert CV to Attachment": {
+      "main": [
+        [
+          {
+            "node": "Convert HTML to PDF (Gotenberg)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Convert HTML to PDF (Gotenberg)": {
+      "main": [
+        [
+          {
+            "node": "Fix PDF Filename",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fix PDF Filename": {
+      "main": [
+        [
+          {
+            "node": "Send Application Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Application Email": {
+      "main": [
+        [
+          {
+            "node": "Log Application - Sent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Quality Check & Build Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality Check & Build Email": {
+      "main": [
+        [
+          {
+            "node": "Quality OK?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Quality OK?": {
+      "main": [
+        [
+          {
+            "node": "Has Email?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Email?": {
+      "main": [
+        [
+          {
+            "node": "Has Cached PDF?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Cached PDF?": {
+      "main": [
+        [
+          {
+            "node": "Decode Cached PDF",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Build CV HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decode Cached PDF": {
+      "main": [
+        [
+          {
+            "node": "Fix PDF Filename",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
