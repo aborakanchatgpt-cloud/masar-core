@@ -16,6 +16,21 @@ Masar Core — نقاط نهاية إدارة الاكتشاف (B2، الدلي�
     R6: family_classified_pct_in_region — نسبة التصنيف الفعلية على الصفوف
         داخل النطاق فقط (كانت الحسابات القديمة تشمل كل الصفوف بلا تمييز).
 
+مراجعة B2 (الدورة الثانية، docs/reports/B2-review-2.md) — R10/R11/R12/R14:
+    R10: POST /admin/discovery/merge-locations-cleanup — تنظيف رجعي لمرة
+        واحدة: يدمج صفوف jobs المكرّرة فعليًا (نفس apply_url المطبّع لنفس
+        المصدر، أو نفس company+title+location حين لا يوجد url) بعد تغيّر
+        صيغة dedup_key (R10) — يُبقي أقدم صفّ ويُوحّد `locations`، ثم يعيد
+        حساب dedup_key لكل الصفوف الباقية بالصيغة الجديدة.
+    R11: POST /admin/discovery/recompute-region — يعيد حساب country_code/
+        out_of_region لكل صفوف jobs بمنطق compute_region المُصلَح (لا رجوع
+        لنص العنوان/الوصف إلا حين location_text فارغ تمامًا).
+    R12: family_classified_pct_in_region يستثني الآن العائلات المُستبعدة
+        عمدًا (sales_excluded) من المقام لا فقط من البسط — كانت تُحسب ضمن
+        "غير مصنّف" رغم استبعادها المتعمّد.
+    R14: dup_ratio_24h_in_region أُعيد تعريفه ليعتمد على apply_url المطبّع
+        (هوية الإعلان الحقيقية بعد R10) بدل تجميع (شركة+مسمى+مدينة) الأخشن.
+
     POST /admin/sources                 إضافة مصدر (تحقّق بجلب فوري)
     GET  /admin/sources?active=true|false  سرد المصادر
     POST /admin/sources/{id}/disable    تعطيل يدوي
@@ -25,12 +40,13 @@ Masar Core — نقاط نهاية إدارة الاكتشاف (B2، الدلي�
                                          بلا حذف صفوف — "لا نحذف من jobs أبدًا،
                                          نُعلّم فقط")
     POST /admin/sources/{id}/enable     إعادة تفعيل يدوي
-    GET  /admin/stats                   مقاييس الاكتشاف الكاملة (مُعاد بناؤها R3-R6)
+    GET  /admin/stats                   مقاييس الاكتشاف الكاملة (مُعاد بناؤها R3-R6، R12/R14)
     POST /admin/discovery/run-now       جولة فورية بالخلفية (لا تنتظر)
     POST /admin/discovery/seed-sources  إعادة بذر data/sources_seed.csv يدويًا
     POST /admin/discovery/backfill-locations  إعادة استخراج الموقع/المنطقة لكل الصفوف (R1، لمرة واحدة)
-    POST /admin/discovery/dedupe-cleanup      تنظيف يدوي لمرة واحدة لصفوف مكرّرة تراكمت
-                                         بسبب تغيّر صيغة dedup_key أثناء المراجعة (استثناء موثّق آخر)
+    POST /admin/discovery/dedupe-cleanup      تنظيف يدوي لمرة واحدة (تاريخي — راجع merge-locations-cleanup لما بعد R10)
+    POST /admin/discovery/merge-locations-cleanup  تنظيف رجعي لمرة واحدة لتكرار apply_url متعدد المواقع (R10)
+    POST /admin/discovery/recompute-region    إعادة حساب المنطقة الجغرافية لكل الصفوف (R11، لمرة واحدة)
     GET  /admin/quality-sample?n=50     عينة أحدث الوظائف بحقولها المستخرجة
     GET  /admin/dup-breakdown?limit=20  تشخيص أكثر مجموعات التكرار (داخل النطاق فقط الآن) خلال 24 ساعة
     GET  /admin/unclassified-sample?limit=30  أكثر عناوين الوظائف (داخل النطاق) غير المصنّفة عائليًا تكرارًا (R6)
@@ -48,12 +64,18 @@ from sqlalchemy import text
 from app import discovery
 from app.auth import require_admin_token
 from app.collectors.field_extractor import compute_region, extract_cities
+from app.collectors.normalizer import company_key, dedup_key, normalize_apply_url, normalize_text
 
 logger = logging.getLogger("masar.discovery_api")
 
 router = APIRouter(prefix="/admin", tags=["discovery"], dependencies=[Depends(require_admin_token)])
 
 BACKFILL_BATCH_SIZE = 500
+
+# مراجعة B2 R12: عائلات مُستبعدة عمدًا من مقياس "التصنيف الفعلي" — راجع
+# discovery.EXCLUDED_FAMILY_NAMES (نفس القيمة، مكرّرة هنا كسلسلة SQL جاهزة
+# لأن استعلامات هذا الملف نصّية مباشرة.
+_EXCLUDED_FAMILIES_SQL_LIST = "('sales_excluded')"
 
 
 class SourceCreateRequest(BaseModel):
@@ -169,7 +191,7 @@ async def disable_source(source_id: int) -> dict:
 async def purge_source_jobs(source_id: int) -> dict:
     """يحذف كل الوظائف التي أدرجها هذا المصدر تحديدًا من jobs — أداة يدوية
     استثنائية فقط (مثال تاريخي: Jobgether وكالة إعادة نشر ضخّمت dup_ratio_24h
-    زورًا قبل أن يُوجَد jobs.out_of_region أصلًا). بعد مراجعة B2 R3، الاستبعاد
+    زورًا قبل أن يُوجد jobs.out_of_region أصلًا). بعد مراجعة B2 R3، الاستبعاد
     القياسي لمصدر/وظيفة خارج النطاق الجغرافي يتم عبر العلم jobs.out_of_region
     (بلا حذف أي صفّ) — هذه النقطة تبقى فقط لحالات تلوّث بيانات استثنائية
     فعلية، ولا تُستدعى تلقائيًا من أي منطق بالنظام."""
@@ -183,18 +205,14 @@ async def purge_source_jobs(source_id: int) -> dict:
 
 @router.post("/discovery/dedupe-cleanup")
 async def dedupe_cleanup() -> dict:
-    """أداة يدوية لمرة واحدة — استثناء موثّق آخر على مبدأ "لا نحذف من jobs
-    أبدًا" (كـ purge-jobs أعلاه): تُصلح تراكم صفوف مكرّرة فعليًا نتج عن
-    تغيّر صيغة dedup_key عدّة مرات أثناء مراجعة B2 (من platform:external_id،
-    إلى sha1 بالمدينة المُستخرَجة عبر NLP وهي غير ثابتة بين الجلبات، إلى
-    sha1 بـ location_text الخام الثابت) — كل تغيّر صيغة يجعل
-    ON CONFLICT (dedup_key) يفشل في مطابقة الصفوف المُدرجة سابقًا بصيغة
-    مختلفة لنفس الوظيفة الحقيقية، فتتراكم نسخ لها. معيار "نفس الوظيفة" هنا
-    الأكثر موثوقية المتاح للتنظيف الرجعي: (company_name, title, url) متطابقة
-    حرفيًا (وليس dedup_key نفسه، وهو أصل المشكلة) — يُبقي أقدم صفّ (أصغر id)
-    لكل مجموعة ويحذف الباقي. لا تُستدعى تلقائيًا من أي منطق بالنظام؛ استدعاء
-    يدوي واحد كافٍِ بعد إصلاح discovery.py (استخدام location_text بدل city)
-    لتنظيف التراكم السابق فقط — الجولات القادمة لن تُنتج مكرّرات جديدة."""
+    """أداة يدوية لمرة واحدة (تاريخية — قبل R10) — استثناء موثّق آخر على مبدأ
+    "لا نحذف من jobs أبدًا" (كـ purge-jobs أعلاه): أصلحت تراكم صفوف مكرّرة
+    نتج عن تغيّر صيغة dedup_key من platform:external_id إلى sha1 بالمدينة
+    المُستخرَجة عبر NLP، إلى sha1 بـlocation_text الخام (R6). معيار "نفس
+    الوظيفة" هنا: (company_name, title, url) متطابقة حرفيًّا — يُبقي أقدم
+    صفّ ويحذف الباقي. **لمعالجة التكرار المتبقي الأكبر (تعدّد المواقع لنفس
+    apply_url — R10) استخدم POST /admin/discovery/merge-locations-cleanup
+    بدلًا من هذه النقطة.**"""
     engine = discovery.get_engine()
     with engine.begin() as conn:
         result = conn.execute(
@@ -212,10 +230,177 @@ async def dedupe_cleanup() -> dict:
             )
         )
     logger.warning(
-        "dedupe-cleanup: حُذف %s صف مكرّر (company_name+title+url متطابقة حرفيًا)",
+        "dedupe-cleanup: حُذف %s صف مكرّر (company_name+title+url متطابقة حرفيًّا)",
         result.rowcount,
     )
     return {"ok": True, "deleted": result.rowcount}
+
+
+@router.post("/discovery/merge-locations-cleanup")
+async def merge_locations_cleanup() -> dict:
+    """مراجعة B2 R10 — أداة يدوية لمرة واحدة (استثناء موثّق آخر على مبدأ
+    "لا نحذف من jobs أبدًا"، بنفس نمط dedupe-cleanup/purge-jobs): تدمج صفوف
+    jobs التي تبيّن أنها نفس الإعلان الحقيقي مكرّرًا (مرة لكل مدينة مذكورة
+    بالمصدر) بموجب هوية الإعلان الجديدة:
+
+        url متوفر:  (source_id, normalize_apply_url(url))
+        بلا url:    (company_key, normalize(title), normalize(location))
+
+    لكل مجموعة فيها أكثر من صفّ: تُبقي أقدم صفّ (أصغر id)، تُوحّد `locations`
+    (اتحاد كل قيم location/locations بالمجموعة)، وتحذف الباقي. ثم تعيد حساب
+    `dedup_key` لكل الصفوف الباقية بالصيغة الجديدة (apply_url-محورية) —
+    خطوة ضرورية لأن dedup_key المخزّن للصفوف الباقية لا يزال بصيغة قديمة.
+    لا تُستدعى تلقائيًا من أي منطق بالنظام؛ استدعاء يدوي واحد كافٍ بعد نشر
+    إصلاح discovery.py (R10) — الجولات القادمة لن تُنتج هذا النمط من
+    التكرار من الأساس (_group_raw_jobs_by_identity)."""
+    engine = discovery.get_engine()
+    groups_merged = 0
+    rows_deleted = 0
+
+    with engine.begin() as conn:
+        # المرحلة 1: صفوف بها url — تُجمّع حسب (source_id, normalize_apply_url).
+        url_rows = conn.execute(
+            text(
+                """
+                SELECT id, source_id, company_name, title, location, locations, url
+                FROM jobs WHERE url IS NOT NULL AND url <> ''
+                ORDER BY id
+                """
+            )
+        ).mappings().all()
+
+        url_groups: dict[tuple, list] = {}
+        for r in url_rows:
+            norm = normalize_apply_url(r["url"])
+            if not norm:
+                continue
+            url_groups.setdefault((r["source_id"], norm), []).append(r)
+
+        # المرحلة 2: صفوف بلا url — تُجمّع حسب (company_key, title, location).
+        nourl_rows = conn.execute(
+            text(
+                """
+                SELECT id, source_id, company_name, title, location, locations, url
+                FROM jobs WHERE url IS NULL OR url = ''
+                ORDER BY id
+                """
+            )
+        ).mappings().all()
+
+        nourl_groups: dict[tuple, list] = {}
+        for r in nourl_rows:
+            k = (company_key(r["company_name"]), normalize_text(r["title"]), normalize_text(r["location"]))
+            nourl_groups.setdefault(k, []).append(r)
+
+        for group_rows in list(url_groups.values()) + list(nourl_groups.values()):
+            if len(group_rows) <= 1:
+                continue
+            group_rows_sorted = sorted(group_rows, key=lambda r: r["id"])
+            keep = group_rows_sorted[0]
+            others = group_rows_sorted[1:]
+
+            locs: set[str] = set()
+            for r in group_rows_sorted:
+                existing = r["locations"]
+                if isinstance(existing, list):
+                    locs.update(x for x in existing if isinstance(x, str) and x)
+                if r["location"]:
+                    locs.add(r["location"])
+
+            conn.execute(
+                text("UPDATE jobs SET locations = :locs WHERE id = :id"),
+                {"locs": json.dumps(sorted(locs), ensure_ascii=False), "id": keep["id"]},
+            )
+            ids_to_delete = [o["id"] for o in others]
+            conn.execute(text("DELETE FROM jobs WHERE id = ANY(:ids)"), {"ids": ids_to_delete})
+            rows_deleted += len(ids_to_delete)
+            groups_merged += 1
+
+        # المرحلة 3: إعادة حساب dedup_key لكل الصفوف الباقية بالصيغة الجديدة
+        # (apply_url-محورية حين متوفر). دفعية (executemany) لتفادي عشرات
+        # آلاف الرحلات المنفصلة على قاعدة بيانات محلية بالحاوية نفسها.
+        remaining = conn.execute(
+            text("SELECT id, source_id, company_name, title, location, url FROM jobs")
+        ).mappings().all()
+        updates = [
+            {
+                "id": r["id"],
+                "k": dedup_key(r["company_name"], r["title"], r["location"], r["url"], source_id=r["source_id"]),
+            }
+            for r in remaining
+        ]
+        if updates:
+            conn.execute(text("UPDATE jobs SET dedup_key = :k WHERE id = :id"), updates)
+
+    logger.warning(
+        "merge-locations-cleanup: %s مجموعة دُمجت، %s صف مكرّر حُذف، %s dedup_key أُعيد حسابه",
+        groups_merged,
+        rows_deleted,
+        len(updates) if "updates" in locals() else 0,
+    )
+    return {
+        "ok": True,
+        "groups_merged": groups_merged,
+        "rows_deleted": rows_deleted,
+        "dedup_keys_recomputed": len(updates) if "updates" in locals() else 0,
+    }
+
+
+@router.post("/discovery/recompute-region")
+async def recompute_region() -> dict:
+    """مراجعة B2 R11 — عملية لمرة واحدة (لا جدولة تلقائية): يعيد حساب
+    country_code/out_of_region لكل صفوف jobs بمنطق compute_region المُصلَح
+    (location_text البنيوي فقط حين متوفرًا؛ لا رجوع لنص العنوان/الوصف إلا
+    حين location_text فارغ تمامًا) — يُصلح تلوّث jobs_in_region/jobs_sa الذي
+    رصدته B2-review-2 (17.1% من "داخل النطاق" مواقعها الخام غير خليجية
+    فعليًا بسبب ذكر عرَضي بالوصف كان يتجاوز location_text). لا تحذف ولا
+    تُدرج أي صفّ — تُحدّث فقط."""
+    engine = discovery.get_engine()
+    total = 0
+    changed_to_out = 0
+    changed_to_in = 0
+    last_id = 0
+    while True:
+        with engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    """
+                    SELECT id, title, location, description_snippet, out_of_region
+                    FROM jobs WHERE id > :last_id ORDER BY id LIMIT :batch
+                    """
+                ),
+                {"last_id": last_id, "batch": BACKFILL_BATCH_SIZE},
+            ).mappings().all()
+            if not rows:
+                break
+            for row in rows:
+                last_id = row["id"]
+                total += 1
+                description = row["description_snippet"] or ""
+                extra_text = f"{row['title'] or ''}\n{description[:300]}"
+                country_code, out_of_region = compute_region(row["location"] or None, extra_text)
+                if out_of_region != row["out_of_region"]:
+                    if out_of_region:
+                        changed_to_out += 1
+                    else:
+                        changed_to_in += 1
+                conn.execute(
+                    text("UPDATE jobs SET country_code = :cc, out_of_region = :oor WHERE id = :id"),
+                    {"cc": country_code, "oor": out_of_region, "id": row["id"]},
+                )
+
+    logger.info(
+        "recompute-region: %s صف مُعالَج، %s تحوّل لخارج النطاق، %s تحوّل لداخل النطاق",
+        total,
+        changed_to_out,
+        changed_to_in,
+    )
+    return {
+        "ok": True,
+        "total_rows": total,
+        "changed_to_out_of_region": changed_to_out,
+        "changed_to_in_region": changed_to_in,
+    }
 
 
 @router.post("/sources/{source_id}/enable")
@@ -253,10 +438,6 @@ async def stats() -> dict:
         jobs_sa = conn.execute(
             text("SELECT count(*) FROM jobs WHERE out_of_region = false AND country_code = 'SA'")
         ).scalar()
-        # gcc_share: من صفوف "داخل النطاق"، كم فعليًا لها country_code ضمن
-        # مجموعة الخليج الصريحة (وليس فقط ريموت-مع-ذكر-خليجي بلا country_code
-        # محدّد) — بالبناء يُفترض قريبًا من 100% لأن compute_region لا يُدخل
-        # صفًا بالنطاق أصلًا إلا إن كان خليجيًا أو ريموت+ذكر خليجي.
         gcc_country_hits = conn.execute(
             text(
                 """
@@ -283,22 +464,26 @@ async def stats() -> dict:
         ).all()
         jobs_new_24h_in_region_by_family = {r[0]: r[1] for r in by_family_rows}
 
-        # مراجعة B2 R6: نسبة التصنيف العائلي الفعلية — على كل صفوف "داخل
-        # النطاق" (وليس فقط آخر 24 ساعة) لأنها المقياس المطلوب لقبول B2
-        # (≥80% من الوظائف الخليجية مصنّفة عائليًا).
+        # مراجعة B2 R12: نسبة التصنيف الفعلية — على كل صفوف "داخل النطاق"
+        # باستثناء العائلات المُستبعدة عمدًا (sales_excluded) من المقام
+        # كليًا (لا تُحسب "غير مصنّفة" ولا "مصنّفة" — مُستبعدة فقط) بدل
+        # الصيغة القديمة التي كانت تحسبها ضمن "غير مصنّف" زورًا.
         family_row = conn.execute(
             text(
-                """
+                f"""
                 SELECT
-                    count(*) FILTER (WHERE family IS NOT NULL)::float AS classified,
+                    count(*) FILTER (
+                        WHERE family IS NOT NULL AND family NOT IN {_EXCLUDED_FAMILIES_SQL_LIST}
+                    )::float AS classified,
+                    count(*) FILTER (WHERE family IN {_EXCLUDED_FAMILIES_SQL_LIST})::float AS excluded,
                     count(*)::float AS total
                 FROM jobs WHERE out_of_region = false
                 """
             )
         ).first()
-        family_classified_pct_in_region = (
-            (family_row[0] / family_row[1]) if family_row and family_row[1] else 0.0
-        )
+        classified_n, excluded_n, total_n = family_row[0], family_row[1], family_row[2]
+        considered_n = total_n - excluded_n
+        family_classified_pct_in_region = (classified_n / considered_n) if considered_n else 0.0
 
         sources_active = conn.execute(text("SELECT count(*) FROM sources WHERE enabled = true")).scalar()
         disabled_rows = conn.execute(
@@ -311,9 +496,6 @@ async def stats() -> dict:
                 """
             )
         ).mappings().all()
-        # مصادر gcc قريبة من التعطيل التلقائي (جولة صفرية واحدة حتى الآن،
-        # ستُعطّل تلقائيًا بعد جولة صفرية ثانية متتالية) — مفيدة لمتابعة
-        # منطق R3(c) قبل وقوعه، لا بعده فقط.
         near_disable_rows = conn.execute(
             text(
                 """
@@ -327,34 +509,34 @@ async def stats() -> dict:
         ).mappings().all()
         companies_total = conn.execute(text("SELECT count(*) FROM companies")).scalar()
 
-        # dup_ratio_24h (مراجعة B2 R5): يُحسب الآن فقط على صفوف داخل النطاق —
-        # كان سابقًا يشمل كل صفوف آخر 24 ساعة بلا تمييز جغرافي، فيضخّمه ضجيج
-        # مصادر عالمية لا علاقة لها بالسوق المستهدف. مفتاح التطابق (شركة+
-        # مسمى+مدينة/موقع خام) تقريب مستقل عن dedup_key نفسه — يكشف أي تسرّب
-        # فعلي رغم منطق ON CONFLICT (dedup_key).
+        # dup_ratio_24h_in_region (مراجعة B2 R14 — يستبدل صيغة R5 الأخشن):
+        # هوية الإعلان = apply_url المطبّع (نفس مفهوم dedup_key بعد R10)
+        # حين متوفر، وإلا (شركة+مسمى+موقع) مطبّعة كملاذ أخير. هذا يطابق
+        # فعليًا ما يمنعه الآن القيد uq_jobs_dedup_key (بعد R10 وتنظيف
+        # merge-locations-cleanup)، فيُفترض أن يقترب من الصفر بعد التنظيف.
         dup_row = conn.execute(
             text(
                 """
-                WITH recent AS (
-                    SELECT lower(regexp_replace(coalesce(company_name, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi'))
-                           || '::' ||
-                           lower(regexp_replace(coalesce(title, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi'))
-                           || '::' ||
-                           lower(regexp_replace(coalesce(nullif(city, ''), location, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi')) AS k
-                    FROM jobs WHERE first_seen_at >= :since AND out_of_region = false
+                WITH scoped AS (
+                    SELECT id,
+                           COALESCE(
+                               NULLIF(regexp_replace(lower(trim(url)), '\\?.*$|#.*$', ''), ''),
+                               'noURL:' || lower(regexp_replace(trim(coalesce(company_name,'')), '\\s+', ' ', 'g')) || '|' ||
+                                          lower(regexp_replace(trim(title), '\\s+', ' ', 'g')) || '|' ||
+                                          lower(regexp_replace(trim(coalesce(location,'')), '\\s+', ' ', 'g'))
+                           ) AS identity_key
+                    FROM jobs
+                    WHERE out_of_region = false AND first_seen_at >= :since
                 ),
-                counted AS (
-                    SELECT k, count(*) AS n FROM recent GROUP BY k
-                )
+                grp AS (SELECT identity_key, COUNT(*) c FROM scoped GROUP BY identity_key)
                 SELECT
-                    COALESCE(SUM(GREATEST(n - 1, 0)), 0)::float AS dup_rows,
-                    COALESCE(SUM(n), 0)::float AS total_rows
-                FROM counted
+                    (SELECT COUNT(*) FROM scoped) AS total_in_region_24h,
+                    COALESCE((SELECT SUM(c) - COUNT(*) FROM grp WHERE c > 1), 0)::float AS excess_duplicate_rows
                 """
             ),
             {"since": since_24h},
         ).first()
-        dup_rows, total_rows = dup_row[0], dup_row[1]
+        total_rows, dup_rows = dup_row[0], dup_row[1]
         dup_ratio_24h_in_region = (dup_rows / total_rows) if total_rows else 0.0
 
         last_round = conn.execute(
@@ -384,6 +566,7 @@ async def stats() -> dict:
         "jobs_new_24h": jobs_new_24h,
         "jobs_new_24h_in_region_by_family": jobs_new_24h_in_region_by_family,
         "family_classified_pct_in_region": round(family_classified_pct_in_region, 4),
+        "family_excluded_in_region": int(excluded_n),
         "sources_active": sources_active,
         "sources_disabled": [dict(r) for r in disabled_rows],
         "sources_near_gcc_auto_disable": [dict(r) for r in near_disable_rows],
@@ -462,12 +645,10 @@ async def backfill_locations() -> dict:
     تمشي على كل صفوف jobs دفعة دفعة (BACKFILL_BATCH_SIZE)، تعيد استخراج
     location/city من raw_json المخزّن حين تكون فارغة (يُصلح فعليًا صفوف
     Workable التي رصدتها المراجعة)، ثم تعيد حساب country_code/out_of_region
-    لكل صفّ (المطلوب أصلًا لأن الترحيل 0003 وضع كل الصفوف القديمة على
-    out_of_region=true افتراضيًا حتى تُعاد فعليًا هنا)، وأيضًا تعيد حساب family
-    لأي صفّ family IS NULL (R6: المعجم تَوسّع بعد إدراج هذه الصفوف أصلًا،
-    فالإدراج التاريخي لم يستفد من العائلات السبع الجديدة ولا من مطابقة حدود
-    الكلمة — بلا هذه الخطوة تبقى نسبة التصنيف على الصفوف القديمة صفرًا تقريبًا
-    رغم توسعة data/taxonomy_local.yaml). لا تحذف ولا تُدرج أي صفّ — تُحدّث فقط."""
+    لكل صفّ، وأيضًا تعيد حساب family لأي صفّ family IS NULL. لا تحذف ولا
+    تُدرج أي صفّ — تُحدّث فقط. لإعادة حساب المنطقة فقط لكل الصفوف (بلا
+    استخراج location/family) بعد إصلاح R11، استخدم
+    POST /admin/discovery/recompute-region بدل هذه النقطة (أخف وأسرع)."""
     engine = discovery.get_engine()
     total = 0
     location_backfilled = 0
@@ -565,9 +746,9 @@ async def backfill_locations() -> dict:
 
 @router.get("/dup-breakdown")
 async def dup_breakdown(limit: int = Query(default=20, ge=1, le=200)) -> list[dict]:
-    """تشخيص dup_ratio_24h_in_region (مراجعة B2 R5: داخل النطاق فقط الآن):
-    يُرجع أكثر مجموعات (شركة+مسمى+مدينة) المطبّعة تكرارًا خلال آخر 24 ساعة،
-    مع اسم المصدر ومعرّفه."""
+    """تشخيص dup_ratio_24h_in_region — مراجعة B2 R14: يُرجع الآن أكثر
+    مجموعات (source_id + apply_url مطبّع، أو company+title+location حين لا
+    يوجد url) تكرارًا خلال آخر 24 ساعة، مطابقًا لتعريف dup_ratio الجديد."""
     engine = discovery.get_engine()
     since_24h = datetime.now(timezone.utc) - timedelta(hours=24)
     with engine.connect() as conn:
@@ -575,12 +756,13 @@ async def dup_breakdown(limit: int = Query(default=20, ge=1, le=200)) -> list[di
             text(
                 """
                 WITH recent AS (
-                    SELECT j.source_id, s.source_type, c.name AS company_src,
-                           lower(regexp_replace(coalesce(j.company_name, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi'))
-                           || '::' ||
-                           lower(regexp_replace(coalesce(j.title, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi'))
-                           || '::' ||
-                           lower(regexp_replace(coalesce(nullif(j.city, ''), j.location, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi')) AS k
+                    SELECT j.id, j.source_id, s.source_type, c.name AS company_src,
+                           COALESCE(
+                               NULLIF(regexp_replace(lower(trim(j.url)), '\\?.*$|#.*$', ''), ''),
+                               'noURL:' || lower(regexp_replace(trim(coalesce(j.company_name,'')), '\\s+', ' ', 'g')) || '|' ||
+                                          lower(regexp_replace(trim(j.title), '\\s+', ' ', 'g')) || '|' ||
+                                          lower(regexp_replace(trim(coalesce(j.location,'')), '\\s+', ' ', 'g'))
+                           ) AS k
                     FROM jobs j
                     JOIN sources s ON s.id = j.source_id
                     JOIN companies c ON c.id = s.company_id
@@ -603,9 +785,9 @@ async def dup_breakdown(limit: int = Query(default=20, ge=1, le=200)) -> list[di
 async def quality_sample(n: int = Query(default=50, ge=1, le=200), in_region_only: bool = Query(default=False)) -> list[dict]:
     engine = discovery.get_engine()
     sql = """
-        SELECT j.id, c.name AS company, j.title, j.city, j.location, j.country_code,
-               j.out_of_region, j.years_min, j.seniority, j.saudi_only, j.family,
-               j.skills, j.apply_mode, j.url, j.first_seen_at, j.description_snippet
+        SELECT j.id, c.name AS company, j.title, j.city, j.location, j.locations,
+               j.country_code, j.out_of_region, j.years_min, j.seniority, j.saudi_only,
+               j.family, j.skills, j.apply_mode, j.url, j.first_seen_at, j.description_snippet
         FROM jobs j JOIN companies c ON c.id = j.company_id
     """
     params: dict = {"n": n}
@@ -619,9 +801,9 @@ async def quality_sample(n: int = Query(default=50, ge=1, le=200), in_region_onl
 
 @router.get("/unclassified-sample")
 async def unclassified_sample(limit: int = Query(default=30, ge=1, le=200)) -> list[dict]:
-    """مراجعة B2 R6: أكثر عناوين الوظائف (داخل النطاق فقط) غير المصنّفة
-    عائليًا تكرارًا — يُستخدم لبناء/توسعة data/taxonomy_local.yaml بدل تخمين
-    الكلمات المفتاحية الناقصة."""
+    """مراجعة B2 R6/R12: أكثر عناوين الوظائف (داخل النطاق، باستثناء العائلات
+    المُستبعدة عمدًا) غير المصنّفة عائليًا تكرارًا — يُستخدم لبناء/توسيع
+    data/taxonomy_local.yaml بدل تخمين الكلمات المفتاحية الناقصة."""
     engine = discovery.get_engine()
     with engine.connect() as conn:
         rows = conn.execute(
