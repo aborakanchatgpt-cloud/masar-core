@@ -19,16 +19,15 @@ company_id هو المعرّف الظاهر بصفحة الوظائف العام
 """
 from __future__ import annotations
 
-import httpx
+from app.collectors.http_client import get as http_get
 
 SMARTRECRUITERS_POSTINGS_URL = "https://api.smartrecruiters.com/v1/companies/{company}/postings"
-_HEADERS = {"User-Agent": "MasarCoreBot/0.1 (+contact via masar)"}
 
 
 def fetch_jobs(company_id: str, timeout: float = 20.0) -> list[dict]:
     """يرجع قائمة وظائف خام من SmartRecruiters لشركة واحدة (company_id)."""
     url = SMARTRECRUITERS_POSTINGS_URL.format(company=company_id)
-    response = httpx.get(url, timeout=timeout, headers=_HEADERS)
+    response = http_get(url, timeout=timeout)
     response.raise_for_status()
     payload = response.json()
 
