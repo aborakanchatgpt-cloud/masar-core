@@ -16,6 +16,18 @@
 بمستوى الأقدمية (كانت "intern" تُطابِق داخل "internal"/"international") —
 كل الكلمات المفتاحية هنا الآن تُطابَق بحدود كلمة صريحة (`\\b...\\b`) عبر
 تعابير نمطية مُجمَّعة مسبقًا، لا بحث سلسلة فرعية (`in`).
+
+مراجعة B2 R11 (docs/reports/B2-review-2.md): `extract_country_code()` كان
+يلجأ لفحص نص إضافي (عنوان+أول 300 حرف من الوصف) كلما لم يطابق location_text
+دولة خليجية معروفة — **بلا شرط أن يكون location_text فارغًا أصلًا**. هذا
+سمح لذكر عرَضي بالوصف (فقرة "نغطي السعودية والإمارات وقطر..." بوكالات توظيف
+عن مناطق عملها العامة، أو لاحقة عنوان "(Saudi Arabia)" تصف "العميل" لا مكان
+العمل الفعلي) بتصنيف وظيفة مقرّها الحقيقي سنغافورة/رومانيا كـ"داخل الخليج"
+زورًا (17.1% من الصفوف "داخل النطاق" تبيّن تلوّثها هكذا). **الإصلاح: النص
+الإضافي (عنوان/وصف) لا يُستخدم إطلاقًا إلا حين location_text فارغًا تمامًا
+(None أو سلسلة فارغة)** — وجود location_text ولو لم يُطابق أي دولة خليجية
+معروفة يُعتبر إشارة بنيوية كافية بذاتها (مكان غير خليجي)، ولا يجوز لنص وصفي
+أن يتجاوزها.
 """
 from __future__ import annotations
 
@@ -170,7 +182,7 @@ def extract_cities(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# الدولة/المنطقة — مراجعة B2 R3/R4: تحديد داخل/خارج نطاق الخليج
+# الدولة/المنطقة — مراجعة B2 R3/R4، ثم R11: تحديد داخل/خارج نطاق الخليج
 # ---------------------------------------------------------------------------
 
 GCC_COUNTRY_CODES = {"SA", "AE", "QA", "KW", "BH", "OM"}
@@ -202,44 +214,82 @@ _CITY_TO_COUNTRY: dict[str, str] = {
 
 _REMOTE_RE = re.compile(r"\bremote\b", re.IGNORECASE)
 
+# اكتشاف إضافي (غير موثَّق صراحةً بـR11 لكنه اكتُشف أثناء كتابة اختبارات
+# الانحدار الخاصة به): المطابقة السابقة كانت `name in lowered` — سلسلة فرعية
+# بلا حدود كلمة — وهذا يُنتج تطابقًا كاذبًا صريحًا: "romania".find("oman") لا
+# يُعيد -1 لأن "oman" سلسلة فرعية حرفية داخل "r-oman-ia"! هذا كان على الأرجح
+# السبب الفعلي (لا مجرد رجوع extra_text) وراء المثال الذي رصدته المراجعة
+# نفسها (Elastic بموقع "Romania" و country_code="OM") — الخلل يقع في فرع
+# location_text مباشرة، لا في فرع extra_text فقط. الإصلاح: كل اسم دولة/مدينة
+# يُقارَن الآن بحدود كلمة صريحة (`\b...\b`) عبر أنماط مُجمَّعة مسبقًا (نفس
+# أسلوب _SENIORITY_PATTERNS أعلاه)، مرتّبة بالطول تنازليًا حتى تُطابق العبارة
+# الأطول أولًا ("kingdom of saudi arabia" قبل "saudi arabia" مثلًا، وإن لم
+# يكن يؤثر عمليًا هنا لأن أول تطابق فقط هو المستخدَم دومًا بالحلقة).
+_COUNTRY_NAME_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (code, re.compile(r"\b" + re.escape(name) + r"\b", re.IGNORECASE))
+    for name, code in sorted(_COUNTRY_NAME_TO_CODE.items(), key=lambda kv: len(kv[0]), reverse=True)
+]
+_CITY_NAME_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (code, re.compile(r"\b" + re.escape(city) + r"\b", re.IGNORECASE))
+    for city, code in sorted(_CITY_TO_COUNTRY.items(), key=lambda kv: len(kv[0]), reverse=True)
+]
+
 
 def extract_country_code(location_text: str | None, extra_text: str | None = None) -> str | None:
-    """يستنتج رمز الدولة (ISO حرفين) من نص الموقع الخام أولًا (رمز ملحق،
-    اسم دولة صريح، ثم مدينة معروفة)، ثم من نص إضافي (عنوان/وصف) كملاذ أخير.
-    يُرجع أي دولة (ليس الخليج فقط) — الفلترة بالخليج تتم بدالة منفصلة."""
+    """يستنتج رمز الدولة (ISO حرفين) من نص الموقع الخام (الحقل البنيوي)
+    حصرًا حين متوفرًا. مراجعة B2 R11: `extra_text` (عنوان/وصف) لا يُستخدم
+    **إلا حين location_text فارغًا تمامًا (None أو سلسلة فارغة)** — إن كان
+    location_text موجودًا ولم يُطابق أي دولة/مدينة خليجية معروفة، تُعاد None
+    مباشرة (يعني: مكان معروف لكنه غير خليجي) بلا أي محاولة لتجاوزه بذكر
+    عرَضي بالوصف. مطابقة أسماء الدول/المدن بحدود كلمة صريحة (`\\b...\\b`) لا
+    سلسلة فرعية — تمنع تطابقًا كاذبًا مثل "oman" داخل "Romania". يُرجع أي
+    دولة (ليس الخليج فقط عبر الرمز الملحق) — الفلترة بالخليج تتم بدالة
+    `compute_region` المنفصلة."""
     if location_text:
         m = _COUNTRY_CODE_SUFFIX_RE.search(location_text)
         if m:
             return m.group(1).upper()
-        lowered = location_text.lower()
-        for name, code in _COUNTRY_NAME_TO_CODE.items():
-            if name in lowered or name in location_text:
+        for code, pattern in _COUNTRY_NAME_PATTERNS:
+            if pattern.search(location_text):
                 return code
-        for city, code in _CITY_TO_COUNTRY.items():
-            if city in location_text:
+        for code, pattern in _CITY_NAME_PATTERNS:
+            if pattern.search(location_text):
                 return code
+        # location_text موجود لكن لا يطابق أي إشارة خليجية معروفة — إشارة
+        # بنيوية كافية بذاتها (R11): لا نلجأ لـextra_text إطلاقًا.
+        return None
     if extra_text:
-        lowered_extra = extra_text.lower()
-        for name, code in _COUNTRY_NAME_TO_CODE.items():
-            if name in lowered_extra or name in extra_text:
+        for code, pattern in _COUNTRY_NAME_PATTERNS:
+            if pattern.search(extra_text):
                 return code
-        for city, code in _CITY_TO_COUNTRY.items():
-            if city in extra_text:
+        for code, pattern in _CITY_NAME_PATTERNS:
+            if pattern.search(extra_text):
                 return code
     return None
 
 
 def compute_region(location_text: str | None, extra_text: str | None = None) -> tuple[str | None, bool]:
     """يرجع (country_code_أو_None, out_of_region). القاعدة المحافظة (مراجعة
-    B2 R3/R4): كل دولة غير معروفة (None) أو غير خليجية = خارج النطاق، إلا
-    لو ذُكرت كلمة "remote" صراحة مع دولة خليجية بنفس النص ("Remote - Saudi
-    Arabia" مثلًا)."""
+    B2 R3/R4، مُحكَمة أكثر بـR11): كل دولة غير معروفة (None) أو غير خليجية
+    = خارج النطاق. الاستثناء الوحيد ("Remote - Saudi Arabia" مثلًا) يُفحَص
+    ضمن location_text نفسه فقط حين متوفرًا — لا ضمن الوصف — حتى لا تُفعِّل
+    كلمة "remote" بالوصف مع ذكر عرَضي لدولة خليجية بفقرة أخرى الاستثناءَ
+    زورًا. extra_text (عنوان/وصف) لا يُستخدم بأي مسار هنا إلا حين
+    location_text فارغًا تمامًا (يشمل مسار "remote" أيضًا)."""
     code = extract_country_code(location_text, extra_text)
     if code in GCC_COUNTRY_CODES:
         return code, False
-    combined = " ".join(filter(None, [location_text, extra_text]))
-    if combined and _REMOTE_RE.search(combined):
-        remote_code = extract_country_code(combined)
+
+    if location_text:
+        if _REMOTE_RE.search(location_text):
+            remote_code = extract_country_code(location_text)
+            if remote_code in GCC_COUNTRY_CODES:
+                return remote_code, False
+        return code, True
+
+    # location_text فارغ تمامًا — الملاذ الأخير الوحيد لاستخدام extra_text.
+    if extra_text and _REMOTE_RE.search(extra_text):
+        remote_code = extract_country_code(None, extra_text)
         if remote_code in GCC_COUNTRY_CODES:
             return remote_code, False
     return code, True

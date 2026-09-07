@@ -5,17 +5,26 @@
 مراجعة B2 (docs/reports/B2-review.md) R5: أُعيد تعريف `dedup_key` بالكامل.
 الصيغة القديمة كانت تُفضِّل معرّف المنصّة الخام (platform:external_id) حين
 توفّر، وهو فريد بطبيعته لكنه **لا يكتشف تكرارًا حقيقيًا** (نفس الوظيفة
-منشورة مرتين بمعرّفين مختلفين على نفس المنصّة أو منصّتين). الصيغة الجديدة:
+منشورة مرتين بمعرّفين مختلفين على نفس المنصّة أو منصّتين).
 
-    sha1(company_key + '|' + normalize(title) + '|' + normalize(city) + '|'
-         + مسار رابط التقديم بلا سلسلة الاستعلام (query string))
+مراجعة B2 R10 (docs/reports/B2-review-2.md): صيغة R5 (company+title+city+
+apply_url_path) كانت لا تزال تُنتج تكرارًا حقيقيًا بنسبة ~55% — لأن بعض
+مصادر Workable (وكالات توظيف مثل Eram Talent/Hudson Manpower) تُرجع نفس
+الوظيفة (نفس apply_url) مرارًا ضمن استجابة واحدة، مرة لكل مدينة "مرشَّحة"،
+وبما أن city كانت جزءًا من المفتاح، كل مدينة أنتجت dedup_key مختلفًا لنفس
+الإعلان الحقيقي. **الصيغة الجديدة (R10): هوية الإعلان = apply_url وحده حين
+متوفر** — نفس رابط التقديم = نفس الطلب الفعلي بصرف النظر عمّا يُذكر بجانبه
+من مدن. تعدّد المواقع لنفس apply_url يُعبَّر عنه بحقل `jobs.locations`
+(مصفوفة JSON تُجمَّع بواسطة discovery.py)، لا بصفوف منفصلة.
 
-تضمين مسار الرابط (بلا `?utm_source=...` إلخ) يُفرِّق صحيحًا بين وظيفتين
-حقيقيتين مختلفتين بنفس (شركة+مسمى+مدينة) — حالة شائعة بمصادر عالمية كبرى
-تفتح نفس المسمى بأكثر من مكتب — مع استمرار تجميع أي تكرار حرفي فعلي (نفس
-الرابط، أو بلا رابط إطلاقًا مع تطابق تام بباقي الحقول) عند الإدراج مباشرةً
-عبر `ON CONFLICT (dedup_key) DO NOTHING`، بدل الاكتفاء برصده لاحقًا بمقياس
-`dup_ratio_24h` التقريبي فقط.
+    apply_url متوفر:  sha1(source_id + '|' + normalize_apply_url(apply_url))
+    بلا apply_url:    sha1(company_key + '|' + normalize(title) + '|' + normalize(location))
+
+تضمين source_id (لا company) مع apply_url يمنع تصادمًا نظريًا بين مصدرين
+مختلفين لو تطابق رابطاهما المطبَّعان صدفة، بلا حاجة لمقارنة اسم الشركة (الذي
+قد يُكتب بصيغ مختلفة قليلاً عبر مصادر مختلفة لنفس apply_url أصلاً غير وارد
+عمليًا). الرجوع لـ(شركة+مسمى+موقع) يبقى فقط للصفوف بلا apply_url إطلاقًا
+(أقلية — SmartRecruiters غالبًا).
 """
 from __future__ import annotations
 
@@ -60,11 +69,31 @@ def company_key(company_name: str | None) -> str:
     return " ".join(tokens) if tokens else normalized
 
 
+def normalize_apply_url(url: str | None) -> str:
+    """مراجعة B2 R10: يطبّع رابط التقديم لهوية الإعلان الحقيقية —
+    مخطط+مضيف+مسار فقط (بلا سلسلة استعلام `?...` ولا جزء `#...`)، مع تصغير
+    حروف المخطط والمضيف (غير حسّاسة لحالة الأحرف بمعيار URL) مع إبقاء
+    المسار كما هو (معرّفات الوظائف حسّاسة لحالة الأحرف غالبًا). يُرجع سلسلة
+    فارغة إن لم يوجد رابط صالح (لا مضيف)، ليعتمد `dedup_key` عندها على
+    الملاذ الأخير (شركة+مسمى+موقع)."""
+    if not url or not url.strip():
+        return ""
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return ""
+    netloc = parts.netloc.lower()
+    if not netloc:
+        return ""
+    scheme = (parts.scheme or "https").lower()
+    path = parts.path or ""
+    return f"{scheme}://{netloc}{path}"
+
+
 def _url_path_no_query(url: str | None) -> str:
-    """مسار الرابط فقط (بلا مخطّط/مضيف/سلسلة استعلام/جزء) — حتى لا تُعدّ
-    نفس الوظيفة (نفس المسار) مكرَّرة زورًا إن اختلفت معاملات تتبّع
-    (`?utm_source=...`) بين جلبتين، ولا تُعدّ وظيفتان مختلفتان (مسارين
-    مختلفين فعليًا) نفس الوظيفة."""
+    """محفوظة لتوافق الاختبارات القديمة/أي استدعاء خارجي — مسار الرابط فقط
+    بلا مخطّط/مضيف/سلسلة استعلام/جزء. لم تعد تُستخدَم داخل `dedup_key` نفسه
+    بعد R10 (اُستبدلت بـ`normalize_apply_url`)."""
     if not url:
         return ""
     try:
@@ -78,20 +107,25 @@ def dedup_key(
     job_title: str | None,
     city: str | None = None,
     apply_url: str | None = None,
+    source_id: int | str | None = None,
 ) -> str:
-    """مفتاح كشف التكرار (مراجعة B2 R5):
+    """مفتاح كشف التكرار — هوية الإعلان الحقيقية (مراجعة B2 R10):
 
-        sha1(company_key(company) + '|' + normalize(title) + '|' +
-             normalize(city) + '|' + مسار apply_url بلا سلسلة الاستعلام)
+        apply_url متوفر:  sha1(source_id + '|' + normalize_apply_url(apply_url))
+        بلا apply_url:    sha1(company_key + '|' + normalize(title) + '|' + normalize(city))
 
-    خرج ثابت الطول دائمًا (40 حرف hex) — يبقى ضمن حد 600 حرف لعمود
-    jobs.dedup_key بمسافة واسعة."""
-    base = "|".join(
-        [
-            company_key(company_name),
-            normalize_text(job_title),
-            normalize_text(city),
-            _url_path_no_query(apply_url),
-        ]
-    )
+    `city` هنا يقبل أي نص موقع خام (location_text) — الاسم محفوظ للتوافق مع
+    استدعاءات قائمة. خرج ثابت الطول دائمًا (40 حرف hex)."""
+    norm_url = normalize_apply_url(apply_url)
+    if norm_url:
+        prefix = "" if source_id is None else str(source_id)
+        base = f"{prefix}|{norm_url}"
+    else:
+        base = "|".join(
+            [
+                company_key(company_name),
+                normalize_text(job_title),
+                normalize_text(city),
+            ]
+        )
     return hashlib.sha1(base.encode("utf-8")).hexdigest()
