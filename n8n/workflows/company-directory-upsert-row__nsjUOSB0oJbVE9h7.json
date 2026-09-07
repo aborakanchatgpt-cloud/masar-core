@@ -1,0 +1,14 @@
+{
+  "name": "Company Directory - Upsert Row",
+  "nodes": [
+    {"id":"1f8fc891-a939-4cdd-92a6-e7e7789aa85a","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"company-directory-upsert","authentication":"none","responseMode":"onReceived","options":{"responseData":"OK"}},"webhookId":"002355a5-589d-4895-bd76-6120ad4600c7"},
+    {"id":"5dc226a3-4e29-450b-8559-3d55a1cd61df","name":"Normalize Row","type":"n8n-nodes-base.code","typeVersion":2,"position":[224,0],"parameters":{"mode":"runOnceForEachItem","language":"javaScript","jsCode":"const b = $json.body || {};\nconst nowIso = new Date().toISOString();\nreturn { json: {\n  companyName: (b.companyName || '').trim(),\n  fieldOfWork: b.fieldOfWork || '',\n  applyEmail: b.applyEmail || '',\n  emailStatus: b.emailStatus || 'not_searched',\n  emailSource: b.emailSource || '',\n  lastEmailCheckedAt: b.lastEmailCheckedAt || '',\n  sampleJobTitles: b.sampleJobTitles || '',\n  lastSeenAt: b.lastSeenAt || nowIso\n} };"}},
+    {"id":"2e27b159-a17a-4fa0-bc37-75b733731bfc","name":"Upsert Company","type":"n8n-nodes-base.dataTable","typeVersion":1.1,"position":[448,0],"parameters":{"resource":"row","operation":"upsert","dataTableId":{"__rl":true,"mode":"id","value":"GB1UglRypwgpjEZt","cachedResultName":"Company Directory"},"matchType":"allConditions","filters":{"conditions":[{"keyName":"companyName","condition":"eq","keyValue":"={{ $json.companyName }}"}]},"columns":{"mappingMode":"defineBelow","value":{"fieldOfWork":"={{ $json.fieldOfWork }}","applyEmail":"={{ $json.applyEmail }}","emailStatus":"={{ $json.emailStatus }}","emailSource":"={{ $json.emailSource }}","lastEmailCheckedAt":"={{ $json.lastEmailCheckedAt }}","sampleJobTitles":"={{ $json.sampleJobTitles }}","lastSeenAt":"={{ $json.lastSeenAt }}","companyName":"={{ $json.companyName }}"}},"options":{}}}
+  ],
+  "connections": {
+    "Webhook": {"main": [[{"node":"Normalize Row","type":"main","index":0}]]},
+    "Normalize Row": {"main": [[{"node":"Upsert Company","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}

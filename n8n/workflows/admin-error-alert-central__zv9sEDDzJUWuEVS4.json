@@ -1,0 +1,14 @@
+{
+  "name": "Admin - Error Alert (Central)",
+  "nodes": [
+    {"id":"dc162448-de21-4cbb-b29e-5f197413dfb0","name":"Error Trigger","type":"n8n-nodes-base.errorTrigger","typeVersion":1,"position":[0,0],"parameters":{}},
+    {"id":"83495df5-13f5-441d-8033-5d46d539f8a0","name":"Format Alert","type":"n8n-nodes-base.code","typeVersion":2,"position":[224,0],"parameters":{"mode":"runOnceForEachItem","language":"javaScript","jsCode":"const e = $json;\nconst wfName = (e.workflow && e.workflow.name) || 'غير معروف';\nconst nodeName = (e.execution && e.execution.lastNodeExecuted) || 'غير معروف';\nconst errMsg = (e.execution && e.execution.error && e.execution.error.message) || 'لا توجد تفاصيل';\nconst execUrl = (e.execution && e.execution.url) || '';\nconst now = new Date().toISOString();\nlet text = '🚨 فشل تنفيذ أتمتة' + '\n\n' + '📂 المسار: ' + wfName + '\n' + '🔧 العقدة: ' + nodeName + '\n' + '❌ الخطأ: ' + errMsg + '\n' + '🕒 الوقت: ' + now;\nif (execUrl) { text = text + '\n🔗 ' + execUrl; }\nreturn { json: { text } };"}},
+    {"id":"98bff894-4f1e-47be-9c81-a9e8ef394100","name":"Send Error Alert","type":"n8n-nodes-base.telegram","typeVersion":1.2,"position":[448,0],"parameters":{"resource":"message","operation":"sendMessage","chatId":"677475661","text":"={{ $json.text }}","additionalFields":{"appendAttribution":false}},"webhookId":"3876032b-d114-44b9-b214-7399e6e394ac","credentials":{"telegramApi":{"name":"Telegram Admin Bot"}}}
+  ],
+  "connections": {
+    "Error Trigger": {"main": [[{"node":"Format Alert","type":"main","index":0}]]},
+    "Format Alert": {"main": [[{"node":"Send Error Alert","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}

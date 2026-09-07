@@ -1,0 +1,14 @@
+{
+  "name": "CV Variants - Upsert Row",
+  "nodes": [
+    {"id":"dd93c304-4f2d-4c23-92a6-36940debd2d4","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"cv-variants-upsert","authentication":"none","responseMode":"onReceived","options":{"responseData":"OK"}},"webhookId":"ceabf258-8e2b-4fc9-a555-ff197d13a2a7"},
+    {"id":"05dc6ef7-ce6c-48ca-abbd-ba9aa41ec351","name":"Normalize Row","type":"n8n-nodes-base.code","typeVersion":2,"position":[224,0],"parameters":{"mode":"runOnceForEachItem","language":"javaScript","jsCode":"const b = $json.body || {};\nreturn { json: {\n  customerId: b.customerId,\n  clusterId: (b.clusterId || '').trim(),\n  language: (b.language || '').trim(),\n  representativeDesires: b.representativeDesires || '',\n  cvJson: b.cvJson || '',\n  pdfBase64: b.pdfBase64 || '',\n  generatedAt: b.generatedAt || null\n} };"}},
+    {"id":"b145db4f-e66b-4025-8a63-0bca58388b33","name":"Upsert Variant","type":"n8n-nodes-base.dataTable","typeVersion":1.1,"position":[448,0],"parameters":{"resource":"row","operation":"upsert","dataTableId":{"__rl":true,"mode":"id","value":"Pf9X1L2vRygzpK8H","cachedResultName":"CV Variants"},"matchType":"allConditions","filters":{"conditions":[{"keyName":"customerId","condition":"eq","keyValue":"={{ $json.customerId }}"},{"keyName":"clusterId","condition":"eq","keyValue":"={{ $json.clusterId }}"},{"keyName":"language","condition":"eq","keyValue":"={{ $json.language }}"}]},"columns":{"mappingMode":"defineBelow","value":{"customerId":"={{ $json.customerId }}","clusterId":"={{ $json.clusterId }}","language":"={{ $json.language }}","representativeDesires":"={{ $json.representativeDesires }}","cvJson":"={{ $json.cvJson }}","generatedAt":"={{ $json.generatedAt }}","pdfBase64":"={{ $json.pdfBase64 }}"}},"options":{}}}
+  ],
+  "connections": {
+    "Webhook": {"main": [[{"node":"Normalize Row","type":"main","index":0}]]},
+    "Normalize Row": {"main": [[{"node":"Upsert Variant","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}

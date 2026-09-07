@@ -1,0 +1,14 @@
+{
+  "name": "Job Postings Pool - Upsert Row",
+  "nodes": [
+    {"id":"1478079c-9eb0-4ed1-b3c6-c531c374fb3d","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"job-postings-pool-upsert","authentication":"none","responseMode":"onReceived","options":{"responseData":"OK"}},"webhookId":"6bd2f8df-04fa-45ea-88c8-eed69e435ea5"},
+    {"id":"dcec8aa0-eebe-426d-b748-197332553705","name":"Normalize Row","type":"n8n-nodes-base.code","typeVersion":2,"position":[224,0],"parameters":{"mode":"runOnceForEachItem","language":"javaScript","jsCode":"const b = $json.body || {};\nreturn { json: {\n  postingId: (b.postingId || '').trim(),\n  company: b.company || '',\n  jobTitle: b.jobTitle || '',\n  jobDescription: b.jobDescription || '',\n  applyEmail: b.applyEmail || '',\n  applyUrl: b.applyUrl || '',\n  source: b.source || '',\n  fieldOfWork: b.fieldOfWork || '',\n  canonicalTitle: b.canonicalTitle || '',\n  jobLocation: b.jobLocation || '',\n  publishDate: b.publishDate || '',\n  expiryDate: b.expiryDate || '',\n  isExpired: b.isExpired === undefined ? false : b.isExpired\n} };"}},
+    {"id":"24222437-0814-4ce9-9614-9242bc4372d0","name":"Upsert Posting","type":"n8n-nodes-base.dataTable","typeVersion":1.1,"position":[448,0],"parameters":{"resource":"row","operation":"upsert","dataTableId":{"__rl":true,"mode":"id","value":"wogTyknFBjGfvFrS","cachedResultName":"Job Postings Pool"},"matchType":"allConditions","filters":{"conditions":[{"keyName":"postingId","condition":"eq","keyValue":"={{ $json.postingId }}"}]},"columns":{"mappingMode":"defineBelow","value":{"postingId":"={{ $json.postingId }}","company":"={{ $json.company }}","jobTitle":"={{ $json.jobTitle }}","jobDescription":"={{ $json.jobDescription }}","applyEmail":"={{ $json.applyEmail }}","applyUrl":"={{ $json.applyUrl }}","source":"={{ $json.source }}","fieldOfWork":"={{ $json.fieldOfWork }}","canonicalTitle":"={{ $json.canonicalTitle }}","jobLocation":"={{ $json.jobLocation }}","publishDate":"={{ $json.publishDate }}","expiryDate":"={{ $json.expiryDate }}","isExpired":"={{ $json.isExpired }}"}},"options":{}}}
+  ],
+  "connections": {
+    "Webhook": {"main": [[{"node":"Normalize Row","type":"main","index":0}]]},
+    "Normalize Row": {"main": [[{"node":"Upsert Posting","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}

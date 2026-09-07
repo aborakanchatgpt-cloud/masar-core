@@ -1,0 +1,14 @@
+{
+  "name": "Desires Registry - Upsert Row",
+  "nodes": [
+    {"id":"bf40f462-31f9-45da-9a98-73cb3e6f3536","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"desires-registry-upsert","authentication":"none","responseMode":"onReceived","options":{"responseData":"OK"}},"webhookId":"2c11e86b-8045-4dea-9d55-3d52c8b91482"},
+    {"id":"56dfaf47-f047-4e99-8cdd-307f841ab359","name":"Normalize Row","type":"n8n-nodes-base.code","typeVersion":2,"position":[224,0],"parameters":{"mode":"runOnceForEachItem","language":"javaScript","jsCode":"const b = $json.body || {};\nreturn { json: {\n  canonicalTitle: (b.canonicalTitle || '').trim(),\n  customerIds: b.customerIds || '',\n  lastSearchedAt: b.lastSearchedAt || null,\n  active: b.active === undefined ? true : b.active,\n  jobsFoundTotal: b.jobsFoundTotal === undefined ? 0 : b.jobsFoundTotal\n} };"}},
+    {"id":"38e5aabf-ce8f-480e-b2c6-645ae186c3a9","name":"Upsert Desire","type":"n8n-nodes-base.dataTable","typeVersion":1.1,"position":[448,0],"parameters":{"resource":"row","operation":"upsert","dataTableId":{"__rl":true,"mode":"id","value":"ex3Tf6SOlT7ICitA","cachedResultName":"Desires Registry"},"matchType":"allConditions","filters":{"conditions":[{"keyName":"canonicalTitle","condition":"eq","keyValue":"={{ $json.canonicalTitle }}"}]},"columns":{"mappingMode":"defineBelow","value":{"canonicalTitle":"={{ $json.canonicalTitle }}","customerIds":"={{ $json.customerIds }}","lastSearchedAt":"={{ $json.lastSearchedAt }}","active":"={{ $json.active }}","jobsFoundTotal":"={{ $json.jobsFoundTotal }}"}},"options":{}}}
+  ],
+  "connections": {
+    "Webhook": {"main": [[{"node":"Normalize Row","type":"main","index":0}]]},
+    "Normalize Row": {"main": [[{"node":"Upsert Desire","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}

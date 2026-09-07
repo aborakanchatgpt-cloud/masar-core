@@ -1,0 +1,12 @@
+{
+  "name": "Job Bot - Claude Discovery Notifier",
+  "nodes": [
+    {"id":"24bb6d0b-060a-44f8-b6b9-4d4c851e4622","name":"Send To Admin","type":"n8n-nodes-base.telegram","typeVersion":1.2,"position":[224,0],"parameters":{"resource":"message","operation":"sendMessage","chatId":"677475661","text":"={{ $json.body.message }}","additionalFields":{}},"webhookId":"cbb27ca4-f6a2-46ab-b769-d8138756bf12","credentials":{"telegramApi":{"name":"Telegram Admin Bot"}}},
+    {"id":"ece9d59e-f00d-4b1a-a0ee-26dcb21f3bb5","name":"Webhook","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"claude-discovery-notify","authentication":"none","responseMode":"onReceived","options":{"noResponseBody":false,"responseData":"OK"}},"webhookId":"139c5e7a-f465-433f-9dc0-b45476dbdae1"}
+  ],
+  "connections": {
+    "Webhook": {"main": [[{"node":"Send To Admin","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}
