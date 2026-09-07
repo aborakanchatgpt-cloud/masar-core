@@ -10,12 +10,13 @@ from __future__ import annotations
 import httpx
 
 RECRUITEE_OFFERS_URL = "https://{company}.recruitee.com/api/offers/"
+_HEADERS = {"User-Agent": "MasarCoreBot/0.1 (+contact via masar)"}
 
 
 def fetch_jobs(company_subdomain: str, timeout: float = 20.0) -> list[dict]:
     """يرجع قائمة وظائف خام من Recruitee لشركة واحدة (company_subdomain)."""
     url = RECRUITEE_OFFERS_URL.format(company=company_subdomain)
-    response = httpx.get(url, timeout=timeout)
+    response = httpx.get(url, timeout=timeout, headers=_HEADERS)
     response.raise_for_status()
     payload = response.json()
 
