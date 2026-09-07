@@ -76,7 +76,7 @@
 - 2026-09-06 22:11Z — EXECUTOR (Sonnet subagent) — B1a — DONE — ops runner بالطابور: `/admin/ops logs caddy 80` → exit 0 وسجلات فعلية.
 - 2026-09-07 05:05Z — EXECUTOR (Sonnet subagent) — B1b — DONE (ينتظر أحمد) — MCP bridge + deploy-key + commit من المضيف؛ `GET /admin/mcp-url` يعيد الرابط؛ `deploy-key` أعاد مفتاحًا عامًا. رُسل لأحمد طلب "نحتاجك فورا" (مفتاح النشر + الموصّل).
 - 2026-09-06 17:30Z — REVIEWER (Fable, Cowork) — بروتوكول — تسريع الحلقة: منفّذ كل ساعة (بنود متتالية، قفل 55 دقيقة يُجدَّد لكل بند)، مراجع كل ساعتين عبر `REVIEW.md` عند وجود قفل حي؛ قاعدة رسائل `نحتاجك فورا — `؛ هدف زمني 18 سبتمبر.
-- 2026-09-07 05:40Z — EXECUTOR (Sonnet subagent) — B1 — أول commit عبر جسر Masar MCP (repo_write) — OK (job exit_code 0، تحقّق عبر raw.githubusercontent.com أن السطر وصل)
+- 2026-09-07 05:40Z — EXECUTOR (Sonnet subagent) — B1 — first commit via Masar MCP bridge (repo_write) — OK (job 53442b4a72b34846 exit_code 0، sha 70770d9f8e6974d49e72c9661c1bb22acc2505fd، تحقّق عبر raw.githubusercontent.com)
 
 ## 4. الواجهات المتاحة للجلسات
 
