@@ -10,8 +10,9 @@ Jobs، ويعمل مع أغلب أنظمة ATS تقريبًا — بما فيه�
 شركة عادي غير مرتبط بأي ATS معروف.
 
 B2: يحترم robots.txt فعليًا قبل الجلب (Disallow لمسار الصفحة المطلوبة تحت
- User-agent: * أو المطابق لاسمنا) — إن مُنع الجلب يرفع ValueError بدل الجلب،
-وUser-Agent يطابق النص الرسمي المتفق عليه بدليل التنفيذ.
+ User-agent: * أو المطابق لاسمنا) — إن مُنع الجلب يرفع ValueError بدل الجلب.
+يستخدم http_client المشترك (مراجعة B2 R8/R9: User-Agent موحّد + تحديد معدّل
+لكل مضيف + تراجع أُسّي عند 429/5xx).
 """
 from __future__ import annotations
 
@@ -20,14 +21,12 @@ import re
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
-import httpx
+from app.collectors.http_client import USER_AGENT, get as http_get
 
 _JSONLD_SCRIPT_RE = re.compile(
     r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
     re.IGNORECASE | re.DOTALL,
 )
-_USER_AGENT = "MasarCoreBot/0.1 (+contact via masar)"
-_HEADERS = {"User-Agent": _USER_AGENT}
 
 
 def _robots_allow(url: str, timeout: float) -> bool:
@@ -39,13 +38,13 @@ def _robots_allow(url: str, timeout: float) -> bool:
     parser = RobotFileParser()
     parser.set_url(robots_url)
     try:
-        response = httpx.get(robots_url, timeout=timeout, headers=_HEADERS)
+        response = http_get(robots_url, timeout=timeout)
         if response.status_code >= 400:
             return True
         parser.parse(response.text.splitlines())
     except Exception:  # noqa: BLE001 — تعذّر قراءة robots.txt لا يعني حجبًا
         return True
-    return parser.can_fetch(_USER_AGENT, url)
+    return parser.can_fetch(USER_AGENT, url)
 
 
 def _iter_jobposting_nodes(data):
@@ -85,12 +84,7 @@ def fetch_jobs(career_page_url: str, timeout: float = 20.0) -> list[dict]:
     if not _robots_allow(career_page_url, timeout):
         raise ValueError(f"robots.txt يمنع الجلب: {career_page_url}")
 
-    response = httpx.get(
-        career_page_url,
-        timeout=timeout,
-        headers=_HEADERS,
-        follow_redirects=True,
-    )
+    response = http_get(career_page_url, timeout=timeout, follow_redirects=True)
     response.raise_for_status()
     html = response.text
 
