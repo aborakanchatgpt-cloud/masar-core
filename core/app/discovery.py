@@ -5,9 +5,10 @@ Masar Core — محرك الاكتشاف الفعلي (B2، المرحلة 2 م�
 يستدعي جامع كل نوع مصدر (core/app/collectors/*)، يطبّع كل وظيفة عبر
 field_extractor + normalizer، يُدرج الجديد فقط في `jobs` (ON CONFLICT على
 dedup_key)، يحدّث صحة كل مصدر (last_ok_at/last_error/avg_per_day)، يعطّل
-المصدر تلقائيًا بعد 3 أخطاء متتالية، ويكتب مقاييس لكل ساعة (عامة ولكل
-عائلة مهنية). يُستدعى من core/app/scheduler_main.py (كل 30 دقيقة + فورًا
-عند الإقلاع) ومن core/app/discovery_api.py (`POST /admin/discovery/run-now`).
+المصدر تلقائيًا بعد 3 أخطاء متتالية أو بعد جولتين متتاليتين بلا أي وظيفة
+خليجية واحدة (مراجعة B2 R3/R4)، ويكتب مقاييس لكل ساعة (عامة ولكل عائلة
+مهنية). يُستدعى من core/app/scheduler_main.py (كل 30 دقيقة + فورًا عند
+الإقلاع) ومن core/app/discovery_api.py (`POST /admin/discovery/run-now`).
 
 بلا SQLAlchemy ORM عمدًا (لا نماذج بعد) — استعلامات SQL صريحة عبر
 sqlalchemy.text()، لأن هذه أول وحدة تكتب بيانات فعلية والمخطط لا يزال يتطور
@@ -41,6 +42,7 @@ from app.collectors import (
 )
 from app.collectors.field_extractor import (
     classify_application_type,
+    compute_region,
     extract_cities,
     extract_seniority,
     extract_skills,
@@ -53,6 +55,10 @@ logger = logging.getLogger("masar.discovery")
 
 PER_SOURCE_TIMEOUT = 30.0
 ROUND_BUDGET_SECONDS = 20 * 60
+
+# مراجعة B2 R3/R4: بعد جولتين متتاليتين بلا أي وظيفة خليجية واحدة (saudi_hits
+# = 0 كِلا الجولتين)، يُعطَّل المصدر تلقائيًا (مصادر region_filter='gcc' فقط).
+GCC_ZERO_ROUNDS_DISABLE_THRESHOLD = 2
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -77,9 +83,16 @@ def get_engine() -> Engine:
 
 # ---------------------------------------------------------------------------
 # تصنيف العائلة المهنية — يقرأ data/taxonomy_local.yaml (مُركّب read-only)
+#
+# مراجعة B2 R6: مطابقة بحدود كلمة صريحة (لا سلسلة فرعية) عبر تعابير نمطية
+# مُجمَّعة مسبقًا لكل عائلة، على العنوان + أول 300 حرف من الوصف معًا (كان
+# سابقًا العنوان فقط بمطابقة سلسلة فرعية بسيطة).
 # ---------------------------------------------------------------------------
 
 _families_cache: dict | None = None
+_family_patterns_cache: list[tuple[str, re.Pattern[str]]] | None = None
+
+DESCRIPTION_MATCH_CHARS = 300
 
 
 def _load_families() -> dict[str, dict]:
@@ -97,21 +110,32 @@ def _load_families() -> dict[str, dict]:
     return _families_cache
 
 
-def classify_family(title: str | None) -> str | None:
-    """يرجّع أول عائلة مهنية تُطابق المسمى عبر معجم taxonomy_local.yaml
-    (كلمات إنجليزية غير حساسة لحالة الأحرف، وعربية بالمطابقة المباشرة)."""
-    if not title:
-        return None
-    lowered = title.lower()
+def _build_family_patterns() -> list[tuple[str, re.Pattern[str]]]:
+    global _family_patterns_cache
+    if _family_patterns_cache is not None:
+        return _family_patterns_cache
+    patterns: list[tuple[str, re.Pattern[str]]] = []
     for family, spec in _load_families().items():
         if spec.get("excluded"):
             continue
-        for kw in spec.get("keywords_en", []) or []:
-            if kw.lower() in lowered:
-                return family
-        for kw in spec.get("keywords_ar", []) or []:
-            if kw in title:
-                return family
+        keywords = list(spec.get("keywords_en") or []) + list(spec.get("keywords_ar") or [])
+        if not keywords:
+            continue
+        escaped = sorted((re.escape(kw) for kw in keywords), key=len, reverse=True)
+        patterns.append((family, re.compile(r"\b(?:" + "|".join(escaped) + r")\b", re.IGNORECASE)))
+    _family_patterns_cache = patterns
+    return patterns
+
+
+def classify_family(title: str | None, description: str | None = None) -> str | None:
+    """يرجّع أول عائلة مهنية تُطابق (العنوان + أول 300 حرف من الوصف) عبر
+    معجم taxonomy_local.yaml، بحدود كلمة صريحة (مراجعة B2 R6)."""
+    combined = " ".join(filter(None, [title or "", (description or "")[:DESCRIPTION_MATCH_CHARS]]))
+    if not combined.strip():
+        return None
+    for family, pattern in _build_family_patterns():
+        if pattern.search(combined):
+            return family
     return None
 
 
@@ -336,7 +360,8 @@ def run_round() -> dict:
             rows = conn.execute(
                 text(
                     """
-                    SELECT s.id, s.company_id, s.source_type, s.source_url, c.name AS company_name
+                    SELECT s.id, s.company_id, s.source_type, s.source_url, s.region_filter,
+                           c.name AS company_name
                     FROM sources s
                     JOIN companies c ON c.id = s.company_id
                     WHERE s.enabled = true
@@ -359,6 +384,7 @@ def run_round() -> dict:
         source_url = row["source_url"]
         company_id = row["company_id"]
         company_name = row["company_name"]
+        region_filter = row["region_filter"] or "gcc"
 
         try:
             fetch_fn = DISPATCH.get(source_type)
@@ -377,6 +403,7 @@ def run_round() -> dict:
         jobs_fetched += len(raw_jobs)
         inserted_this_source = 0
         family_counts: dict[str, int] = {}
+        gcc_hits_this_source = 0
 
         try:
             with engine.begin() as conn:
@@ -391,15 +418,20 @@ def run_round() -> dict:
                     cities = extract_cities(combined_text)
                     city = cities[0] if cities else None
                     years_min, _years_max = extract_years_required(combined_text)
-                    seniority = extract_seniority(combined_text)
+                    seniority = extract_seniority(combined_text, title=title)
                     saudi_only = is_saudi_only(combined_text)
                     skills = extract_skills(combined_text)
-                    family = classify_family(title)
+                    family = classify_family(title, description)
                     apply_mode = classify_application_type(raw_job.get("url"), source_type)
+                    apply_url = raw_job.get("url")
 
-                    external_id = raw_job.get("external_id")
-                    external_key = f"{source_type}:{external_id}" if external_id else None
-                    d_key = dedup_key(company_name, title, city, external_key)
+                    country_code, out_of_region = compute_region(
+                        location_text or None, f"{title}\n{description[:300]}"
+                    )
+                    if not out_of_region:
+                        gcc_hits_this_source += 1
+
+                    d_key = dedup_key(company_name, title, city, apply_url)
 
                     inserted = conn.execute(
                         text(
@@ -407,11 +439,13 @@ def run_round() -> dict:
                             INSERT INTO jobs (
                                 source_id, company_id, external_id, title, url, location,
                                 family, dedup_key, raw_json, company_name, city, years_min,
-                                seniority, saudi_only, skills, apply_mode, description_snippet
+                                seniority, saudi_only, skills, apply_mode, description_snippet,
+                                country_code, out_of_region
                             ) VALUES (
                                 :source_id, :company_id, :external_id, :title, :url, :location,
                                 :family, :dedup_key, :raw_json, :company_name, :city, :years_min,
-                                :seniority, :saudi_only, :skills, :apply_mode, :description_snippet
+                                :seniority, :saudi_only, :skills, :apply_mode, :description_snippet,
+                                :country_code, :out_of_region
                             )
                             ON CONFLICT (dedup_key) DO NOTHING
                             RETURNING id
@@ -420,9 +454,11 @@ def run_round() -> dict:
                         {
                             "source_id": source_id,
                             "company_id": company_id,
-                            "external_id": str(external_id) if external_id is not None else None,
+                            "external_id": str(raw_job.get("external_id"))
+                            if raw_job.get("external_id") is not None
+                            else None,
                             "title": title[:2000],
-                            "url": raw_job.get("url"),
+                            "url": apply_url,
                             "location": location_text[:255] if location_text else None,
                             "family": family,
                             "dedup_key": d_key,
@@ -437,6 +473,8 @@ def run_round() -> dict:
                             "skills": json.dumps(skills, ensure_ascii=False),
                             "apply_mode": apply_mode,
                             "description_snippet": description[:2000] if description else None,
+                            "country_code": country_code,
+                            "out_of_region": out_of_region,
                         },
                     ).first()
 
@@ -445,9 +483,17 @@ def run_round() -> dict:
                         if family:
                             family_counts[family] = family_counts.get(family, 0) + 1
 
+                # مراجعة B2 R3/R4: تتبّع عدد الوظائف الخليجية بهذه الجولة لكل
+                # مصدر، وعدّاد الجولات المتتالية بلا أي وظيفة خليجية —
+                # تعطيل تلقائي عند بلوغه العتبة (مصادر region_filter='gcc' فقط).
+                zero_gcc_expr = (
+                    "CASE WHEN :gcc_hits = 0 THEN consecutive_zero_gcc_rounds + 1 ELSE 0 END"
+                    if region_filter == "gcc"
+                    else "consecutive_zero_gcc_rounds"
+                )
                 conn.execute(
                     text(
-                        """
+                        f"""
                         UPDATE sources SET
                             last_ok_at = :now,
                             last_error = NULL,
@@ -455,13 +501,45 @@ def run_round() -> dict:
                             consecutive_errors = 0,
                             consecutive_zero_rounds = CASE WHEN :count = 0
                                 THEN consecutive_zero_rounds + 1 ELSE 0 END,
+                            saudi_hits = :gcc_hits,
+                            consecutive_zero_gcc_rounds = {zero_gcc_expr},
                             avg_per_day = ROUND((COALESCE(avg_per_day, 0) * 0.8 + :count * 48 * 0.2)::numeric, 2),
                             updated_at = :now
                         WHERE id = :id
                         """
                     ),
-                    {"now": started_at, "count": len(raw_jobs), "id": source_id},
+                    {
+                        "now": started_at,
+                        "count": len(raw_jobs),
+                        "gcc_hits": gcc_hits_this_source,
+                        "id": source_id,
+                    },
                 )
+
+                if region_filter == "gcc":
+                    disable_row = conn.execute(
+                        text(
+                            """
+                            SELECT consecutive_zero_gcc_rounds FROM sources WHERE id = :id
+                            """
+                        ),
+                        {"id": source_id},
+                    ).first()
+                    if disable_row and disable_row[0] >= GCC_ZERO_ROUNDS_DISABLE_THRESHOLD:
+                        conn.execute(
+                            text(
+                                """
+                                UPDATE sources SET enabled = false, disabled_reason = 'no_gcc_jobs'
+                                WHERE id = :id
+                                """
+                            ),
+                            {"id": source_id},
+                        )
+                        logger.warning(
+                            "تعطيل المصدر #%s تلقائيًا: 0 وظيفة خليجية عبر %s جولة متتالية",
+                            source_id,
+                            disable_row[0],
+                        )
 
                 conn.execute(
                     text(
