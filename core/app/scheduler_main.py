@@ -1,38 +1,53 @@
 """
-Masar Core Scheduler — عملية منفصلة (core-scheduler بـ docker-compose) تُشغّل
-الجامع دوريًا كل 30 دقيقة حسب معيار المرحلة 2 بالدليل.
+Masar Core Scheduler — عملية منفصلة (core-scheduler بـdocker-compose) تُشغّل
+جولة الجامع كل 30 دقيقة (المرحلة 2 بالدليل، B2).
 
-حاليًا: هيكل تشغيل فقط (bootstrap). الربط الفعلي بجدول `sources` النشطة
-وحفظ الوظائف الجديدة عبر منطق core.discovery يُستكمل بعد اعتماد أول دفعة
-شركات من Source Curator (لا فائدة من تشغيل الجامع بدون مصادر حقيقية معتمدة).
+B2: رُبط فعليًا بـcore.app.discovery — يبذر sources من data/sources_seed.csv
+بشكل idempotent عند الإقلاع (upsert بالرابط)، ثم يُشغّل أول جولة فورًا (حتى
+لا ينتظر التحقق 30 دقيقة)، ثم كل 30 دقيقة بعدها. أي استثناء داخل جولة واحدة
+لا يوقف الجدولة (discovery.run_round لا يرفع أبدًا؛ هذا الغلاف حماية إضافية).
 """
 from __future__ import annotations
 
 import logging
 
 from apscheduler.schedulers.blocking import BlockingScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+
+from app import discovery
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("masar-scheduler")
 
 
 def run_collector_round() -> None:
-    logger.info(
-        "جولة جامع مجدولة بدأت — بانتظار اعتماد أول دفعة مصادر (جدول sources) "
-        "من جلسة Source Curator قبل تفعيل الجمع الفعلي."
-    )
-    # TODO (المرحلة 2):
-    #   1. قراءة الصفوف النشطة (enabled=true) من جدول sources.
-    #   2. لكل مصدر: استدعاء core.app.collectors.<source_type>.fetch_jobs(...)
-    #   3. تطبيع كل وظيفة عبر normalizer.dedup_key وحفظ الجديد فقط في جدول jobs.
-    #   4. تحديث metrics_hourly (avg_per_day, last_count) لكل مصدر.
-    #   5. تنبيه عند last_count=0 لثلاث دورات متتالية أو 3 أخطاء متتالية (تعطيل المصدر).
+    try:
+        result = discovery.run_round()
+        logger.info("نتيجة الجولة: %s", result)
+    except Exception:  # noqa: BLE001 — لا يجب أن يقتل جدولة APScheduler أبدًا
+        logger.exception("جولة الجامع فشلت بخطأ غير متوقع — ستُحاول مجددًا بالجولة القادمة")
 
 
 def main() -> None:
+    try:
+        seed_result = discovery.seed_sources()
+        logger.info("بذر المصادر عند الإقلاع: %s", seed_result)
+    except Exception:
+        logger.exception("تعذّر بذر المصادر عند الإقلاع — سيستمر التشغيل بما هو موجود بالقاعدة")
+
     scheduler = BlockingScheduler(timezone="UTC")
-    scheduler.add_job(run_collector_round, "interval", minutes=30, id="collector_round")
-    logger.info("Masar Core Scheduler بدأ التشغيل — الجامع كل 30 دقيقة.")
+    # next_run_time الافتراضي لـIntervalTrigger = الآن + 30 دقيقة؛ نستدعي
+    # run_collector_round() يدويًا مرة إضافية أدناه فورًا (بلا انتظار الدورة
+    # الأولى) حتى لا تنتظر جلسة التحقق 30 دقيقة كاملة بعد كل نشر.
+    scheduler.add_job(
+        run_collector_round,
+        trigger=IntervalTrigger(minutes=30),
+        id="collector_round",
+        max_instances=1,
+        coalesce=True,
+    )
+    logger.info("Masar Core Scheduler بدأ التشغيل — تشغيل أول جولة فورًا ثم كل 30 دقيقة.")
+    run_collector_round()
     scheduler.start()
 
 
