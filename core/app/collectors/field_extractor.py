@@ -4,12 +4,18 @@
 الاستخدام على مستوى قاعدة البيانات بدل موجّه Claude لكل وظيفة):
 
     سنوات الخبرة المطلوبة، مستوى الأقدمية، شرط الجنسية، التخصص/الشهادة
-    المطلوبة، المدن المذكورة، المهارات المذكورة، ونوع التقديم المرجّح.
+    المطلوبة، المدن المذكورة، رمز الدولة/داخل-خارج نطاق الخليج، المهارات
+    المذكورة، ونوع التقديم المرجّح.
 
-كل دالة هنا Heuristic (كشف بالكلمات المفتاحية/الأنماط) مصمم ليكون "مرشّح أول"
-سريع بدون أي تكلفة API — وليس بديلاً نهائيًا عن مراجعة Claude للحالات الحدّية،
+كل دالة هنا Heuristic (كشف بالكلمات المفتاحية/الأنماط) مصمّم ليكون "مرشّح أول"
+سريع بدون أي تكلفة API — وليس بديلاً نهائياً عن مراجعة Claude للحالات الحدّية،
 تمامًا كما يقضي الدليل بمراجعة عينة يدوية للتحقق من نسبة الدقة (القسم 9،
 معيار قبول المرحلة 2: دقة الحقول المستخرجة ≥ 90% على عينة 50 وظيفة).
+
+مراجعة B2 (docs/reports/B2-review.md) R2: أُصلح خلل مطابقة السلسلة الفرعية
+بمستوى الأقدمية (كانت "intern" تُطابق داخل "internal"/"international") —
+كل الكلمات المفتاحية هنا الآن تُطابق بحدود كلمة صريحة (`\\b...\\b`) عبر
+تعابير نمطية مُجمّعة مسبقًا، لا بحث سلسلة فرعية (`in`).
 """
 from __future__ import annotations
 
@@ -56,30 +62,54 @@ def extract_years_required(text: str) -> tuple[int | None, int | None]:
 
 
 # ---------------------------------------------------------------------------
-# مستوى الأقدمية
+# مستوى الأقدمية — مراجعة B2 R2: حدود كلمة صريحة، لا سلسلة فرعية
 # ---------------------------------------------------------------------------
 
-_SENIORITY_KEYWORDS: list[tuple[str, list[str]]] = [
-    ("intern", ["intern", "internship", "trainee", "متدرب", "تدريب"]),
-    ("entry", ["entry level", "junior", "fresh graduate", "حديث التخرج", "مبتدئ"]),
-    ("senior", ["senior", "sr.", "خبير", "أول"]),
-    # "manager" قبل "lead" عمدًا: "lead" تُستخدم غالبًا كفعل بوصف الوظيفة
-    # ("must lead a team") وليست دائمًا مسمّى وظيفيًا؛ حين يظهر "manager" أو
-    # مرادفاتها الأقوى بنفس النص فهي الإشارة الأصدق لمستوى الأقدمية الفعلي.
-    ("manager", ["manager", "head of", "director", "مدير", "رئيس قسم"]),
-    ("lead", ["lead ", "principal", "قائد فريق"]),
+_SENIORITY_BUCKETS: list[tuple[str, list[str]]] = [
+    (
+        "intern",
+        [
+            "intern", "internship", "trainee", "fresh graduate", "graduate program",
+            "co-op", "متدرب", "تدريب", "برنامج تدريب",
+        ],
+    ),
+    ("entry", ["entry level", "junior", "حديث التخرج", "مبتدئ"]),
+    ("senior", ["senior", "خبير", "أول"]),
+    (
+        "manager",
+        [
+            "manager", "head of", "director", "head", "chief",
+            "مدير", "رئيس قسم", "رئيس",
+        ],
+    ),
+    ("lead", ["lead", "principal", "قائد فريق"]),
 ]
 
 
-def extract_seniority(text: str) -> str | None:
-    """يرجع أقرب مستوى أقدمية مطابق، أو None إن لم يُذكر صراحة (يُفترض mid)."""
+def _compile_word_boundary(keywords: list[str]) -> re.Pattern[str]:
+    escaped = sorted((re.escape(kw) for kw in keywords), key=len, reverse=True)
+    return re.compile(r"\b(?:" + "|".join(escaped) + r")\b", re.IGNORECASE)
+
+
+_SENIORITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
+    (level, _compile_word_boundary(keywords)) for level, keywords in _SENIORITY_BUCKETS
+]
+
+
+def extract_seniority(text: str, title: str | None = None) -> str | None:
+    """يرجع أقرب مستوى أقدمية مطابق بحدود كلمة صريحة، أو None إن لم يُذكر
+    صراحة (يُفترض mid). إن مُرّر `title` منفصلاً، يُفحص أولاً وحده قبل النص
+    الكامل — إشارة العنوان أوثق من نص وصف طويل قد يحوي كلمات عامة مضلّلة
+    (مراجعة B2 R2)."""
+    if title:
+        for level, pattern in _SENIORITY_PATTERNS:
+            if pattern.search(title):
+                return level
     if not text:
         return None
-    lowered = text.lower()
-    for level, keywords in _SENIORITY_KEYWORDS:
-        for kw in keywords:
-            if kw in lowered:
-                return level
+    for level, pattern in _SENIORITY_PATTERNS:
+        if pattern.search(text):
+            return level
     return None
 
 
@@ -131,7 +161,81 @@ def extract_cities(text: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# المهارات (مرتبطة بعائلات taxonomy_local.yaml — قائمة أولية قابلة للتوسيع)
+# الدولة/المنطقة — مراجعة B2 R3/R4: تحديد داخل/خارج نطاق الخليج
+# ---------------------------------------------------------------------------
+
+GCC_COUNTRY_CODES = {"SA", "AE", "QA", "KW", "BH", "OM"}
+
+_COUNTRY_CODE_SUFFIX_RE = re.compile(r",\s*([A-Za-z]{2})\s*$")
+
+_COUNTRY_NAME_TO_CODE: dict[str, str] = {
+    "saudi arabia": "SA", "ksa": "SA", "kingdom of saudi arabia": "SA",
+    "السعودية": "SA", "المملكة العربية السعودية": "SA", "المملكة": "SA",
+    "united arab emirates": "AE", "uae": "AE", "الإمارات": "AE", "الامارات": "AE",
+    "qatar": "QA", "قطر": "QA",
+    "kuwait": "KW", "الكويت": "KW",
+    "bahrain": "BH", "البحرين": "BH",
+    "oman": "OM", "عُمان": "OM", "عمان": "OM",
+}
+
+_CITY_TO_COUNTRY: dict[str, str] = {
+    "Riyadh": "SA", "Jeddah": "SA", "Dammam": "SA", "Khobar": "SA", "Dhahran": "SA",
+    "Yanbu": "SA", "Jubail": "SA", "Mecca": "SA", "Medina": "SA", "Taif": "SA",
+    "Abha": "SA", "Tabuk": "SA", "Najran": "SA",
+    "الرياض": "SA", "جدة": "SA", "الدمام": "SA", "الخبر": "SA", "الظهران": "SA",
+    "ينبع": "SA", "الجبيل": "SA", "مكة": "SA", "المدينة": "SA", "الطائف": "SA",
+    "أبها": "SA", "تبوك": "SA", "نجران": "SA",
+    "Dubai": "AE", "Abu Dhabi": "AE", "Doha": "QA", "Manama": "BH",
+    "Kuwait City": "KW", "Muscat": "OM",
+}
+
+_REMOTE_RE = re.compile(r"\bremote\b", re.IGNORECASE)
+
+
+def extract_country_code(location_text: str | None, extra_text: str | None = None) -> str | None:
+    """يستنتج رمز الدولة (ISO حرفين) من نص الموقع الخام أولاً (رمز ملحق،
+    اسم دولة صريح، ثم مدينة معروفة)، ثم من نص إضافي (عنوان/وصف) كملاذ أخير.
+    يُرجع أي دولة (ليس الخليج فقط) — الفلترة بالخليج تتم بدالة منفصلة."""
+    if location_text:
+        m = _COUNTRY_CODE_SUFFIX_RE.search(location_text)
+        if m:
+            return m.group(1).upper()
+        lowered = location_text.lower()
+        for name, code in _COUNTRY_NAME_TO_CODE.items():
+            if name in lowered or name in location_text:
+                return code
+        for city, code in _CITY_TO_COUNTRY.items():
+            if city in location_text:
+                return code
+    if extra_text:
+        lowered_extra = extra_text.lower()
+        for name, code in _COUNTRY_NAME_TO_CODE.items():
+            if name in lowered_extra or name in extra_text:
+                return code
+        for city, code in _CITY_TO_COUNTRY.items():
+            if city in extra_text:
+                return code
+    return None
+
+
+def compute_region(location_text: str | None, extra_text: str | None = None) -> tuple[str | None, bool]:
+    """يرجع (country_code_أو_None, out_of_region). القاعدة المحافظة (مراجعة
+    B2 R3/R4): كل دولة غير معروفة (None) أو غير خليجية = خارج النطاق، إلا
+    لو ذُكرت كلمة "remote" صراحة مع دولة خليجية بنفس النص ("Remote - Saudi
+    Arabia" مثلاً)."""
+    code = extract_country_code(location_text, extra_text)
+    if code in GCC_COUNTRY_CODES:
+        return code, False
+    combined = " ".join(filter(None, [location_text, extra_text]))
+    if combined and _REMOTE_RE.search(combined):
+        remote_code = extract_country_code(combined)
+        if remote_code in GCC_COUNTRY_CODES:
+            return remote_code, False
+    return code, True
+
+
+# ---------------------------------------------------------------------------
+# المهارات (مرتبطة بعوائل taxonomy_local.yaml — قائمة أولية قابلة للتوسع)
 # ---------------------------------------------------------------------------
 
 KNOWN_SKILLS = [
