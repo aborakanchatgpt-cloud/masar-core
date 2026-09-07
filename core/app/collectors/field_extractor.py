@@ -7,15 +7,15 @@
     المطلوبة، المدن المذكورة، رمز الدولة/داخل-خارج نطاق الخليج، المهارات
     المذكورة، ونوع التقديم المرجّح.
 
-كل دالة هنا Heuristic (كشف بالكلمات المفتاحية/الأنماط) مصمّم ليكون "مرشّح أول"
-سريع بدون أي تكلفة API — وليس بديلاً نهائياً عن مراجعة Claude للحالات الحدّية،
+كل دالة هنا Heuristic (كشف بالكلمات المفتاحية/الأنماط) مصمم ليكون "مرشّح أول"
+سريع بدون أي تكلفة API — وليس بديلاً نهائيًا عن مراجعة Claude للحالات الحدّية،
 تمامًا كما يقضي الدليل بمراجعة عينة يدوية للتحقق من نسبة الدقة (القسم 9،
 معيار قبول المرحلة 2: دقة الحقول المستخرجة ≥ 90% على عينة 50 وظيفة).
 
 مراجعة B2 (docs/reports/B2-review.md) R2: أُصلح خلل مطابقة السلسلة الفرعية
-بمستوى الأقدمية (كانت "intern" تُطابق داخل "internal"/"international") —
-كل الكلمات المفتاحية هنا الآن تُطابق بحدود كلمة صريحة (`\\b...\\b`) عبر
-تعابير نمطية مُجمّعة مسبقًا، لا بحث سلسلة فرعية (`in`).
+بمستوى الأقدمية (كانت "intern" تُطابِق داخل "internal"/"international") —
+كل الكلمات المفتاحية هنا الآن تُطابَق بحدود كلمة صريحة (`\\b...\\b`) عبر
+تعابير نمطية مُجمَّعة مسبقًا، لا بحث سلسلة فرعية (`in`).
 """
 from __future__ import annotations
 
@@ -65,6 +65,11 @@ def extract_years_required(text: str) -> tuple[int | None, int | None]:
 # مستوى الأقدمية — مراجعة B2 R2: حدود كلمة صريحة، لا سلسلة فرعية
 # ---------------------------------------------------------------------------
 
+# كل مجموعة: (اسم المستوى، قائمة كلمات/عبارات تُطابَق بحدود كلمة كاملة).
+# الترتيب مقصود: "intern" قبل "entry" قبل "senior" قبل "manager" قبل "lead" —
+# "manager" قبل "lead" عمدًا (تعليق أصلي محفوظ): "lead" تُستخدم غالبًا كفعل
+# بوصف الوظيفة ("must lead a team") وليست دائمًا مسمّى وظيفيًا؛ حين يظهر
+# "manager"/"director" بنفس النص فهي الإشارة الأصدق لمستوى الأقدمية الفعلي.
 _SENIORITY_BUCKETS: list[tuple[str, list[str]]] = [
     (
         "intern",
@@ -87,6 +92,10 @@ _SENIORITY_BUCKETS: list[tuple[str, list[str]]] = [
 
 
 def _compile_word_boundary(keywords: list[str]) -> re.Pattern[str]:
+    """يبني تعبيرًا نمطيًا واحدًا لكل قائمة كلمات، بحدود كلمة صريحة على كل
+    عنصر (`\\bكلمة\\b`) — يمنع مطابقة "intern" داخل "internal"/"international"،
+    أو "head" داخل "headquarters"، إلخ. الترتيب بالطول تنازليًا احتياطًا
+    (لا يؤثر عمليًا لأن التناوب يبحث عن أول تطابق، لكن ممارسة سليمة)."""
     escaped = sorted((re.escape(kw) for kw in keywords), key=len, reverse=True)
     return re.compile(r"\b(?:" + "|".join(escaped) + r")\b", re.IGNORECASE)
 
@@ -98,8 +107,8 @@ _SENIORITY_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 
 def extract_seniority(text: str, title: str | None = None) -> str | None:
     """يرجع أقرب مستوى أقدمية مطابق بحدود كلمة صريحة، أو None إن لم يُذكر
-    صراحة (يُفترض mid). إن مُرّر `title` منفصلاً، يُفحص أولاً وحده قبل النص
-    الكامل — إشارة العنوان أوثق من نص وصف طويل قد يحوي كلمات عامة مضلّلة
+    صراحة (يُفترض mid). إن مُرِّر `title` منفصلًا، يُفحَص أولًا وحده قبل النص
+    الكامل — إشارة العنوان أوثق من نص وصف طويل قد يحوي كلمات عامة مضلِّلة
     (مراجعة B2 R2)."""
     if title:
         for level, pattern in _SENIORITY_PATTERNS:
@@ -166,6 +175,8 @@ def extract_cities(text: str) -> list[str]:
 
 GCC_COUNTRY_CODES = {"SA", "AE", "QA", "KW", "BH", "OM"}
 
+# نمط شائع جدًا بمخرجات Greenhouse/SmartRecruiters/Workable: "City, xx" حيث xx
+# رمز دولة ISO حرفين بآخر النص (مثال: "Ras Al-Khaimah, ae"، "Bentonville, us").
 _COUNTRY_CODE_SUFFIX_RE = re.compile(r",\s*([A-Za-z]{2})\s*$")
 
 _COUNTRY_NAME_TO_CODE: dict[str, str] = {
@@ -193,7 +204,7 @@ _REMOTE_RE = re.compile(r"\bremote\b", re.IGNORECASE)
 
 
 def extract_country_code(location_text: str | None, extra_text: str | None = None) -> str | None:
-    """يستنتج رمز الدولة (ISO حرفين) من نص الموقع الخام أولاً (رمز ملحق،
+    """يستنتج رمز الدولة (ISO حرفين) من نص الموقع الخام أولًا (رمز ملحق،
     اسم دولة صريح، ثم مدينة معروفة)، ثم من نص إضافي (عنوان/وصف) كملاذ أخير.
     يُرجع أي دولة (ليس الخليج فقط) — الفلترة بالخليج تتم بدالة منفصلة."""
     if location_text:
@@ -222,7 +233,7 @@ def compute_region(location_text: str | None, extra_text: str | None = None) -> 
     """يرجع (country_code_أو_None, out_of_region). القاعدة المحافظة (مراجعة
     B2 R3/R4): كل دولة غير معروفة (None) أو غير خليجية = خارج النطاق، إلا
     لو ذُكرت كلمة "remote" صراحة مع دولة خليجية بنفس النص ("Remote - Saudi
-    Arabia" مثلاً)."""
+    Arabia" مثلًا)."""
     code = extract_country_code(location_text, extra_text)
     if code in GCC_COUNTRY_CODES:
         return code, False
@@ -235,7 +246,7 @@ def compute_region(location_text: str | None, extra_text: str | None = None) -> 
 
 
 # ---------------------------------------------------------------------------
-# المهارات (مرتبطة بعوائل taxonomy_local.yaml — قائمة أولية قابلة للتوسع)
+# المهارات (مرتبطة بعائلات taxonomy_local.yaml — قائمة أولية قابلة للتوسيع)
 # ---------------------------------------------------------------------------
 
 KNOWN_SKILLS = [

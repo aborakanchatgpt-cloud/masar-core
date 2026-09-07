@@ -9,7 +9,7 @@ account_shortcode هو الاسم الظاهر برابط صفحة الوظائ�
 
 مراجعة B2 (docs/reports/B2-review.md) R1: حمولة widget's لا تحوي مفتاح
 "location" إطلاقًا (كان الكود القديم يقرأ `item.get("location")` فيرجع None
-دائمًا — أصاب 2082 وظيفة/15 مصدراً). الحقول الفعلية المؤكّدة من raw_json:
+دائمًا — أصاب 2082 وظيفة/15 مصدرًا). الحقول الفعلية المؤكَّدة من raw_json:
 `city`, `state`/`region`, `country` مباشرة على عنصر الوظيفة، وأحيانًا
 `telecommuting: true` بدل موقع فعلي (عمل عن بُعد).
 """
@@ -22,7 +22,7 @@ WORKABLE_WIDGET_URL = "https://apply.workable.com/api/v1/widget/accounts/{accoun
 
 def _build_location(item: dict) -> str | None:
     """يبني نص الموقع من حقول Workable الفعلية (city/region/state/country)،
-    أو 'Remote' إن كانت telecommuting=true بلا مدينة محدّدة."""
+    أو 'Remote' إن كانت telecommuting=true بلا مدينة محدَّدة."""
     parts = [
         item.get("city"),
         item.get("region") or item.get("state"),

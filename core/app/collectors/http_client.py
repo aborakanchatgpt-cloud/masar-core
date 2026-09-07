@@ -8,7 +8,7 @@
         وإعادة محاولة بتراجع أُسّي عند 429/أخطاء 5xx (حتى 3 محاولات).
 
 جولة الجامع الكاملة متسلسلة أصلًا (مصدر واحد بالمرة، core/app/discovery.py،
-لا تزامن) فقاموس بسيط لآخر وقت طلب لكل مضيف كافِ تمامًا — لا حاجة لقفل
+لا تزامن) فقاموس بسيط لآخر وقت طلب لكل مضيف كافٍ تمامًا — لا حاجة لقفل
 متعدد الخيوط أو Redis.
 """
 from __future__ import annotations
@@ -32,7 +32,7 @@ _last_request_at: dict[str, float] = {}
 
 
 def _throttle(host: str) -> None:
-    """ينام إن لزم حتى يمر ≥MIN_HOST_INTERVAL_SECONDS منذ آخر طلب لنفس المضيف."""
+    """ينام إن لزم حتى يمرّ ≥MIN_HOST_INTERVAL_SECONDS منذ آخر طلب لنفس المضيف."""
     last = _last_request_at.get(host)
     now = time.monotonic()
     if last is not None:
@@ -52,7 +52,7 @@ def get(
 ) -> httpx.Response:
     """GET بتحديد معدّل لكل مضيف + تراجع أُسّي (1s، 2s) عند 429/5xx أو خطأ
     شبكة، حتى 3 محاولات إجمالًا. يرفع آخر استثناء إن فشلت كل المحاولات
-    (يُعامل كفشل مصدر واحد بجولة discovery.py، بلا إسقاط الجولة كاملة)."""
+    (يُعامَل كفشل مصدر واحد بجولة discovery.py، بلا إسقاط الجولة كاملة)."""
     host = urlparse(url).netloc
     merged_headers = {**DEFAULT_HEADERS, **(headers or {})}
 
