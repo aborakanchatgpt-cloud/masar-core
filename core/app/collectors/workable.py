@@ -12,12 +12,13 @@ from __future__ import annotations
 import httpx
 
 WORKABLE_WIDGET_URL = "https://apply.workable.com/api/v1/widget/accounts/{account}"
+_HEADERS = {"User-Agent": "MasarCoreBot/0.1 (+contact via masar)"}
 
 
 def fetch_jobs(account_shortcode: str, timeout: float = 20.0) -> list[dict]:
     """يرجع قائمة وظائف خام من Workable لحساب واحد (account_shortcode)."""
     url = WORKABLE_WIDGET_URL.format(account=account_shortcode)
-    response = httpx.get(url, timeout=timeout)
+    response = httpx.get(url, timeout=timeout, headers=_HEADERS)
     response.raise_for_status()
     payload = response.json()
 
