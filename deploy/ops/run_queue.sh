@@ -11,16 +11,21 @@
 #
 # عمدًا بدون set -e: فشل معالجة طلب واحد (JSON تالف، أمر غير مدعوم، خطأ
 # تنفيذ) يجب ألا يوقف معالجة بقية الطلبات في القائمة.
+#
+# B1b: يضيف أوامر git/commit تسمح لجلسات Claude (عبر جسر MCP، core/app/mcp_bridge.py)
+# بكتابة ملفات في المستودع وعمل commit + push دون SSH من جلسة Claude نفسها —
+# فقط المضيف (هذا السكربت، بصلاحية root) يملك مفتاح النشر ويستخدمه.
 set -uo pipefail
 
 APP_DIR="/opt/masar-core"
 OPS_DIR="$APP_DIR/ops"
 Q="$OPS_DIR/queue"
 R="$OPS_DIR/results"
+S="$OPS_DIR/stage"
 
-mkdir -p "$Q" "$R"
+mkdir -p "$Q" "$R" "$S"
 # الحاوية core قد تعمل بمستخدم غير root — نسمح لها بالقراءة/الكتابة هنا
-chmod 1777 "$OPS_DIR" "$Q" "$R" 2>/dev/null || true
+chmod 1777 "$OPS_DIR" "$Q" "$R" "$S" 2>/dev/null || true
 
 cd "$APP_DIR" || exit 0
 
@@ -226,6 +231,115 @@ PYEOF
         echo "unknown or invalid command" >"$out_tmp"
         exit_code=2
       fi
+      ;;
+
+    # --- B1b: مفتاح النشر وأوامر git/commit (المضيف فقط يملك مفتاح SSH) ---
+
+    deploy-key)
+      # يولّد زوج مفاتيح ed25519 مرة واحدة فقط (idempotent) ويطبع المفتاح
+      # العام فقط — المفتاح الخاص لا يُطبع ولا يغادر المضيف إطلاقًا. المفتاح
+      # العام يُضاف يدويًا كـ Deploy Key (بصلاحية كتابة) في إعدادات مستودع
+      # GitHub، ثم يُستخدم أمر git-remote-ssh لتفعيله.
+      timeout 60 bash -c '
+        mkdir -p /root/.ssh && chmod 700 /root/.ssh
+        [ -f /root/.ssh/masar_deploy ] || ssh-keygen -t ed25519 -N "" -C "masar-core-deploy" -f /root/.ssh/masar_deploy
+        cat /root/.ssh/masar_deploy.pub
+      ' >"$out_tmp" 2>&1
+      exit_code=$?
+      ;;
+
+    git-remote-ssh)
+      # يحوّل remote origin إلى SSH بمفتاح النشر، ويثبّت هوية git للبوت.
+      # git fetch في آخر السطر يتحقق فورًا من أن المفتاح يعمل فعليًا.
+      timeout 60 bash -c '
+        git remote set-url origin git@github.com:aborakanchatgpt-cloud/masar-core.git &&
+        git config core.sshCommand "ssh -i /root/.ssh/masar_deploy -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new" &&
+        git config user.name "masar-core-bot" &&
+        git config user.email "masar-core-bot@users.noreply.github.com" &&
+        git fetch origin --quiet &&
+        echo ok
+      ' >"$out_tmp" 2>&1
+      exit_code=$?
+      ;;
+
+    git-remote-https)
+      # تراجع (rollback) إلى HTTPS العادي إن سبّب SSH مشكلة — بلا كتابة (النشر
+      # الحالي يعتمد على git pull للقراءة فقط عبر HTTPS، وهذا يبقيه يعمل).
+      timeout 60 bash -c '
+        git remote set-url origin https://github.com/aborakanchatgpt-cloud/masar-core.git && echo ok
+      ' >"$out_tmp" 2>&1
+      exit_code=$?
+      ;;
+
+    commit)
+      # args: [stage_id, message]. الملفات المُرحَّلة (staged) بواسطة core عبر
+      # OPS_DIR/stage/<stage_id>/ (انظر أداة repo_write في mcp_bridge.py)
+      # تُنسخ إلى شجرة المستودع، ثم commit + push إلى origin/main مباشرة.
+      stage_id="${args[0]:-}"
+      message="${args[1]:-}"
+      if ! [[ "$stage_id" =~ $ID_RE ]]; then
+        echo "unknown or invalid command" >"$out_tmp"
+        exit_code=2
+      else
+        STAGE="$S/$stage_id"
+        if [ ! -d "$STAGE" ]; then
+          echo "stage not found: $stage_id" >"$out_tmp"
+          exit_code=2
+        else
+          reject=0
+          rel_paths=()
+          while IFS= read -r -d '' fpath; do
+            rel="${fpath#"$STAGE"/}"
+            case "$rel" in
+              *..*|.git/*|ops/*|.env|.env.*)
+                reject=1
+                ;;
+            esac
+            rel_paths+=("$rel")
+          done < <(find "$STAGE" -type f -print0)
+
+          if [ "$reject" -eq 1 ] || [ "${#rel_paths[@]}" -eq 0 ]; then
+            echo "rejected: invalid file path in stage" >"$out_tmp"
+            exit_code=3
+          else
+            for rel in "${rel_paths[@]}"; do
+              mkdir -p "$APP_DIR/$(dirname "$rel")"
+              cp "$STAGE/$rel" "$APP_DIR/$rel"
+            done
+            for rel in "${rel_paths[@]}"; do
+              git add -A -- "$rel" >>"$out_tmp" 2>&1
+            done
+            if git diff --cached --quiet; then
+              echo "nothing to commit" >"$out_tmp"
+              exit_code=0
+            else
+              if git -c user.name=masar-core-bot -c user.email=masar-core-bot@users.noreply.github.com commit -q -m "$message" >"$out_tmp" 2>&1; then
+                if git push -q origin HEAD:main >>"$out_tmp" 2>&1; then
+                  sha=$(git rev-parse HEAD)
+                  echo "committed and pushed: $sha" >>"$out_tmp"
+                  touch "$OPS_DIR/.deploy_needed"
+                  rm -rf "$STAGE"
+                  exit_code=0
+                else
+                  echo "push failed — commit left local; next autodeploy tick will discard it via git reset --hard origin/main" >>"$out_tmp"
+                  exit_code=4
+                fi
+              else
+                echo "git commit failed" >"$out_tmp"
+                exit_code=4
+              fi
+            fi
+          fi
+        fi
+      fi
+      ;;
+
+    stage-clean)
+      timeout 60 bash -c '
+        find "$1" -mindepth 1 -maxdepth 1 -type d -mtime +1 -exec rm -rf {} + 2>/dev/null
+        echo done
+      ' _ "$S" >"$out_tmp" 2>&1
+      exit_code=$?
       ;;
 
     *)
