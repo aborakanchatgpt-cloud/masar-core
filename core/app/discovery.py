@@ -99,6 +99,12 @@ _family_patterns_cache: list[tuple[str, re.Pattern[str]]] | None = None
 
 DESCRIPTION_MATCH_CHARS = 300
 
+# TAXONOMY_BUILD_MARK: يُحدّث هذا التعليق عمدًا مع كل push يرافق تعديلًا في
+# data/taxonomy_local.yaml (انظر الملاحظة أعلاه) — تغييره وحده يكفي لإجبار
+# طبقة Docker COPY app ./app على إعادة البناء دون أي تعديل منطقي فعلي هنا.
+# آخر تحديث: مراجعة B2 R6 — توسعة ثانية (document controller, cost engineer,
+# quality specialist, data center technician...) بعد فحص /admin/unclassified-sample.
+
 
 def _load_families() -> dict[str, dict]:
     global _families_cache
