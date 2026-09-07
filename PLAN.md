@@ -1,6 +1,6 @@
 # PLAN.md — حالة البناء الحيّة وبروتوكول العمل الذاتي (اقرأه كاملًا قبل أي عمل)
 
-> آخر تحديث: 6 سبتمبر 2026 17:30 UTC — كاتبه: المراجع (Fable). هذا الملف هو **مصدر الحقيقة الوحيد** لحالة المشروع. المرجع التفصيلي للتصميم: `docs/EXECUTION_GUIDE.md`.
+> آخر تحديث: 7 سبتمبر 2026 05:20 UTC — كاتبه: المراجع (Fable). هذا الملف هو **مصدر الحقيقة الوحيد** لحالة المشروع. المرجع التفصيلي للتصميم: `docs/EXECUTION_GUIDE.md`.
 
 ## 0. البروتوكول (لكل جلسة مجدولة)
 
@@ -27,16 +27,22 @@
 - ⚠️ المستودع `aborakanchatgpt-cloud/masar-core` **عام مؤقتًا** (لأن الخادم يسحب بلا توكن). يُعاد خاصًا بعد بند B1.
 - ⚠️ **n8n Cloud تجريبي ينتهي ~10 سبتمبر 2026** (~905/1000 تنفيذ مستهلكة — اقتصد في تنفيذ الوركفلوهات: لا تكرر نداءات فحص بلا حاجة). البند B0 يحسم النقل.
 - ✅ وركفلو `GitHub - Commit File` (`K65rLAVzarrtH4SV`) مربوط باعتماد GitHub ومنشور ومُختبر (commit `0590a8c`). الحلقة الذاتية مفعّلة: المنفّذ كل ساعة، المراجع كل ساعتين.
+- ⚠️ **المهام المجدولة الجديدة لا تبدأ** (7/7 تشغيلات بقيت PENDING بلا أي نداء أداة؛ مهام النظام القديم تعمل). قرار المراجع 6 سبتمبر: التنفيذ يُدار من جلسة Cowork التفاعلية (Fable يراجع، Sonnet كوكيل فرعي ينفّذ) حتى يُحل الخلل؛ مهمتا Executor/Reviewer المجدولتان معطّلتان مؤقتًا.
+- ⚠️ **n8n Cloud شبه منتهي** (تجربة 1000 تنفيذ؛ بقي القليل). أوقفنا الوركفلو `CjlFHF1JG3GzYLbz` (مراقب كل 15 دقيقة) ومهمتي Discovery وPipeline Watchdog القديمتين مؤقتًا لحماية الرصيد. **الجسر البديل:** Masar MCP bridge داخل Core (`/mcp/<token>`) — انظر القسم 4.
+- ✅ **B0 منجز:** n8n ذاتي يعمل على `https://n8n.62.238.117.20.sslip.io` (HTTP 200 + TLS صالح، probe 22:19Z). أحمد أنشأ حساب المالك (7 سبتمبر). باقي: استيراد الوركفلوهات/الاعتمادات (دليل `docs/N8N_SELF_HOST.md`).
+- ✅ **B1a منجز:** ops runner عبر ملفات (`/admin/ops` + `deploy/ops/run_queue.sh` ينفّذه cron المضيف كل دقيقتين): ps/logs/restart/up/migrate/backup-now/psql(قراءة)/sys/git/deploy-key/git-remote-ssh/commit… بدون docker.sock.
+- ✅ **B1b منجز:** MCP bridge (`core/app/mcp_bridge.py`) بأدوات repo_read/repo_list/repo_write/ops/job/wait/core_call. أُضيف مفتاح النشر (Deploy Key) في GitHub بصلاحية قراءة/كتابة (read/write)، ونُفّذ `git-remote-ssh` وأعاد `ok` بتاريخ 2026-09-07 05:32Z؛ والموصّل المخصص "Masar Core" نشط الآن في Claude. باقي: جعل المستودع خاصًا بعد تأكيد أول commit عبر الجسر (B1).
 - 🎯 **الهدف الزمني:** جاهزية استقبال أول عميل حقيقي بحلول **18 سبتمبر 2026** (B0–B7). كل دور يذكر في سطر سجله إن كان الجدول على المسار أم متأخرًا ولماذا.
 
 ## 2. التالي (يأخذ المنفّذ أول TODO بالترتيب — لا يقفز)
 
-### B0 — TODO — نقل n8n إلى الخادم (قبل انتهاء التجربة)
+### B0 — DONE (2026-09-06 22:19Z) — نقل n8n إلى الخادم
 1. أضف خدمة `n8n` إلى `docker-compose.yml` (صورة `docker.n8n.io/n8nio/n8n:latest`، volume `n8n_data:/home/node/.n8n`، شبكة `masar_public`، متغيرات: `N8N_HOST=n8n.${MASAR_DOMAIN}`, `WEBHOOK_URL=https://n8n.${MASAR_DOMAIN}/`, `N8N_PROTOCOL=https`, `GENERIC_TIMEZONE=Asia/Riyadh`, `N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}`, `DB_TYPE=postgresdb` + إعدادات Postgres لقاعدة منفصلة `n8n` تُنشأ بترحيل/سكربت init)، وأضف في `Caddyfile` مضيفًا ثانيًا `n8n.{$MASAR_DOMAIN}` → `reverse_proxy n8n:5678`. أضف `N8N_ENCRYPTION_KEY` إلى `.env.example` ولّده في `bootstrap.sh` إن غاب.
 2. معيار القبول: `https://n8n.62.238.117.20.sslip.io` يفتح صفحة إعداد المالك (Owner setup). **لا تنشئ الحساب** — أحمد ينشئه.
 3. أبلغ أحمد بالخطوات: إنشاء حساب المالك، تصدير الوركفلوهات من Cloud (Settings → Download/Export) واستيرادها، إعادة إدخال اعتمادات Telegram/Gmail/Header Auth، ثم **اختبار اتصال موصّل n8n في تطبيق Claude بالنسخة الذاتية** (Settings → n8n MCP/API في n8n الذاتي). إن لم يتصل الموصّل: القرار المسجّل هو إبقاء أصغر خطة Cloud كجسر فقط ونقل البوتات الثقيلة ذاتيًا — أبلغ أحمد ولا تطفئ Cloud.
 
-### B1 — TODO — نقاط الإدارة والعودة إلى مستودع خاص
+### B1 — WIP — نقاط الإدارة والعودة إلى مستودع خاص
+**ما تبقى فقط (بعد أن يضيف أحمد مفتاح النشر والموصّل):** (1) `ops git-remote-ssh` والتحقق أن `git fetch` يعمل؛ (2) اختبار `repo_write` عبر الموصّل → commit+push من الخادم → إعادة نشر تلقائية (`ops/.deploy_needed`)؛ (3) جعل المستودع خاصًا ثم commit تجريبي للتأكد أن السحب ما زال يعمل؛ (4) تحديث القسم 4 هنا. البنود 1–3 الأصلية أدناه نُفّذت بتصميم أفضل (بلا docker.sock).
 1. في Core أضف `/admin/ops` (POST، محمي بالتوكن) بأوامر من قائمة مسموحة فقط: `health`, `migrate`, `restart`, `logs` (آخر 200 سطر لخدمة محددة), `run-collector`, `seed-esco`, `backup-now`, `deploy-now`. التنفيذ عبر `subprocess` لسكربتات في `deploy/ops/*.sh` (كل أمر سكربت مستقل، لا تمرير نصوص حرة). الحاوية تحتاج وصولًا لسوكت Docker للأوامر restart/logs: أضف `/var/run/docker.sock:/var/run/docker.sock` لخدمة core فقط مع تحذير في التعليقات.
 2. أضف `/admin/deploy-key` (POST): يولّد مفتاح ed25519 في `/opt/masar-core/.deploy_key` (مرة واحدة) ويعيد المفتاح العام؛ و`/admin/git-remote-ssh` يبدّل remote إلى `git@github.com:aborakanchatgpt-cloud/masar-core.git` مع `core.sshCommand` يشير للمفتاح.
 3. معيار القبول: عبر `Core - Call`: `{"path":"/admin/ops","method":"POST","body":{"cmd":"health"}}` يعيد حالة الحاويات؛ `/admin/deploy-key` يعيد مفتاحًا عامًا. ثم أبلغ أحمد: أضف المفتاح كـ Deploy Key (قراءة) في GitHub ثم اجعل المستودع خاصًا؛ بعد تأكيده نفّذ `git-remote-ssh` وتحقق أن autodeploy ما زال يسحب (commit تجريبي).
@@ -65,14 +71,23 @@
 ## 3. سجل التشغيلات (يضيف كل دور سطرًا: التاريخ/الدور/البند/النتيجة/الدليل)
 
 - 2026-09-05 — REVIEWER (Fable, Cowork) — المرحلة 1 — DONE — `/health` و`/admin/ping` عبر n8n ناجحان؛ cron مثبّت؛ backups مفعّلة.
+- 2026-09-06 21:13Z — REVIEWER (Fable, Cowork) — بروتوكول — المهام المجدولة الجديدة لا تبدأ (PENDING دائم، حتى مهمة اختبار بسطر واحد)؛ عُطّلت مؤقتًا، والتنفيذ يُدار من جلسة Cowork بوكلاء Sonnet.
+- 2026-09-06 22:19Z — EXECUTOR (Sonnet subagent) + REVIEWER — B0 — DONE — n8n ذاتي: compose + Caddy + db-init + backup؛ إصلاحان من المراجع: (1) إزالة تمرير N8N_ENCRYPTION_KEY عبر البيئة (تعارض مع مفتاح volume)، (2) Caddy لا يرى Caddyfile الجديد (bind-mount inode) → autodeploy يعيد إنشاء حاوية caddy عند تغيّر الملف. الدليل: probe 200 + HTML n8n. الجدول على المسار.
+- 2026-09-06 22:11Z — EXECUTOR (Sonnet subagent) — B1a — DONE — ops runner بالطابور: `/admin/ops logs caddy 80` → exit 0 وسجلات فعلية.
+- 2026-09-07 05:05Z — EXECUTOR (Sonnet subagent) — B1b — DONE (ينتظر أحمد) — MCP bridge + deploy-key + commit من المضيف؛ `GET /admin/mcp-url` يعيد الرابط؛ `deploy-key` أعاد مفتاحًا عامًا. رُسل لأحمد طلب "نحتاجك فورا" (مفتاح النشر + الموصّل).
 - 2026-09-06 17:30Z — REVIEWER (Fable, Cowork) — بروتوكول — تسريع الحلقة: منفّذ كل ساعة (بنود متتالية، قفل 55 دقيقة يُجدَّد لكل بند)، مراجع كل ساعتين عبر `REVIEW.md` عند وجود قفل حي؛ قاعدة رسائل `نحتاجك فورا — `؛ هدف زمني 18 سبتمبر.
+- 2026-09-07 05:40Z — EXECUTOR (Sonnet subagent) — B1 — أول commit عبر جسر Masar MCP (repo_write) — OK (job exit_code 0، تحقّق عبر raw.githubusercontent.com أن السطر وصل)
 
 ## 4. الواجهات المتاحة للجلسات
 
 - **Core - Call** (`v7xKPShYWHJwqxvs`): `execute_workflow` production، `triggerNodeName: "Incoming Request"`، body: `{"path": "/admin/ping", "method": "GET", "body": {}}` → يعيد استجابة Core.
 - **GitHub - Commit File** (`K65rLAVzarrtH4SV`، `execute_workflow` production، `triggerNodeName: "Commit Request"`): body: `{"path": "core/app/x.py", "content": "<نص الملف كاملًا>", "message": "..."}` → ينشئ/يحدّث الملف في `main` (يجلب sha تلقائيًا). للملفات الكبيرة أرسلها واحدًا واحدًا.
 - **قراءة الكود:** `https://raw.githubusercontent.com/aborakanchatgpt-cloud/masar-core/main/<path>` (عام الآن؛ بعد B1 عبر `/admin/ops cmd=cat`؟ لا — أضف `/admin/file?path=` للقراءة فقط ضمن المستودع).
-- **إشعار أحمد:** `ZiVlsBibVps3pxGB` body `{"message": "..."}`.
+- **GitHub - Read File** (`HEZbBbYAGxBEvdAz`، `triggerNodeName: "Read Request"`): body `{"path": "...", "ref"?: "main", "maxChars"?: N}` → `{ok, content, sha}` (بديل WebFetch).
+- **HTTP - Probe** (`zjjF6JrOqB1udpRX`، `triggerNodeName: "Probe Request"`): body `{"url": "...", "maxChars"?: N}` → `{status, snippet}`.
+- **Core /admin/ops** (عبر Core - Call): `POST /admin/ops {"cmd":"logs","args":["caddy","200"]}` → `{id}`; ثم `GET /admin/ops/<id>` → `{status, exit_code, output}` (ينفَّذ على المضيف خلال ≤ 2 دقيقة). الأوامر: ps, logs, restart, up, caddy-reload, deploy-log, backup-log, sys, env-keys, migrate, backup-now, git, script <name>, psql <select>, deploy-key, git-remote-ssh, git-remote-https, commit <stage> <msg>, stage-clean.
+- **Masar MCP bridge (الأفضل — بلا n8n):** موصّل Claude مخصص على `https://<domain>/mcp/<token>` (الرابط من `GET /admin/mcp-url`). أدوات: `repo_read{path}`, `repo_list{dir,pattern}`, `repo_write{files:[{path,content}],message}` (يُرفع commit من الخادم ويعيد النشر تلقائيًا), `ops{cmd,args}`, `job{id}`, `wait{seconds}`, `core_call{path,method,body}`, `server_time`.
+- **إشعار أحمد:** `ZiVlsBibVps3pxGB` body `{"message": "..."}` — كل رسالة تحتاج فعله تبدأ بـ `نحتاجك فورا — `.
 - **الرسائل للعملاء:** `S6AuI9VPaaQxhfhw`; إشعار الأدمن عبر Core: `UubD6Kba97XGJlVt`.
 
 ## 5. القفل
