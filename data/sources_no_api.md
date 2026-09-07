@@ -35,6 +35,7 @@
 | Accor (فنادق أخرى غير SmartRecruiters) / IHG / Marriott / Hilton | أنظمة توظيف عالمية متفرقة (Taleo/Workday/داخلي)؛ IHG وHilton بلا API عام ظاهر | Accor نفسها أُضيفت عبر SmartRecruiters (انظر sources_seed.csv)؛ الباقي بلا مصدر آلي |
 | طيبة لتشغيل المطارات / Nesma / Almabani / Alfanar / Al Yamama / Initial Saudi | تشغيل وصيانة — مواقع وظائف مؤسسية بلا API/RSS ظاهر | لا مصدر آلي رسمي |
 | Elbait / QS Quest / Hire Fellows / JVI | وكالات توظيف مذكورة بالدليل — لم يُعثر لها على واجهة ATS عامة (Greenhouse/Lever/Workable/Recruitee) وقت الفحص | يُعاد البحث عنها لاحقًا (قد تستخدم نظامًا مغلقًا أو غير مفهرس بعد) |
+| Sanabil Venture Studio | جُرِّبت 3 تخمينات لوحة Greenhouse فعليًا عبر `/admin/discovery/probe` (`sanabilventurestudio`، `sanabil`، `sanabilinvestments`، `sanabilventures`) — 404 لكل منها | كان مُدرَجًا سابقًا بـ`sources_seed.csv` بتخمين خاطئ (id=4، مُعطَّل الآن يدويًا)؛ أُزيل من الملف؛ يحتاج معرفة slug الصحيح فعليًا (أو تأكيد عدم وجود لوحة Greenhouse عامة) قبل إعادة الإدراج |
 
 ## قاعدة العمل
 لا يُضاف أي من هؤلاء إلى `sources_seed.csv` إلا بعد إيجاد:
