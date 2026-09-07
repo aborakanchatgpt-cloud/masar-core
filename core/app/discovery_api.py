@@ -419,17 +419,20 @@ def _reextract_location(source_type: str, raw: dict) -> str | None:
 
 @router.post("/discovery/backfill-locations")
 async def backfill_locations() -> dict:
-    """مراجعة B2 R1 — عملية لمرة واحدة، تُستدعى يدويًا فقط (لا جدولة تلقائية):
+    """مراجعة B2 R1/R6 — عملية لمرة واحدة، تُستدعى يدويًا فقط (لا جدولة تلقائية):
     تمشي على كل صفوف jobs دفعة دفعة (BACKFILL_BATCH_SIZE)، تعيد استخراج
     location/city من raw_json المخزّن حين تكون فارغة (يُصلح فعليًا صفوف
-    Workable الـ2082 التي رصدتها المراجعة)، ثم تعيد حساب country_code/
-    out_of_region لكل صفّ (المطلوب أصلًا لأن الترحيل 0003 وضع كل الصفوف
-    القديمة على out_of_region=true افتراضيًا حتى تُعاد فعليًا هنا — بلا هذه
-    الخطوة تبقى كل الوظائف الست آلاف+ 'خارج النطاق' زورًا). لا تحذف ولا تُدرج
-    أي صفّ — تُحدِّث فقط."""
+    Workable التي رصدتها المراجعة)، ثم تعيد حساب country_code/out_of_region
+    لكل صفّ (المطلوب أصلًا لأن الترحيل 0003 وضع كل الصفوف القديمة على
+    out_of_region=true افتراضيًا حتى تُعاد فعليًا هنا)، وأيضًا تعيد حساب family
+    لأي صفّ family IS NULL (R6: المعجم تَوسّع بعد إدراج هذه الصفوف أصلًا،
+    فالإدراج التاريخي لم يستفد من العائلات السبع الجديدة ولا من مطابقة حدود
+    الكلمة — بلا هذه الخطوة تبقى نسبة التصنيف على الصفوف القديمة صفرًا تقريبًا
+    رغم توسعة data/taxonomy_local.yaml). لا تحذف ولا تُدرج أي صفّ — تُحدِّث فقط."""
     engine = discovery.get_engine()
     total = 0
     location_backfilled = 0
+    family_backfilled = 0
     last_id = 0
     while True:
         with engine.begin() as conn:
@@ -437,7 +440,7 @@ async def backfill_locations() -> dict:
                 text(
                     """
                     SELECT j.id, j.title, j.location, j.city, j.description_snippet,
-                           j.raw_json, s.source_type
+                           j.raw_json, j.family, s.source_type
                     FROM jobs j JOIN sources s ON s.id = j.source_id
                     WHERE j.id > :last_id
                     ORDER BY j.id
@@ -478,6 +481,13 @@ async def backfill_locations() -> dict:
                     location_text or None, f"{row['title'] or ''}\n{description[:300]}"
                 )
 
+                new_family = row["family"]
+                if new_family is None:
+                    computed_family = discovery.classify_family(row["title"], description)
+                    if computed_family:
+                        new_family = computed_family
+                        family_backfilled += 1
+
                 conn.execute(
                     text(
                         """
@@ -485,7 +495,8 @@ async def backfill_locations() -> dict:
                             location = :location,
                             city = :city,
                             country_code = :country_code,
-                            out_of_region = :out_of_region
+                            out_of_region = :out_of_region,
+                            family = :family
                         WHERE id = :id
                         """
                     ),
@@ -494,16 +505,23 @@ async def backfill_locations() -> dict:
                         "city": new_city[:120] if new_city else None,
                         "country_code": country_code,
                         "out_of_region": out_of_region,
+                        "family": new_family,
                         "id": row["id"],
                     },
                 )
 
     logger.info(
-        "backfill-locations: %s صف مُعالَج، %s موقع أُعيد استخراجه من raw_json",
+        "backfill-locations: %s صف مُعالَج، %s موقع أُعيد استخراجه من raw_json، %s عائلة أُعيد تصنيفها",
         total,
         location_backfilled,
+        family_backfilled,
     )
-    return {"ok": True, "total_rows": total, "location_backfilled": location_backfilled}
+    return {
+        "ok": True,
+        "total_rows": total,
+        "location_backfilled": location_backfilled,
+        "family_backfilled": family_backfilled,
+    }
 
 
 @router.get("/dup-breakdown")
