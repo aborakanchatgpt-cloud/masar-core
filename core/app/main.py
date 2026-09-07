@@ -1,10 +1,12 @@
 """
-Masar Core — الخدمة الأساسية الجديدة (المرحلة 1: هيكل فقط + /health)
+Masar Core — الخدمة الأساسية.
 
-هذا الملف عمدًا بسيط بالمرحلة 1 — الهدف هو إثبات أن الخادم يعمل ويمكن الوصول
-له عبر HTTPS، وأن n8n يقدر يستدعيه بنجاح. الوحدات الفعلية (identity, billing,
-profile, discovery, taxonomy, matching, planning, sending, inbox, reporting,
-bridge) تُبنى بالمراحل 2-6 حسب دليل مسار v5.
+المرحلة 1: هيكل + /health. المرحلة 2 (B2): وحدة discovery الحقيقية عبر
+discovery_api.py (نقاط /admin/sources, /admin/stats, /admin/discovery/*,
+/admin/quality-sample) — انظر core/app/discovery.py للمنطق الكامل.
+
+الوحدات الأخرى (identity, billing, profile, matching, planning, sending,
+inbox, reporting) تُبنى بالمراحل 3-6 حسب دليل مسار v5.
 
 B1b: أُضيف جسر MCP (app/mcp_bridge.py) — يجعل جلسات Claude مستقلة عن n8n
 Cloud لعمليات القراءة/الكتابة بالمستودع وتشغيل أوامر المضيف.
@@ -16,17 +18,19 @@ from fastapi import Depends, FastAPI
 from pydantic import BaseModel
 
 from app.auth import require_admin_token
+from app.discovery_api import router as discovery_router
 from app.mcp_bridge import router as mcp_router
 from app.ops import router as ops_router
 
 app = FastAPI(
     title="Masar Core",
     description="الخدمة الأساسية الجديدة لنظام مسار — تحل تدريجيًا محل منطق n8n/Claude Code Remote",
-    version="0.1.0",
+    version="0.2.0",
 )
 
 app.include_router(ops_router)
 app.include_router(mcp_router)
+app.include_router(discovery_router)
 
 
 class HealthResponse(BaseModel):
@@ -54,7 +58,7 @@ async def root() -> dict:
 
 @app.get("/admin/ping", dependencies=[Depends(require_admin_token)])
 async def admin_ping() -> dict:
-    """أول نقطة نهاية محمية بـ CORE_ADMIN_TOKEN — تُستخدم للتحقق من صحة
+    """أول نقطة نهاية محمية بـCORE_ADMIN_TOKEN — تُستخدم للتحقق من صحة
     الإعداد فور النشر (curl -H "Authorization: Bearer <token>" .../admin/ping)
     قبل بناء نقاط الجسر الفعلية بالمراحل القادمة."""
     return {"ok": True, "service": "masar-core"}
