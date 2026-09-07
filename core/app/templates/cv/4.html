@@ -1,0 +1,71 @@
+<!doctype html>
+<html dir="{{ dir }}" lang="{{ language }}">
+<head>
+<meta charset="utf-8">
+<title>{{ name }} - CV</title>
+<style>
+  body { font-family: "Calibri", "Segoe UI", Arial, sans-serif; margin: 0; color: #1c1c1c; }
+  .top { background: #2f6b3a; color: #ffffff; padding: 22px 36px; }
+  .top h1 { margin: 0; font-size: 23px; }
+  .top .contact { font-size: 12.5px; margin-top: 4px; opacity: 0.92; }
+  .cols { display: flex; }
+  .col-side { width: 32%; padding: 20px 24px; background: #f2f6f2; box-sizing: border-box; }
+  .col-main { width: 68%; padding: 20px 28px; box-sizing: border-box; }
+  h2 { font-size: 13.5px; color: #2f6b3a; text-transform: uppercase; letter-spacing: 0.5px;
+       margin-top: 18px; margin-bottom: 6px; }
+  ul { margin: 4px 0; padding-{{ 'right' if dir == 'rtl' else 'left' }}: 16px; font-size: 12.5px; }
+  .excerpt { white-space: pre-wrap; font-size: 12.5px; }
+  .refs { margin-top: 18px; font-size: 11.5px; color: #666; }
+</style>
+</head>
+<body>
+  <div class="top">
+    <h1>{{ name }}</h1>
+    <div class="contact">{% if phone %}{{ phone }}{% endif %}{% if city %} &middot; {{ city }}{% endif %}</div>
+  </div>
+  <div class="cols">
+    <div class="col-side">
+      {% if skills %}
+      <h2>{{ 'المهارات' if language == 'ar' else 'Skills' }}</h2>
+      <ul>{% for s in skills %}<li>{{ s }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      {% if certs %}
+      <h2>{{ 'الشهادات' if language == 'ar' else 'Certifications' }}</h2>
+      <ul>{% for c in certs %}<li>{{ c }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      {% if languages %}
+      <h2>{{ 'اللغات' if language == 'ar' else 'Languages' }}</h2>
+      <ul>{% for l in languages %}<li>{{ l }}</li>{% endfor %}</ul>
+      {% endif %}
+    </div>
+    <div class="col-main">
+      <h2>{{ 'نبذة' if language == 'ar' else 'Summary' }}</h2>
+      <p>
+        {% if language == 'ar' %}
+          {% if years_exp %}خبرة {{ years_exp }} سنوات{% if seniority %}، {{ seniority }}{% endif %}.{% endif %}
+          {% if degree %} {{ degree }}.{% endif %}
+        {% else %}
+          {% if years_exp %}{{ years_exp }} years of experience{% if seniority %}, {{ seniority }}{% endif %}.{% endif %}
+          {% if degree %} {{ degree }}.{% endif %}
+        {% endif %}
+      </p>
+
+      {% if titles %}
+      <h2>{{ 'المسميات الوظيفية' if language == 'ar' else 'Titles' }}</h2>
+      <ul>{% for t in titles %}<li>{{ t }}</li>{% endfor %}</ul>
+      {% endif %}
+
+      {% if cv_excerpt %}
+      <h2>{{ 'الخبرة العملية' if language == 'ar' else 'Experience' }}</h2>
+      <div class="excerpt">{{ cv_excerpt }}</div>
+      {% endif %}
+
+      <div class="refs">
+        {% if language == 'ar' %}المراجع متاحة عند الطلب.{% else %}References available upon request.{% endif %}
+      </div>
+    </div>
+  </div>
+</body>
+</html>
