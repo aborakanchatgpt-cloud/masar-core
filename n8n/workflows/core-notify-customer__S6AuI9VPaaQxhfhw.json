@@ -1,0 +1,14 @@
+{
+  "name": "Core - Notify Customer",
+  "nodes": [
+    {"id":"6c8d95ae-075e-4140-a65f-1c59e3a02c76","name":"Notify Customer Request","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"core-notify-customer","responseMode":"responseNode","options":{}},"webhookId":"7a21a116-d4bc-4cb7-b550-1a8658f33780"},
+    {"id":"8148568d-154b-4761-826a-0e2e58c7a022","name":"Send Telegram Message","type":"n8n-nodes-base.telegram","typeVersion":1.2,"position":[224,0],"parameters":{"resource":"message","operation":"sendMessage","chatId":"={{ $json.body.telegramChatId }}","text":"={{ $json.body.message }}","additionalFields":{}},"webhookId":"b90bd584-bacd-4fbb-9ff6-a82579a4f9e8","credentials":{"telegramApi":{"name":"Telegram account"}}},
+    {"id":"67e3c98d-dbf0-4fd9-a27e-8d7ca629d805","name":"Respond","type":"n8n-nodes-base.respondToWebhook","typeVersion":1.5,"position":[448,0],"parameters":{"respondWith":"firstIncomingItem"}}
+  ],
+  "connections": {
+    "Notify Customer Request": {"main": [[{"node":"Send Telegram Message","type":"main","index":0}]]},
+    "Send Telegram Message": {"main": [[{"node":"Respond","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}

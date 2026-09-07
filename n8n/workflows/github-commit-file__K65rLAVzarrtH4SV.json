@@ -1,0 +1,22 @@
+{
+  "name": "GitHub - Commit File",
+  "nodes": [
+    {"id":"f81c57de-b12e-4e37-883b-4c0bb36e619d","name":"Commit Request","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"github-commit","responseMode":"responseNode","options":{}},"webhookId":"c4c4bb4e-0d79-4305-89b5-c4f940c05ebf"},
+    {"id":"8d9a37e0-d38e-4899-bdc4-1264cb5560aa","name":"Prepare","type":"n8n-nodes-base.code","typeVersion":2,"position":[224,0],"parameters":{"mode":"runOnceForAllItems","language":"javaScript","jsCode":"const body = $input.first().json.body || {};\nconst path = String(body.path || '').replace(/^\\/+/, '');\nconst content = body.content;\nconst message = body.message || ('update ' + path);\nif (!path || typeof content !== 'string') {\n  return [{ json: { ok: false, error: 'path and content (string) are required' } }];\n}\nconst urlPath = path.split('/').map(encodeURIComponent).join('/');\nconst contentB64 = Buffer.from(content, 'utf8').toString('base64');\nreturn [{ json: { ok: true, path, urlPath, message, contentB64, branch: body.branch || 'main' } }];"}},
+    {"id":"da3d2ab4-1a76-40fc-9647-b6eb675ccfe9","name":"Get Existing File","type":"n8n-nodes-base.httpRequest","typeVersion":4.5,"position":[448,0],"parameters":{"method":"GET","url":"=https://api.github.com/repos/aborakanchatgpt-cloud/masar-core/contents/{{ $json.urlPath }}?ref={{ $json.branch }}","authentication":"genericCredentialType","genericAuthType":"httpHeaderAuth","sendHeaders":true,"specifyHeaders":"keypair","headerParameters":{"parameters":[{"name":"Accept","value":"application/vnd.github+json"},{"name":"User-Agent","value":"masar-core-n8n"},{"name":"X-GitHub-Api-Version","value":"2022-11-28"}]},"options":{"response":{"response":{"neverError":true,"fullResponse":false}}}},"credentials":{"httpHeaderAuth":{"name":"Header Auth account"}}},
+    {"id":"85d030c0-e246-49b3-a43b-391604177c0e","name":"Build Put Body","type":"n8n-nodes-base.code","typeVersion":2,"position":[672,0],"parameters":{"mode":"runOnceForAllItems","language":"javaScript","jsCode":"const prep = $('Prepare').first().json;\nconst existing = $input.first().json || {};\nconst put = { message: prep.message, content: prep.contentB64, branch: prep.branch };\nif (existing && existing.sha) put.sha = existing.sha;\nreturn [{ json: { urlPath: prep.urlPath, path: prep.path, put } }];"}},
+    {"id":"b6e2086e-2b89-4154-93e5-b3c2341f4fda","name":"Put File","type":"n8n-nodes-base.httpRequest","typeVersion":4.5,"position":[896,0],"parameters":{"method":"PUT","url":"=https://api.github.com/repos/aborakanchatgpt-cloud/masar-core/contents/{{ $json.urlPath }}","authentication":"genericCredentialType","genericAuthType":"httpHeaderAuth","sendHeaders":true,"specifyHeaders":"keypair","headerParameters":{"parameters":[{"name":"Accept","value":"application/vnd.github+json"},{"name":"User-Agent","value":"masar-core-n8n"},{"name":"X-GitHub-Api-Version","value":"2022-11-28"}]},"sendBody":true,"contentType":"json","specifyBody":"json","jsonBody":"={{ JSON.stringify($json.put) }}","options":{"response":{"response":{"neverError":true,"fullResponse":false}}}},"credentials":{"httpHeaderAuth":{"name":"Header Auth account"}}},
+    {"id":"a8dabb12-6ffe-4602-bf70-ced956d8281b","name":"Summarize","type":"n8n-nodes-base.code","typeVersion":2,"position":[1120,0],"parameters":{"mode":"runOnceForAllItems","language":"javaScript","jsCode":"const r = $input.first().json || {};\nconst prep = $('Prepare').first().json;\nif (r.commit && r.commit.sha) {\n  return [{ json: { ok: true, path: prep.path, commit: r.commit.sha, url: r.content ? r.content.html_url : null } }];\n}\nreturn [{ json: { ok: false, path: prep.path, error: r.message || 'unknown error', details: r } }];"}},
+    {"id":"bd190e72-11aa-483a-b8dc-046dce78d48d","name":"Respond","type":"n8n-nodes-base.respondToWebhook","typeVersion":1.5,"position":[1344,0],"parameters":{"respondWith":"firstIncomingItem"}}
+  ],
+  "connections": {
+    "Commit Request": {"main": [[{"node":"Prepare","type":"main","index":0}]]},
+    "Prepare": {"main": [[{"node":"Get Existing File","type":"main","index":0}]]},
+    "Get Existing File": {"main": [[{"node":"Build Put Body","type":"main","index":0}]]},
+    "Build Put Body": {"main": [[{"node":"Put File","type":"main","index":0}]]},
+    "Put File": {"main": [[{"node":"Summarize","type":"main","index":0}]]},
+    "Summarize": {"main": [[{"node":"Respond","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}

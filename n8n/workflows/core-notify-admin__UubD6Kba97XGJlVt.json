@@ -1,0 +1,14 @@
+{
+  "name": "Core - Notify Admin",
+  "nodes": [
+    {"id":"f337d79d-214b-492c-a871-a916fc3f907d","name":"Notify Admin Request","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"core-notify-admin","responseMode":"responseNode","options":{}},"webhookId":"5c928646-6d15-430a-8b84-c58b59592376"},
+    {"id":"74f973ff-453c-44d2-abc3-d7b80ae56969","name":"Forward To Admin Bot","type":"n8n-nodes-base.executeWorkflow","typeVersion":1.3,"position":[224,0],"parameters":{"mode":"once","source":"database","workflowId":{"__rl":true,"mode":"id","value":"ZiVlsBibVps3pxGB"}}},
+    {"id":"605d6687-91b9-4f00-acae-25ec275c1815","name":"Respond","type":"n8n-nodes-base.respondToWebhook","typeVersion":1.5,"position":[448,0],"parameters":{"respondWith":"json","responseBody":"={{ { \"ok\": true } }}"}}
+  ],
+  "connections": {
+    "Notify Admin Request": {"main": [[{"node":"Forward To Admin Bot","type":"main","index":0}]]},
+    "Forward To Admin Bot": {"main": [[{"node":"Respond","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}

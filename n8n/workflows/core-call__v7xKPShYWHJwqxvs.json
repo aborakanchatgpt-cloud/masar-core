@@ -1,0 +1,16 @@
+{
+  "name": "Core - Call",
+  "nodes": [
+    {"id":"ba5058a4-9caf-4fed-9736-ca02c4607fb9","name":"Incoming Request","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"core-call","responseMode":"responseNode","options":{}},"webhookId":"b1d48924-179f-4901-834b-9decf7d5be1f"},
+    {"id":"e1c22588-d0c5-46c8-93c6-037541534974","name":"Core Config","type":"n8n-nodes-base.set","typeVersion":3.5,"position":[224,0],"parameters":{"mode":"manual","includeOtherFields":true,"assignments":{"assignments":[{"id":"base-url","name":"baseUrl","value":"https://62.238.117.20.sslip.io","type":"string"}]}}},
+    {"id":"5c935abb-03ac-422a-b27c-e5af40e9e713","name":"Call Core Service","type":"n8n-nodes-base.httpRequest","typeVersion":4.5,"position":[448,0],"parameters":{"method":"={{ $json.body.method ?? \"GET\" }}","url":"={{ $json.baseUrl }}{{ $json.body.path }}","sendBody":true,"contentType":"json","specifyBody":"json","jsonBody":"={{ $json.body.body ?? {} }}","options":{"response":{"response":{"neverError":true,"fullResponse":false}}},"authentication":"genericCredentialType","genericAuthType":"httpHeaderAuth"},"credentials":{"httpHeaderAuth":{"name":"Masar Core Admin Token"}}},
+    {"id":"3449e107-8502-4f2d-9127-02b5b4672fbd","name":"Respond","type":"n8n-nodes-base.respondToWebhook","typeVersion":1.5,"position":[672,0],"parameters":{"respondWith":"firstIncomingItem"}}
+  ],
+  "connections": {
+    "Incoming Request": {"main": [[{"node":"Core Config","type":"main","index":0}]]},
+    "Core Config": {"main": [[{"node":"Call Core Service","type":"main","index":0}]]},
+    "Call Core Service": {"main": [[{"node":"Respond","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}

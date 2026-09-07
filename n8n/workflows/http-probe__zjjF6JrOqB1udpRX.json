@@ -1,0 +1,16 @@
+{
+  "name": "HTTP - Probe",
+  "nodes": [
+    {"id":"153a0e98-ee62-4f64-80e8-4590d71e9f9e","name":"Probe Request","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"http-probe","responseMode":"responseNode","options":{}},"webhookId":"83b71242-15ae-441d-8499-31db804fb20c"},
+    {"id":"d2a67d7d-d091-419d-b61f-ba5a5f3686b2","name":"Fetch URL","type":"n8n-nodes-base.httpRequest","typeVersion":4.5,"position":[224,0],"parameters":{"method":"GET","url":"={{ $json.body.url }}","options":{"response":{"response":{"neverError":true,"fullResponse":true,"responseFormat":"text"}},"timeout":20000,"redirect":{"redirect":{"followRedirects":true}}}}},
+    {"id":"022a8d7e-fd3d-44ea-8c58-293abbef3de5","name":"Summarize","type":"n8n-nodes-base.code","typeVersion":2,"position":[448,0],"parameters":{"mode":"runOnceForAllItems","language":"javaScript","jsCode":"const r = $input.first().json || {};\nlet raw = (r.body !== undefined && r.body !== '') ? r.body : (r.data !== undefined ? r.data : '');\nconst body = typeof raw === 'string' ? raw : JSON.stringify(raw || '');\nconst max = Number($('Probe Request').first().json.body.maxChars || 600);\nreturn [{ json: { ok: true, status: r.statusCode, keys: Object.keys(r), length: body.length, snippet: body.slice(0, max) } }];"}},
+    {"id":"38751553-a532-4946-9ecd-019c75fc29fc","name":"Respond","type":"n8n-nodes-base.respondToWebhook","typeVersion":1.5,"position":[672,0],"parameters":{"respondWith":"firstIncomingItem"}}
+  ],
+  "connections": {
+    "Probe Request": {"main": [[{"node":"Fetch URL","type":"main","index":0}]]},
+    "Fetch URL": {"main": [[{"node":"Summarize","type":"main","index":0}]]},
+    "Summarize": {"main": [[{"node":"Respond","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}

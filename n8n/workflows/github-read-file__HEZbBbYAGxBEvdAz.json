@@ -1,0 +1,18 @@
+{
+  "name": "GitHub - Read File",
+  "nodes": [
+    {"id":"465fcd79-9c53-4376-8f44-45de1d5c6943","name":"Read Request","type":"n8n-nodes-base.webhook","typeVersion":2.1,"position":[0,0],"parameters":{"httpMethod":"POST","path":"github-read","responseMode":"responseNode","options":{}},"webhookId":"d6bd4a9a-0cee-4d9b-a629-4991ac94311e"},
+    {"id":"087f1419-b5db-478c-a0e7-8f990ff187fe","name":"Prepare","type":"n8n-nodes-base.code","typeVersion":2,"position":[224,0],"parameters":{"mode":"runOnceForAllItems","language":"javaScript","jsCode":"const body = $input.first().json.body || {};\nconst path = String(body.path || '').replace(/^\\/+/, '');\nif (!path) { return [{ json: { ok: false, error: 'path is required' } }]; }\nconst urlPath = path.split('/').map(encodeURIComponent).join('/');\nreturn [{ json: { ok: true, path, urlPath, ref: body.ref || 'main', maxChars: Number(body.maxChars || 0) } }];"}},
+    {"id":"800585aa-0ad7-4a19-92ba-46db5f87717e","name":"Get File","type":"n8n-nodes-base.httpRequest","typeVersion":4.5,"position":[448,0],"parameters":{"method":"GET","url":"=https://api.github.com/repos/aborakanchatgpt-cloud/masar-core/contents/{{ $json.urlPath }}?ref={{ $json.ref }}","authentication":"genericCredentialType","genericAuthType":"httpHeaderAuth","sendHeaders":true,"specifyHeaders":"keypair","headerParameters":{"parameters":[{"name":"Accept","value":"application/vnd.github+json"},{"name":"User-Agent","value":"masar-core-n8n"},{"name":"X-GitHub-Api-Version","value":"2022-11-28"}]},"options":{"response":{"response":{"neverError":true,"fullResponse":false}}}},"credentials":{"httpHeaderAuth":{"name":"Header Auth account"}}},
+    {"id":"d68cd645-9a9f-4711-8ff3-544de14f9c7f","name":"Decode","type":"n8n-nodes-base.code","typeVersion":2,"position":[672,0],"parameters":{"mode":"runOnceForAllItems","language":"javaScript","jsCode":"const prep = $('Prepare').first().json;\nconst r = $input.first().json || {};\nif (!r.content || r.type !== 'file') {\n  return [{ json: { ok: false, path: prep.path, error: r.message || 'not a file or not found', status: r.status || null } }];\n}\nlet text = Buffer.from(String(r.content).replace(/\\n/g, ''), 'base64').toString('utf8');\nconst total = text.length;\nlet truncated = false;\nif (prep.maxChars > 0 && total > prep.maxChars) { text = text.slice(0, prep.maxChars); truncated = true; }\nreturn [{ json: { ok: true, path: prep.path, sha: r.sha, size: r.size, chars: total, truncated, content: text } }];"}},
+    {"id":"b050bab6-eff6-4ffe-ad72-ca7ffb13c85b","name":"Respond","type":"n8n-nodes-base.respondToWebhook","typeVersion":1.5,"position":[896,0],"parameters":{"respondWith":"firstIncomingItem"}}
+  ],
+  "connections": {
+    "Read Request": {"main": [[{"node":"Prepare","type":"main","index":0}]]},
+    "Prepare": {"main": [[{"node":"Get File","type":"main","index":0}]]},
+    "Get File": {"main": [[{"node":"Decode","type":"main","index":0}]]},
+    "Decode": {"main": [[{"node":"Respond","type":"main","index":0}]]}
+  },
+  "settings": {"executionOrder": "v1"},
+  "pinData": {}
+}
