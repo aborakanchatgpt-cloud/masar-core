@@ -13,6 +13,22 @@ dedup_key)، يحدّث صحة كل مصدر (last_ok_at/last_error/avg_per_day)
 بلا SQLAlchemy ORM عمدًا (لا نماذج بعد) — استعلامات SQL صريحة عبر
 sqlalchemy.text()، لأن هذه أول وحدة تكتب بيانات فعلية والمخطط لا يزال يتطور
 بسرعة بالمرحلتين 2-3؛ ORM كامل يُضاف حين تستقر الجداول (بعد B3).
+
+مراجعة B2 R10 (docs/reports/B2-review-2.md): تكرار حقيقي بنسبة ~55% كان ينتج
+لأن بعض المصادر (خصوصًا Workable لوكالات التوظيف) تُرجع نفس الوظيفة (نفس
+apply_url) مرارًا ضمن استجابة واحدة، مرة لكل مدينة "مرشَّحة"، وصيغة
+dedup_key السابقة (R5) كانت تُدرج المدينة بالمفتاح فتُنتج صفًا منفصلًا لكل
+مدينة. الإصلاح: `_group_raw_jobs_by_identity()` يُجمّع raw_jobs المجلوبة
+بنفس الجولة حسب هوية الإعلان (dedup_key الجديد المعتمد على apply_url وحده
+حين متوفر) *قبل* الإدراج، ويُنتج صفًا واحدًا لكل إعلان فعلي بحقل
+`jobs.locations` (مصفوفة JSON) يجمع كل المواقع المذكورة. `jobs.location`
+يبقى النص الخام لأول ظهور (تمثيلي فقط)، و`jobs.city` يبقى من الاستخراج
+الأدق للعرض/الفلترة.
+
+عمود `jobs.locations` (JSONB) أُضيف بتعديل مخطّط idempotent وقت الإقلاع
+(`_ensure_schema`) لا بترحيل Alembic رسمي — B3 (منفّذ آخر يملك core/app/main.py
+وترحيل 0004) يجري بالتوازي؛ سيُضاف ترحيل 0005 رسمي لاحقًا بعد استقرار 0004
+على main بدل الآن لتفادي أي تصادم مراجعة.
 """
 from __future__ import annotations
 
@@ -60,14 +76,38 @@ ROUND_BUDGET_SECONDS = 20 * 60
 # = 0 كِلا الجولتين)، يُعطَّل المصدر تلقائيًا (مصادر region_filter='gcc' فقط).
 GCC_ZERO_ROUNDS_DISABLE_THRESHOLD = 2
 
+# مراجعة B2 R12 (docs/reports/B2-review-2.md): عائلات مُستبعدة عمدًا من
+# التصنيف (مثل sales_excluded) يجب ألا تُحسب ضمن "غير مصنّف" — تُفصل صراحة
+# عن مقياس family_classified_pct_in_region (discovery_api.py) بدل الخلط
+# بينها وبين فجوة معجم حقيقية.
+EXCLUDED_FAMILY_NAMES = {"sales_excluded"}
+
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 _engine_singleton: Engine | None = None
+_schema_ensured = False
 
 
 def _data_dir() -> Path:
     return Path(os.environ.get("DATA_DIR", "/app/data"))
+
+
+def _ensure_schema(engine: Engine) -> None:
+    """مراجعة B2 R10: تعديل مخطّط idempotent بلا ترحيل Alembic رسمي (منفّذ
+    B3 يملك حاليًا آخر ترحيل/main.py؛ راجع تعليق أعلى الملف). يُنفّذ مرة
+    واحدة فقط لكل عملية حيّة، مضمون التكرار الآمن (`IF NOT EXISTS`)."""
+    global _schema_ensured
+    if _schema_ensured:
+        return
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS locations JSONB DEFAULT '[]'::jsonb")
+            )
+        _schema_ensured = True
+    except Exception:
+        logger.exception("تعذّر التأكد من عمود jobs.locations — سيُعاد المحاولة بالاستدعاء التالي")
 
 
 def get_engine() -> Engine:
@@ -78,6 +118,7 @@ def get_engine() -> Engine:
     if url.startswith("postgresql://"):
         url = "postgresql+psycopg://" + url[len("postgresql://") :]
     _engine_singleton = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
+    _ensure_schema(_engine_singleton)
     return _engine_singleton
 
 
@@ -87,6 +128,12 @@ def get_engine() -> Engine:
 # مراجعة B2 R6: مطابقة بحدود كلمة صريحة (لا سلسلة فرعية) عبر تعابير نمطية
 # مُجمَّعة مسبقًا لكل عائلة، على العنوان + أول 300 حرف من الوصف معًا (كان
 # سابقًا العنوان فقط بمطابقة سلسلة فرعية بسيطة).
+#
+# مراجعة B2 R12: العائلات المُستبعدة (`excluded: true`، مثل sales_excluded)
+# كانت تُتخطّى بالكامل بـ`_build_family_patterns()` فتُحسَب أي وظيفة مبيعات
+# ضمن "غير مصنّف" رغم استبعادها عمدًا — الآن تُبنى أنماطها أيضًا وتُرجَع
+# كاسم عائلة فعلي (وليس None) حين تُطابَق، مع فصلها لاحقًا بمقياس
+# family_classified_pct_in_region (discovery_api.py) عبر EXCLUDED_FAMILY_NAMES.
 # ---------------------------------------------------------------------------
 
 # ملاحظة تشغيلية (مراجعة B2): هذان الكاشان يُملآن مرة واحدة فقط لكل عملية
@@ -99,11 +146,11 @@ _family_patterns_cache: list[tuple[str, re.Pattern[str]]] | None = None
 
 DESCRIPTION_MATCH_CHARS = 300
 
-# TAXONOMY_BUILD_MARK: يُحدَّث هذا التعليق عمدًا مع كل push يرافق تعديلًا في
+# TAXONOMY_BUILD_MARK: يُحدّث هذا التعليق عمدًا مع كل push يرافق تعديلًا في
 # data/taxonomy_local.yaml (انظر الملاحظة أعلاه) — تغييره وحده يكفي لإجبار
 # طبقة Docker COPY app ./app على إعادة البناء دون أي تعديل منطقي فعلي هنا.
-# آخر تحديث: مراجعة B2 R6 — توسعة ثانية (document controller, cost engineer,
-# quality specialist, data center technician...) بعد فحص /admin/unclassified-sample.
+# آخر تحديث: مراجعة B2 R12 — دمج مقتطف docs/reports/B2-review-2.md §5
+# (SCADA/project_controls/hse/chem_process/it_software/finance/sales_excluded).
 
 
 def _load_families() -> dict[str, dict]:
@@ -127,8 +174,9 @@ def _build_family_patterns() -> list[tuple[str, re.Pattern[str]]]:
         return _family_patterns_cache
     patterns: list[tuple[str, re.Pattern[str]]] = []
     for family, spec in _load_families().items():
-        if spec.get("excluded"):
-            continue
+        # مراجعة B2 R12: لم نعد نتخطّى العائلات المُستبعدة (excluded: true) —
+        # تُبنى أنماطها أيضًا وتُرجَع كاسم عائلة فعلي حين تُطابَق، بدل ترك
+        # الوظيفة بلا أي تصنيف (family=None) فتختلط بفجوة معجم حقيقية.
         keywords = list(spec.get("keywords_en") or []) + list(spec.get("keywords_ar") or [])
         if not keywords:
             continue
@@ -140,7 +188,9 @@ def _build_family_patterns() -> list[tuple[str, re.Pattern[str]]]:
 
 def classify_family(title: str | None, description: str | None = None) -> str | None:
     """يرجّع أول عائلة مهنية تُطابق (العنوان + أول 300 حرف من الوصف) عبر
-    معجم taxonomy_local.yaml، بحدود كلمة صريحة (مراجعة B2 R6)."""
+    معجم taxonomy_local.yaml، بحدود كلمة صريحة (مراجعة B2 R6). قد تكون
+    النتيجة اسم عائلة مُستبعدة (مثل sales_excluded — مراجعة B2 R12) —
+    المستدعي مسؤول عن استثنائها من مقاييس "التصنيف الفعلي" حين يلزم."""
     combined = " ".join(filter(None, [title or "", (description or "")[:DESCRIPTION_MATCH_CHARS]]))
     if not combined.strip():
         return None
@@ -165,6 +215,52 @@ def _extract_description(raw_job: dict) -> str:
             stripped = _HTML_TAG_RE.sub(" ", value)
             return _WS_RE.sub(" ", stripped).strip()[:5000]
     return ""
+
+
+# ---------------------------------------------------------------------------
+# مراجعة B2 R10: تجميع raw_jobs المجلوبة بنفس الجولة حسب هوية الإعلان
+# ---------------------------------------------------------------------------
+
+
+def _group_raw_jobs_by_identity(
+    raw_jobs: list[dict], company_name: str | None, source_id: int | str | None
+) -> list[dict]:
+    """يُجمّع raw_jobs حسب dedup_key (الذي يعتمد الآن على apply_url وحده حين
+    متوفر — مراجعة B2 R10) *قبل* أي إدراج بقاعدة البيانات. بعض المصادر
+    (خصوصًا Workable لوكالات التوظيف كـEram Talent/Hudson Manpower) تُرجع
+    نفس الوظيفة (نفس apply_url) مرارًا ضمن استجابة واحدة، مرة لكل مدينة
+    "مرشَّحة" — يجب أن تُصبح صفًا واحدًا بحقل `locations` يجمع كل المواقع
+    المذكورة، لا صفًا منفصلًا لكل مدينة. دالة نقية بلا اتصال قاعدة بيانات —
+    قابلة للاختبار مباشرة (core/tests/test_discovery_grouping.py).
+
+    يُرجع قائمة عناصر بترتيب أول ظهور، كل عنصر:
+        {dedup_key, raw_job (أول ظهور), title, location_text (أول ظهور),
+         apply_url, locations (قائمة كل نصوص الموقع الفريدة المذكورة)}
+    """
+    groups: dict[str, dict] = {}
+    order: list[str] = []
+    for raw_job in raw_jobs:
+        title = (raw_job.get("title") or "").strip()
+        if not title:
+            continue
+        location_text = (raw_job.get("location") or "").strip()
+        apply_url = raw_job.get("url")
+        key = dedup_key(company_name, title, location_text or None, apply_url, source_id=source_id)
+        entry = groups.get(key)
+        if entry is None:
+            entry = {
+                "dedup_key": key,
+                "raw_job": raw_job,
+                "title": title,
+                "location_text": location_text,
+                "apply_url": apply_url,
+                "locations": [],
+            }
+            groups[key] = entry
+            order.append(key)
+        if location_text and location_text not in entry["locations"]:
+            entry["locations"].append(location_text)
+    return [groups[k] for k in order]
 
 
 # ---------------------------------------------------------------------------
@@ -416,13 +512,21 @@ def run_round() -> dict:
         family_counts: dict[str, int] = {}
         gcc_hits_this_source = 0
 
+        # مراجعة B2 R10: تجميع raw_jobs حسب هوية الإعلان *قبل* الإدراج —
+        # يمنع إدراج صف منفصل لكل مدينة "مرشَّحة" يذكرها المصدر لنفس
+        # apply_url فعليًا (انظر توثيق _group_raw_jobs_by_identity أعلاه).
+        grouped_entries = _group_raw_jobs_by_identity(raw_jobs, company_name, source_id)
+
         try:
             with engine.begin() as conn:
-                for raw_job in raw_jobs:
-                    title = (raw_job.get("title") or "").strip()
-                    if not title:
-                        continue
-                    location_text = (raw_job.get("location") or "").strip()
+                for entry in grouped_entries:
+                    raw_job = entry["raw_job"]
+                    title = entry["title"]
+                    location_text = entry["location_text"]
+                    apply_url = entry["apply_url"]
+                    locations = entry["locations"] or ([location_text] if location_text else [])
+                    d_key = entry["dedup_key"]
+
                     description = _extract_description(raw_job)
                     combined_text = "\n".join(filter(None, [title, location_text, description]))
 
@@ -433,45 +537,42 @@ def run_round() -> dict:
                     saudi_only = is_saudi_only(combined_text)
                     skills = extract_skills(combined_text)
                     family = classify_family(title, description)
-                    apply_mode = classify_application_type(raw_job.get("url"), source_type)
-                    apply_url = raw_job.get("url")
+                    apply_mode = classify_application_type(apply_url, source_type)
 
+                    # مراجعة B2 R11: location_text البنيوي فقط يُستخدم حين
+                    # متوفرًا — النص الإضافي (عنوان+وصف) لا يُمرّر إلا ليكون
+                    # ملاذًا أخيرًا حين location_text فارغ تمامًا (compute_region
+                    # نفسها تطبّق هذا الشرط داخليًا الآن).
                     country_code, out_of_region = compute_region(
                         location_text or None, f"{title}\n{description[:300]}"
                     )
                     if not out_of_region:
                         gcc_hits_this_source += 1
 
-                    # مراجعة B2 R6 إصلاح تكرار: نستخدم location_text الخام (كما
-                    # يُرجعه المصدر مباشرةً) في مفتاح كشف التكرار، وليس city
-                    # المُستخرَج عبر NLP من combined_text (عنوان+موقع+وصف).
-                    # السبب: extract_cities() قد يُرجع نتيجة مختلفة بين جولتين
-                    # لنفس الوظيفة تمامًا إن اختلف نص الوصف قليلًا بين جلبتين
-                    # (محتوى ديناميكي/ترتيب فقرات من المصدر) — ما يُنتج
-                    # dedup_key مختلفًا لنفس الوظيفة فعليًا فيفشل
-                    # ON CONFLICT (dedup_key) DO NOTHING في كشف التكرار، ويُدرج
-                    # صفًا مكررًا. location_text يأتي مباشرة من حقل المصدر
-                    # الخام (raw_job["location"]) وهو ثابت بين الجلبات لنفس
-                    # الوظيفة. عمود jobs.city يبقى كما هو (من الاستخراج
-                    # الأدق) للعرض/الفلترة فقط، ولا علاقة له بهذا المفتاح.
-                    d_key = dedup_key(company_name, title, location_text or None, apply_url)
-
                     inserted = conn.execute(
                         text(
                             """
                             INSERT INTO jobs (
                                 source_id, company_id, external_id, title, url, location,
-                                family, dedup_key, raw_json, company_name, city, years_min,
-                                seniority, saudi_only, skills, apply_mode, description_snippet,
-                                country_code, out_of_region
+                                locations, family, dedup_key, raw_json, company_name, city,
+                                years_min, seniority, saudi_only, skills, apply_mode,
+                                description_snippet, country_code, out_of_region
                             ) VALUES (
                                 :source_id, :company_id, :external_id, :title, :url, :location,
-                                :family, :dedup_key, :raw_json, :company_name, :city, :years_min,
-                                :seniority, :saudi_only, :skills, :apply_mode, :description_snippet,
-                                :country_code, :out_of_region
+                                :locations, :family, :dedup_key, :raw_json, :company_name, :city,
+                                :years_min, :seniority, :saudi_only, :skills, :apply_mode,
+                                :description_snippet, :country_code, :out_of_region
                             )
-                            ON CONFLICT (dedup_key) DO NOTHING
-                            RETURNING id
+                            ON CONFLICT (dedup_key) DO UPDATE SET
+                                locations = (
+                                    SELECT COALESCE(jsonb_agg(DISTINCT loc), '[]'::jsonb) FROM (
+                                        SELECT jsonb_array_elements_text(COALESCE(jobs.locations, '[]'::jsonb)) AS loc
+                                        UNION
+                                        SELECT jsonb_array_elements_text(EXCLUDED.locations) AS loc
+                                    ) u
+                                ),
+                                last_seen_at = now()
+                            RETURNING (xmax = 0) AS was_insert
                             """
                         ),
                         {
@@ -483,6 +584,7 @@ def run_round() -> dict:
                             "title": title[:2000],
                             "url": apply_url,
                             "location": location_text[:255] if location_text else None,
+                            "locations": json.dumps(locations, ensure_ascii=False),
                             "family": family,
                             "dedup_key": d_key,
                             "raw_json": json.dumps(raw_job.get("raw") or {}, ensure_ascii=False, default=str)[
@@ -501,7 +603,7 @@ def run_round() -> dict:
                         },
                     ).first()
 
-                    if inserted is not None:
+                    if inserted is not None and inserted[0]:
                         inserted_this_source += 1
                         if family:
                             family_counts[family] = family_counts.get(family, 0) + 1
