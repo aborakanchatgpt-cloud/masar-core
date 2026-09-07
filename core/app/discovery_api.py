@@ -4,6 +4,7 @@ Masar Core — نقاط نهاية إدارة الاكتشاف (B2، الدلي�
     POST /admin/sources                 إضافة مصدر (تحقّق بجلب فوري)
     GET  /admin/sources?active=true|false  سرد المصادر
     POST /admin/sources/{id}/disable    تعطيل يدوي
+    POST /admin/sources/{id}/purge-jobs حذف وظائف مصدر مُلوّث (يدوي عمدي)
     POST /admin/sources/{id}/enable     إعادة تفعيل يدوي
     GET  /admin/stats                   مقاييس الاكتشاف الكاملة
     POST /admin/discovery/run-now       جولة فورية بالخلفية (لا تنتظر)
@@ -133,6 +134,21 @@ async def disable_source(source_id: int) -> dict:
     if not result:
         raise HTTPException(status_code=404, detail="مصدر غير موجود")
     return {"ok": True, "id": source_id, "enabled": False}
+
+
+@router.post("/sources/{source_id}/purge-jobs")
+async def purge_source_jobs(source_id: int) -> dict:
+    """يحذف كل الوظائف التي أدرجها هذا المصدر تحديدًا من jobs — للاستخدام
+    عند تبيّن أن مصدرًا (مُعطّلًا عادة) لوّث الجدول بوظائف غير مناسبة (مثال
+    B2: Jobgether وكالة إعادة نشر تكرّر نفس المسمى بمدن/دول مختلفة بلا مدينة
+    مستخرجة، ما ضخّم dup_ratio_24h زورًا). لا يمسّ صفّ المصدر نفسه ولا صحته —
+    فقط صفوف jobs المرتبطة به. لا يُفعّل تلقائيًا؛ استدعاء يدوي عمدي فقط."""
+    engine = discovery.get_engine()
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("DELETE FROM jobs WHERE source_id = :id"), {"id": source_id}
+        )
+    return {"ok": True, "source_id": source_id, "deleted": result.rowcount}
 
 
 @router.post("/sources/{source_id}/enable")
