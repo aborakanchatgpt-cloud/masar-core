@@ -19,16 +19,18 @@ Masar Core — نقاط نهاية إدارة الاكتشاف (B2، الدلي�
     POST /admin/sources                 إضافة مصدر (تحقّق بجلب فوري)
     GET  /admin/sources?active=true|false  سرد المصادر
     POST /admin/sources/{id}/disable    تعطيل يدوي
-    POST /admin/sources/{id}/purge-jobs حذف وظائف مصدر مُلوِّث (يدوي عمدي فقط —
+    POST /admin/sources/{id}/purge-jobs حذف وظائف مصدر مُلوّث (يدوي عمدي فقط —
                                          لا يُستدعى تلقائيًا؛ الاستبعاد التلقائي
                                          للمنطقة الآن عبر jobs.out_of_region،
                                          بلا حذف صفوف — "لا نحذف من jobs أبدًا،
-                                         نُعلِّم فقط")
+                                         نُعلّم فقط")
     POST /admin/sources/{id}/enable     إعادة تفعيل يدوي
     GET  /admin/stats                   مقاييس الاكتشاف الكاملة (مُعاد بناؤها R3-R6)
     POST /admin/discovery/run-now       جولة فورية بالخلفية (لا تنتظر)
     POST /admin/discovery/seed-sources  إعادة بذر data/sources_seed.csv يدويًا
     POST /admin/discovery/backfill-locations  إعادة استخراج الموقع/المنطقة لكل الصفوف (R1، لمرة واحدة)
+    POST /admin/discovery/dedupe-cleanup      تنظيف يدوي لمرة واحدة لصفوف مكرّرة تراكمت
+                                         بسبب تغيّر صيغة dedup_key أثناء المراجعة (استثناء موثّق آخر)
     GET  /admin/quality-sample?n=50     عينة أحدث الوظائف بحقولها المستخرجة
     GET  /admin/dup-breakdown?limit=20  تشخيص أكثر مجموعات التكرار (داخل النطاق فقط الآن) خلال 24 ساعة
     GET  /admin/unclassified-sample?limit=30  أكثر عناوين الوظائف (داخل النطاق) غير المصنّفة عائليًا تكرارًا (R6)
@@ -179,6 +181,43 @@ async def purge_source_jobs(source_id: int) -> dict:
     return {"ok": True, "source_id": source_id, "deleted": result.rowcount}
 
 
+@router.post("/discovery/dedupe-cleanup")
+async def dedupe_cleanup() -> dict:
+    """أداة يدوية لمرة واحدة — استثناء موثّق آخر على مبدأ "لا نحذف من jobs
+    أبدًا" (كـ purge-jobs أعلاه): تُصلح تراكم صفوف مكرّرة فعليًا نتج عن
+    تغيّر صيغة dedup_key عدّة مرات أثناء مراجعة B2 (من platform:external_id،
+    إلى sha1 بالمدينة المُستخرَجة عبر NLP وهي غير ثابتة بين الجلبات، إلى
+    sha1 بـ location_text الخام الثابت) — كل تغيّر صيغة يجعل
+    ON CONFLICT (dedup_key) يفشل في مطابقة الصفوف المُدرجة سابقًا بصيغة
+    مختلفة لنفس الوظيفة الحقيقية، فتتراكم نسخ لها. معيار "نفس الوظيفة" هنا
+    الأكثر موثوقية المتاح للتنظيف الرجعي: (company_name, title, url) متطابقة
+    حرفيًا (وليس dedup_key نفسه، وهو أصل المشكلة) — يُبقي أقدم صفّ (أصغر id)
+    لكل مجموعة ويحذف الباقي. لا تُستدعى تلقائيًا من أي منطق بالنظام؛ استدعاء
+    يدوي واحد كافٍِ بعد إصلاح discovery.py (استخدام location_text بدل city)
+    لتنظيف التراكم السابق فقط — الجولات القادمة لن تُنتج مكرّرات جديدة."""
+    engine = discovery.get_engine()
+    with engine.begin() as conn:
+        result = conn.execute(
+            text(
+                """
+                DELETE FROM jobs WHERE id IN (
+                    SELECT id FROM (
+                        SELECT id, ROW_NUMBER() OVER (
+                            PARTITION BY company_name, title, url ORDER BY id
+                        ) AS rn
+                        FROM jobs WHERE url IS NOT NULL
+                    ) t WHERE rn > 1
+                )
+                """
+            )
+        )
+    logger.warning(
+        "dedupe-cleanup: حُذف %s صف مكرّر (company_name+title+url متطابقة حرفيًا)",
+        result.rowcount,
+    )
+    return {"ok": True, "deleted": result.rowcount}
+
+
 @router.post("/sources/{source_id}/enable")
 async def enable_source(source_id: int) -> dict:
     engine = discovery.get_engine()
@@ -216,7 +255,7 @@ async def stats() -> dict:
         ).scalar()
         # gcc_share: من صفوف "داخل النطاق"، كم فعليًا لها country_code ضمن
         # مجموعة الخليج الصريحة (وليس فقط ريموت-مع-ذكر-خليجي بلا country_code
-        # محدَّد) — بالبناء يُفترض قريبًا من 100% لأن compute_region لا يُدخل
+        # محدّد) — بالبناء يُفترض قريبًا من 100% لأن compute_region لا يُدخل
         # صفًا بالنطاق أصلًا إلا إن كان خليجيًا أو ريموت+ذكر خليجي.
         gcc_country_hits = conn.execute(
             text(
@@ -246,7 +285,7 @@ async def stats() -> dict:
 
         # مراجعة B2 R6: نسبة التصنيف العائلي الفعلية — على كل صفوف "داخل
         # النطاق" (وليس فقط آخر 24 ساعة) لأنها المقياس المطلوب لقبول B2
-        # (≥80% من الوظائف الخليجية مصنَّفة عائليًا).
+        # (≥80% من الوظائف الخليجية مصنّفة عائليًا).
         family_row = conn.execute(
             text(
                 """
@@ -273,7 +312,7 @@ async def stats() -> dict:
             )
         ).mappings().all()
         # مصادر gcc قريبة من التعطيل التلقائي (جولة صفرية واحدة حتى الآن،
-        # ستُعطَّل تلقائيًا بعد جولة صفرية ثانية متتالية) — مفيدة لمتابعة
+        # ستُعطّل تلقائيًا بعد جولة صفرية ثانية متتالية) — مفيدة لمتابعة
         # منطق R3(c) قبل وقوعه، لا بعده فقط.
         near_disable_rows = conn.execute(
             text(
@@ -388,7 +427,7 @@ async def seed_sources_now() -> dict:
 
 def _reextract_location(source_type: str, raw: dict) -> str | None:
     """يعيد استخراج نص الموقع من raw_json الخام حسب نوع المصدر — نفس منطق
-    الجامع المُصلَح لكل نوع، لكن مطبَّق رجعيًا على صفوف jobs الموجودة أصلًا
+    الجامع المُصلَح لكل نوع، لكن مطبّق رجعيًا على صفوف jobs الموجودة أصلًا
     (مراجعة B2 R1). Workable تحديدًا: raw_json لا يحمل مفتاح 'location' إطلاقًا
     (كان هذا سبب الفراغ) — الحقول الحقيقية city/region/state/country/telecommuting
     مباشرة على الجذر."""
@@ -428,7 +467,7 @@ async def backfill_locations() -> dict:
     لأي صفّ family IS NULL (R6: المعجم تَوسّع بعد إدراج هذه الصفوف أصلًا،
     فالإدراج التاريخي لم يستفد من العائلات السبع الجديدة ولا من مطابقة حدود
     الكلمة — بلا هذه الخطوة تبقى نسبة التصنيف على الصفوف القديمة صفرًا تقريبًا
-    رغم توسعة data/taxonomy_local.yaml). لا تحذف ولا تُدرج أي صفّ — تُحدِّث فقط."""
+    رغم توسعة data/taxonomy_local.yaml). لا تحذف ولا تُدرج أي صفّ — تُحدّث فقط."""
     engine = discovery.get_engine()
     total = 0
     location_backfilled = 0
@@ -527,7 +566,7 @@ async def backfill_locations() -> dict:
 @router.get("/dup-breakdown")
 async def dup_breakdown(limit: int = Query(default=20, ge=1, le=200)) -> list[dict]:
     """تشخيص dup_ratio_24h_in_region (مراجعة B2 R5: داخل النطاق فقط الآن):
-    يُرجع أكثر مجموعات (شركة+مسمى+مدينة) المطبَّعة تكرارًا خلال آخر 24 ساعة،
+    يُرجع أكثر مجموعات (شركة+مسمى+مدينة) المطبّعة تكرارًا خلال آخر 24 ساعة،
     مع اسم المصدر ومعرّفه."""
     engine = discovery.get_engine()
     since_24h = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -580,7 +619,7 @@ async def quality_sample(n: int = Query(default=50, ge=1, le=200), in_region_onl
 
 @router.get("/unclassified-sample")
 async def unclassified_sample(limit: int = Query(default=30, ge=1, le=200)) -> list[dict]:
-    """مراجعة B2 R6: أكثر عناوين الوظائف (داخل النطاق فقط) غير المصنَّفة
+    """مراجعة B2 R6: أكثر عناوين الوظائف (داخل النطاق فقط) غير المصنّفة
     عائليًا تكرارًا — يُستخدم لبناء/توسعة data/taxonomy_local.yaml بدل تخمين
     الكلمات المفتاحية الناقصة."""
     engine = discovery.get_engine()
