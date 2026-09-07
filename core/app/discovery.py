@@ -3,7 +3,7 @@ Masar Core — محرك الاكتشاف الفعلي (B2، المرحلة 2 م�
 
 هذا الملف هو نقطة الحقيقة الوحيدة لمنطق جولة الجامع: يقرأ `sources` النشطة،
 يستدعي جامع كل نوع مصدر (core/app/collectors/*)، يطبّع كل وظيفة عبر
- field_extractor + normalizer، يُدرج الجديد فقط في `jobs` (ON CONFLICT على
+field_extractor + normalizer، يُدرج الجديد فقط في `jobs` (ON CONFLICT على
 dedup_key)، يحدّث صحة كل مصدر (last_ok_at/last_error/avg_per_day)، يعطّل
 المصدر تلقائيًا بعد 3 أخطاء متتالية أو بعد جولتين متتاليتين بلا أي وظيفة
 خليجية واحدة (مراجعة B2 R3/R4)، ويكتب مقاييس لكل ساعة (عامة ولكل عائلة
@@ -57,7 +57,7 @@ PER_SOURCE_TIMEOUT = 30.0
 ROUND_BUDGET_SECONDS = 20 * 60
 
 # مراجعة B2 R3/R4: بعد جولتين متتاليتين بلا أي وظيفة خليجية واحدة (saudi_hits
-# = 0 كِلا الجولتين)، يُعطّل المصدر تلقائيًا (مصادر region_filter='gcc' فقط).
+# = 0 كِلا الجولتين)، يُعطَّل المصدر تلقائيًا (مصادر region_filter='gcc' فقط).
 GCC_ZERO_ROUNDS_DISABLE_THRESHOLD = 2
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
@@ -85,7 +85,7 @@ def get_engine() -> Engine:
 # تصنيف العائلة المهنية — يقرأ data/taxonomy_local.yaml (مُركّب read-only)
 #
 # مراجعة B2 R6: مطابقة بحدود كلمة صريحة (لا سلسلة فرعية) عبر تعابير نمطية
-# مُجمّعة مسبقًا لكل عائلة، على العنوان + أول 300 حرف من الوصف معًا (كان
+# مُجمَّعة مسبقًا لكل عائلة، على العنوان + أول 300 حرف من الوصف معًا (كان
 # سابقًا العنوان فقط بمطابقة سلسلة فرعية بسيطة).
 # ---------------------------------------------------------------------------
 
@@ -99,7 +99,7 @@ _family_patterns_cache: list[tuple[str, re.Pattern[str]]] | None = None
 
 DESCRIPTION_MATCH_CHARS = 300
 
-# TAXONOMY_BUILD_MARK: يُحدّث هذا التعليق عمدًا مع كل push يرافق تعديلًا في
+# TAXONOMY_BUILD_MARK: يُحدَّث هذا التعليق عمدًا مع كل push يرافق تعديلًا في
 # data/taxonomy_local.yaml (انظر الملاحظة أعلاه) — تغييره وحده يكفي لإجبار
 # طبقة Docker COPY app ./app على إعادة البناء دون أي تعديل منطقي فعلي هنا.
 # آخر تحديث: مراجعة B2 R6 — توسعة ثانية (document controller, cost engineer,
@@ -442,7 +442,19 @@ def run_round() -> dict:
                     if not out_of_region:
                         gcc_hits_this_source += 1
 
-                    d_key = dedup_key(company_name, title, city, apply_url)
+                    # مراجعة B2 R6 إصلاح تكرار: نستخدم location_text الخام (كما
+                    # يُرجعه المصدر مباشرةً) في مفتاح كشف التكرار، وليس city
+                    # المُستخرَج عبر NLP من combined_text (عنوان+موقع+وصف).
+                    # السبب: extract_cities() قد يُرجع نتيجة مختلفة بين جولتين
+                    # لنفس الوظيفة تمامًا إن اختلف نص الوصف قليلًا بين جلبتين
+                    # (محتوى ديناميكي/ترتيب فقرات من المصدر) — ما يُنتج
+                    # dedup_key مختلفًا لنفس الوظيفة فعليًا فيفشل
+                    # ON CONFLICT (dedup_key) DO NOTHING في كشف التكرار، ويُدرج
+                    # صفًا مكررًا. location_text يأتي مباشرة من حقل المصدر
+                    # الخام (raw_job["location"]) وهو ثابت بين الجلبات لنفس
+                    # الوظيفة. عمود jobs.city يبقى كما هو (من الاستخراج
+                    # الأدق) للعرض/الفلترة فقط، ولا علاقة له بهذا المفتاح.
+                    d_key = dedup_key(company_name, title, location_text or None, apply_url)
 
                     inserted = conn.execute(
                         text(
