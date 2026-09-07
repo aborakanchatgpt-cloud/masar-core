@@ -12,6 +12,10 @@ OPS_DIR/results ليقرأها هذا الملف عبر GET.
 التحقق هنا سطحي فقط (الأمر ضمن القائمة، والوسائط نصوص قصيرة) — التحقق
 الحقيقي من صحة كل أمر ووسائطه والتنفيذ الفعلي كلاهما على المضيف فقط
 (انظر ALLOWED_COMMANDS في run_queue.sh، ويجب أن تبقى القائمتان متطابقتين).
+
+B1b: أضاف جسر MCP (app/mcp_bridge.py) أوامر git/commit جديدة (deploy-key،
+git-remote-ssh، git-remote-https، commit، stage-clean) — ALLOWED_COMMANDS
+هنا هو نفسه ما تستورده أداة MCP "ops"، حتى تبقى نقطة الحقيقة واحدة.
 """
 from __future__ import annotations
 
@@ -45,6 +49,12 @@ ALLOWED_COMMANDS = {
     "git",
     "script",
     "psql",
+    # B1b — git/commit عبر المضيف (بلا SSH من جلسة Claude نفسها)
+    "deploy-key",
+    "git-remote-ssh",
+    "git-remote-https",
+    "commit",
+    "stage-clean",
 }
 
 MAX_ARG_LEN = 2000
@@ -57,7 +67,7 @@ def _ops_dir() -> Path:
 
 def _ensure_dirs() -> tuple[Path, Path]:
     """ينشئ مجلدي queue وresults إن لم يكونا موجودين — يتجاهل أخطاء
-    الصلاحيات (مثلًا إن أنشأهما المضيف مسبقًا بمالك مختلف)."""
+    الصلاحيات (مثلاً إن أنشأهما المضيف مسبقًا بمالك مختلف)."""
     base = _ops_dir()
     queue = base / "queue"
     results = base / "results"
