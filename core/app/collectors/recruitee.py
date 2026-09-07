@@ -7,16 +7,15 @@ company هو الاسم الظاهر بنطاق صفحة الوظائف الفر
 """
 from __future__ import annotations
 
-import httpx
+from app.collectors.http_client import get as http_get
 
 RECRUITEE_OFFERS_URL = "https://{company}.recruitee.com/api/offers/"
-_HEADERS = {"User-Agent": "MasarCoreBot/0.1 (+contact via masar)"}
 
 
 def fetch_jobs(company_subdomain: str, timeout: float = 20.0) -> list[dict]:
     """يرجع قائمة وظائف خام من Recruitee لشركة واحدة (company_subdomain)."""
     url = RECRUITEE_OFFERS_URL.format(company=company_subdomain)
-    response = httpx.get(url, timeout=timeout, headers=_HEADERS)
+    response = http_get(url, timeout=timeout)
     response.raise_for_status()
     payload = response.json()
 
