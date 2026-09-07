@@ -8,11 +8,17 @@ Jobs، ويعمل مع أغلب أنظمة ATS تقريبًا — بما فيه�
 هذا الجامع هو الحل المعتمد بالدليل لمثل هذه الحالات (بدل جامع مخصص لكل نظام
 لا يوفّر API عام)، وهو أيضًا مصدر جيد لاكتشاف روابط وظائف إضافية عبر أي موقع
 شركة عادي غير مرتبط بأي ATS معروف.
+
+B2: يحترم robots.txt فعليًا قبل الجلب (Disallow لمسار الصفحة المطلوبة تحت
+ User-agent: * أو المطابق لاسمنا) — إن مُنع الجلب يرفع ValueError بدل الجلب،
+وUser-Agent يطابق النص الرسمي المتفق عليه بدليل التنفيذ.
 """
 from __future__ import annotations
 
 import json
 import re
+from urllib.parse import urljoin, urlparse
+from urllib.robotparser import RobotFileParser
 
 import httpx
 
@@ -20,6 +26,26 @@ _JSONLD_SCRIPT_RE = re.compile(
     r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
     re.IGNORECASE | re.DOTALL,
 )
+_USER_AGENT = "MasarCoreBot/0.1 (+contact via masar)"
+_HEADERS = {"User-Agent": _USER_AGENT}
+
+
+def _robots_allow(url: str, timeout: float) -> bool:
+    """يتحقق من robots.txt للنطاق قبل الجلب. أي فشل بجلب/تحليل robots.txt
+    نفسه (لا يوجد، أو خطأ شبكة) يُعامل كسماح ضمني (سلوك urllib.robotparser
+    القياسي)، لا كحجب — لا نمنع الجلب لمجرد تعذّر قراءة الملف."""
+    parsed = urlparse(url)
+    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+    parser = RobotFileParser()
+    parser.set_url(robots_url)
+    try:
+        response = httpx.get(robots_url, timeout=timeout, headers=_HEADERS)
+        if response.status_code >= 400:
+            return True
+        parser.parse(response.text.splitlines())
+    except Exception:  # noqa: BLE001 — تعذّر قراءة robots.txt لا يعني حجبًا
+        return True
+    return parser.can_fetch(_USER_AGENT, url)
 
 
 def _iter_jobposting_nodes(data):
@@ -56,10 +82,13 @@ def _extract_location(job_location) -> str | None:
 
 def fetch_jobs(career_page_url: str, timeout: float = 20.0) -> list[dict]:
     """يجلب صفحة وظائف واحدة ويستخرج كل عقد JobPosting (schema.org) الموجودة بها."""
+    if not _robots_allow(career_page_url, timeout):
+        raise ValueError(f"robots.txt يمنع الجلب: {career_page_url}")
+
     response = httpx.get(
         career_page_url,
         timeout=timeout,
-        headers={"User-Agent": "Mozilla/5.0 (compatible; MasarCoreBot/0.1)"},
+        headers=_HEADERS,
         follow_redirects=True,
     )
     response.raise_for_status()
@@ -73,13 +102,14 @@ def fetch_jobs(career_page_url: str, timeout: float = 20.0) -> list[dict]:
             continue
         for node in _iter_jobposting_nodes(data):
             hiring_org = node.get("hiringOrganization") or {}
+            job_url = node.get("url") or career_page_url
             jobs.append(
                 {
                     "external_id": node.get("identifier", {}).get("value")
                     if isinstance(node.get("identifier"), dict)
                     else node.get("identifier"),
                     "title": node.get("title"),
-                    "url": node.get("url") or career_page_url,
+                    "url": urljoin(career_page_url, job_url) if job_url else career_page_url,
                     "location": _extract_location(node.get("jobLocation")),
                     "updated_at": node.get("datePosted"),
                     "company_name_hint": hiring_org.get("name") if isinstance(hiring_org, dict) else None,
