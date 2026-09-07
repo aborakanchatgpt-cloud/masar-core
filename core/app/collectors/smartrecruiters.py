@@ -4,7 +4,8 @@
     https://api.smartrecruiters.com/v1/companies/{company_id}/postings
 
 company_id هو المعرّف الظاهر بصفحة الوظائف العامة لدى SmartRecruiters
-(غالبًا نفس اسم الشركة كما يظهر بروابط careers.smartrecruiters.com/<company_id>).
+(غالبًا نفس اسم الشركة كما يظهر بروابط careers.smartrecruiters.com/<company_id>
+أو jobs.smartrecruiters.com/<company_id>).
 
 ملاحظة: صفحة توثيق SmartRecruiters نفسها محجوبة عن الزحف الآلي (robots.txt)،
 لكن واجهة الـ API البرمجية نفسها مخصصة للاستهلاك المباشر (موثّقة كواجهة
@@ -15,12 +16,13 @@ from __future__ import annotations
 import httpx
 
 SMARTRECRUITERS_POSTINGS_URL = "https://api.smartrecruiters.com/v1/companies/{company}/postings"
+_HEADERS = {"User-Agent": "MasarCoreBot/0.1 (+contact via masar)"}
 
 
 def fetch_jobs(company_id: str, timeout: float = 20.0) -> list[dict]:
     """يرجع قائمة وظائف خام من SmartRecruiters لشركة واحدة (company_id)."""
     url = SMARTRECRUITERS_POSTINGS_URL.format(company=company_id)
-    response = httpx.get(url, timeout=timeout)
+    response = httpx.get(url, timeout=timeout, headers=_HEADERS)
     response.raise_for_status()
     payload = response.json()
 
