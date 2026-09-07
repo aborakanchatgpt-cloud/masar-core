@@ -14,6 +14,11 @@
 # + أول 300 حرف من الوصف (discovery.py:classify_family) — التصنيف يأخذ أول
 # عائلة تُطابق حسب ترتيب هذا الملف، فترتيب العائلات الأكثر تحديدًا قبل العامة
 # يقلّل من التصنيف الخاطئ.
+#
+# تحديث ثانٍ (بعد فحص GET /admin/unclassified-sample على بيانات حية): وسّعت
+# construction_pm لتشمل تخصصات EPC/حفر شائعة (كهرباء/ميكانيكا/حفر/تفتيش/
+# معماري)، ووسّعت hse/finance_accounting/it_software بكلمات وُجدت فعليًا
+# بعيّنة غير المصنَّف، وأضفت عائلتين جديدتين (marketing_comms، program_admin_ops).
 
 families:
   chem_process:
@@ -28,8 +33,8 @@ families:
 
   hse:
     label_ar: "الصحة والسلامة والبيئة"
-    keywords_ar: [مهندس سلامة, أخصائي HSE, السلامة المهنية, الصحة والسلامة, سلامة العمليات]
-    keywords_en: [HSE engineer, safety engineer, occupational health, process safety, EHS]
+    keywords_ar: [مهندس سلامة, أخصائي HSE, السلامة المهنية, الصحة والسلامة, سلامة العمليات, أخصائي جودة صحية, البيئة والاستدامة]
+    keywords_en: [HSE engineer, safety engineer, occupational health, process safety, EHS, health quality specialist, health safety and environment, environment and sustainability]
 
   maintenance_ops:
     label_ar: "الصيانة والتشغيل"
@@ -91,8 +96,8 @@ families:
 
   finance_accounting:
     label_ar: "المالية والمحاسبة"
-    keywords_ar: [محاسب, محلل مالي, مراجع حسابات, أخصائي مالية, مدير مالي, أمين صندوق, محاسب تكاليف]
-    keywords_en: [accountant, financial analyst, auditor, finance manager, accounts payable, accounts receivable, bookkeeper, treasury analyst, financial controller]
+    keywords_ar: [محاسب, محلل مالي, مراجع حسابات, أخصائي مالية, مدير مالي, أمين صندوق, محاسب تكاليف, دورة الإيرادات]
+    keywords_en: [accountant, financial analyst, auditor, finance manager, accounts payable, accounts receivable, bookkeeper, treasury analyst, financial controller, revenue cycle management, finance specialist]
 
   hr_recruiting:
     label_ar: "الموارد البشرية والتوظيف"
@@ -101,8 +106,8 @@ families:
 
   it_software:
     label_ar: "تقنية المعلومات والبرمجيات"
-    keywords_ar: [مهندس برمجيات, مطور برمجيات, مبرمج, مهندس شبكات, أخصائي دعم تقني, مطور تطبيقات, مهندس أنظمة, محلل نظم]
-    keywords_en: [software engineer, software developer, backend developer, frontend developer, full stack developer, systems administrator, network engineer, devops engineer, data engineer, database administrator, IT support specialist, cybersecurity analyst, cloud engineer]
+    keywords_ar: [مهندس برمجيات, مطور برمجيات, مبرمج, مهندس شبكات, أخصائي دعم تقني, مطور تطبيقات, مهندس أنظمة, محلل نظم, مصمم واجهات]
+    keywords_en: [software engineer, software developer, backend developer, frontend developer, full stack developer, systems administrator, network engineer, devops engineer, data engineer, database administrator, IT support specialist, cybersecurity analyst, cloud engineer, UI/UX specialist, UX designer, UI designer, product designer]
 
   logistics_ops:
     label_ar: "اللوجستيات والمستودعات"
@@ -111,5 +116,15 @@ families:
 
   construction_pm:
     label_ar: "الإنشاءات وإدارة المشاريع"
-    keywords_ar: [مهندس مدني, مهندس موقع, مدير مشروع إنشائي, مشرف موقع, مهندس تنفيذ, مدير عقود, مهندس كميات]
-    keywords_en: [civil engineer, site engineer, construction manager, site supervisor, quantity surveyor, contracts manager, MEP engineer]
+    keywords_ar: [مهندس مدني, مهندس موقع, مدير مشروع إنشائي, مشرف موقع, مهندس تنفيذ, مدير عقود, مهندس كميات, مهندس كهرباء, مهندس ميكانيكي, مشرف كهربائي, مفتش ميكانيكي, مهندس إنشائي, مهندس أنابيب, مهندس أجهزة قياس, مهندس حفر, مشرف حفر, مهندس تصميم]
+    keywords_en: [civil engineer, site engineer, construction manager, site supervisor, quantity surveyor, contracts manager, MEP engineer, electrical engineer, mechanical engineer, mechanical inspector, electrical foreman, structural engineer, piping engineer, instrumentation engineer, design engineer, drilling engineer, drilling rig foreman, rig foreman, HVAC engineer, civil inspector, field engineer, project engineer, architect, engineering manager]
+
+  marketing_comms:
+    label_ar: "الاتصال والإعلام"
+    keywords_ar: [أخصائي اتصال, أخصائي إعلام, مراقبة إعلامية, أخصائي علاقات عامة, أخصائي محتوى]
+    keywords_en: [communications specialist, media monitoring, public relations specialist, content specialist, social media specialist]
+
+  program_admin_ops:
+    label_ar: "إدارة البرامج والأعمال (عام)"
+    keywords_ar: [محلل برامج, مسؤول أعمال, مدير برنامج, إدارة التغيير, مشاركة المجتمع]
+    keywords_en: [program analyst, business officer, program manager, change management, community engagement, stakeholder engagement, academy performance]
