@@ -6,7 +6,6 @@ Masar Core — نقاط نهاية إدارة الاكتشاف (B2، الدلي�
     POST /admin/sources/{id}/disable    تعطيل يدوي
     POST /admin/sources/{id}/enable     إعادة تفعيل يدوي
     GET  /admin/stats                   مقاييس الاكتشاف الكاملة
-    GET  /admin/discovery/probe         تحقق مؤقت بلا كتابة بالقاعدة (لبناء sources_seed.csv)
     POST /admin/discovery/run-now       جولة فورية بالخلفية (لا تنتظر)
     POST /admin/discovery/seed-sources  إعادة بذر data/sources_seed.csv يدويًا
     GET  /admin/quality-sample?n=50     عينة أحدث الوظائف بحقولها المستخرجة
@@ -188,17 +187,22 @@ async def stats() -> dict:
         ).mappings().all()
         companies_total = conn.execute(text("SELECT count(*) FROM companies")).scalar()
 
-        # dup_ratio_24h: نسبة صفوف آخر 24 ساعة التي تتكرر فيها (شركة+مسمى)
-        # المطبّعان — تقريب مستقل عن dedup_key نفسه (الذي يفترض منع هذا
+        # dup_ratio_24h: نسبة صفوف آخر 24 ساعة التي تتكرر فيها (شركة+مسمى+مدينة)
+        # المطبَّعان — تقريب مستقل عن dedup_key نفسه (الذي يفترض منع هذا
         # التكرار أصلًا)، يكشف أي تسرّب فعلي (رابط منصّة بمعرّفين مختلفين
-        # لنفس الإعلان، أو اختلاف طفيف بالعنوان الخام).
+        # لنفس الإعلان، أو اختلاف طفيف بالعنوان الخام). المدينة مُضمَّنة هنا
+        # عمدًا (تطابقًا مع مكوّنات dedup_key الفعلية) لأن نفس الشركة قد
+        # تنشر نفس المسمى الوظيفي بمدن مختلفة فعليًا (وظائف حقيقية منفصلة
+        # وليست تكرارًا) — تجاهل المدينة كان يُضخّم هذا المقياس زورًا.
         dup_row = conn.execute(
             text(
                 """
                 WITH recent AS (
                     SELECT lower(regexp_replace(coalesce(company_name, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi'))
                            || '::' ||
-                           lower(regexp_replace(coalesce(title, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi')) AS k
+                           lower(regexp_replace(coalesce(title, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi'))
+                           || '::' ||
+                           lower(regexp_replace(coalesce(city, ''), '[^a-z0-9؀-ۿ]+', ' ', 'gi')) AS k
                     FROM jobs WHERE first_seen_at >= :since
                 ),
                 counted AS (
@@ -251,8 +255,8 @@ async def stats() -> dict:
 @router.get("/discovery/probe")
 async def probe_source(type: str = Query(...), url: str = Query(...)) -> dict:  # noqa: A002
     """نقطة تحقق مؤقتة (بلا كتابة بقاعدة البيانات إطلاقًا) — تُستخدم أثناء بناء
-    data/sources_seed.csv للتحقق من عشرات المرشّحين بسرعة قبل إضافتهم للملف، بدل
-    تلويث جدولي companies/sources بمحاولات فاشلة عبر POST /admin/sources.
+    data/sources_seed.csv للتحقق من عشرات المرشّحين بسرعة قبل إضافتهم للملف،
+    بدل تلويث جدولي companies/sources بمحاولات فاشلة عبر POST /admin/sources.
     نفس منطق التحقق (جلب فعلي واحد فقط، بلا إدراج وظائف)."""
     if type not in discovery.DISPATCH:
         raise HTTPException(status_code=400, detail=f"نوع مصدر غير مدعوم: {type}")
@@ -273,8 +277,8 @@ async def run_now(background_tasks: BackgroundTasks) -> dict:
 
 @router.post("/discovery/seed-sources")
 async def seed_sources_now() -> dict:
-    """يعيد قراءة data/sources_seed.csv ويطبّق upsert idempotent — مفيد للتحقق
-    اليدوي بعد تحديث ملف البذر بلا انتظار إعادة تشغيل core-scheduler."""
+    """يعيد قراءة data/sources_seed.csv ويطبّق upsert idempotent — مفيد
+    للتحقق اليدوي بعد تحديث ملف البذر بلا انتظار إعادة تشغيل core-scheduler."""
     return discovery.seed_sources()
 
 
