@@ -1,0 +1,77 @@
+# phrases_en.yaml — English phrase bank for composing application emails (B4).
+#
+# Mirrors data/phrases_ar.yaml exactly in structure/keys — see that file's
+# header comment for the full rationale (deterministic per (customer, job)
+# selection, seeded by sha256, not real randomness).
+
+openings:
+  - "Dear Hiring Manager,"
+  - "Hello,"
+  - "I hope this message finds you well."
+  - "I am writing to express my interest in the advertised position."
+  - "I would like to apply for the position you recently posted."
+  - "I came across your job posting and would like to apply."
+  - "I am reaching out regarding the open role at your company."
+  - "It is a pleasure to submit my application for this opportunity."
+  - "I am excited to apply for this position at your organization."
+  - "Please accept this email as my application for the role."
+  - "I am writing to formally apply for the position advertised."
+  - "I would welcome the opportunity to join your team."
+  - "Thank you for considering my application for this role."
+  - "I am keen to be considered for the vacancy you have posted."
+  - "I am pleased to submit my candidacy for this position."
+  - "Greetings, I would like to apply for the role you have listed."
+  - "I am contacting you in response to your recent job posting."
+  - "I believe my background makes me a strong fit for this role."
+  - "I am delighted to apply for the opportunity at your company."
+  - "Please find my application for the advertised vacancy below."
+
+why_me:
+  - "With {years} years of experience across {skill_a} and {skill_b}, I believe my background aligns well with the requirements of the {title} role."
+  - "Over the past {years} years, I have developed strong skills in {skill_a} and {skill_b}, which I believe would let me contribute effectively to this position."
+  - "My hands-on experience in {skill_a}, combined with familiarity in {skill_b}, makes me a strong candidate for the {title} role."
+  - "With approximately {years} years of experience, I have refined my skills in {skill_a} and {skill_b} in ways relevant to this position."
+  - "I believe the combination of my {skill_a} experience and my ability in {skill_b} would add real value to your team."
+  - "Across {years} years of work, I have built a deep understanding of {skill_a}, alongside practical experience in {skill_b}."
+  - "I bring together technical knowledge of {skill_a} and applied experience in {skill_b}, which I see as fitting well with the {title} role."
+  - "I have {years} years of experience in this field, with a particular focus on {skill_a} and {skill_b}."
+  - "I am confident that my background in {skill_a}, supported by {years} years of experience, makes me a suitable fit for this role."
+  - "Throughout my career, I have focused on developing my skills in {skill_a} and {skill_b} to meet the demands of roles similar to {title}."
+  - "I have a proven track record in {skill_a}, along with complementary experience in {skill_b} spanning {years} years."
+  - "I see a clear match between the requirements of the {title} role and my practical experience in {skill_a} and {skill_b}."
+  - "My {years} years of experience in {skill_a} position me well to deliver tangible results in this role."
+  - "I bring practical capability in {skill_a}, along with a solid grasp of {skill_b}."
+  - "For {years} years, I have worked to build my expertise in {skill_a} and related areas such as {skill_b}."
+
+attachment_lines:
+  - "I have attached my CV for your review with further details on my background."
+  - "Please find my CV attached for a complete overview of my qualifications."
+  - "My resume is attached for your consideration."
+  - "For further details, I have attached an updated copy of my CV."
+  - "Attached is my resume summarizing my professional experience and key achievements."
+  - "I am pleased to attach my CV for your review."
+  - "Please see my CV attached, which I hope will be of interest to you."
+  - "For more details, please refer to the attached resume."
+  - "I have attached an updated resume reflecting my most recent experience."
+  - "All relevant details regarding my qualifications can be found in the attached CV."
+
+closings:
+  - "I look forward to the opportunity to discuss how I can contribute to your team."
+  - "Thank you for your time and consideration; I hope to have the chance to discuss this further."
+  - "I look forward to your response and appreciate your time."
+  - "Please do not hesitate to contact me if you need any further information."
+  - "Thank you for considering my application; I look forward to hearing from you soon."
+  - "With best regards, and wishing your team continued success."
+  - "I would welcome the opportunity for an interview to discuss my qualifications further."
+  - "Thank you very much for your time; I look forward to connecting soon."
+  - "I hope my application receives your kind consideration, and thank you for your time."
+  - "I look forward to hearing from you, and wish you continued success."
+
+signature_template: "{name}\n{phone}\n{city}"
+
+subject_templates:
+  - "Application for {title} Position"
+  - "Job Application - {title}"
+  - "Applying for {title}"
+
+subject_generic_prefix: "Employment Inquiry"
