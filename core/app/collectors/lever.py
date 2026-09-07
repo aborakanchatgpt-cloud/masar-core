@@ -8,16 +8,15 @@ company_slug هو الاسم الظاهر برابط صفحة الوظائف
 """
 from __future__ import annotations
 
-import httpx
+from app.collectors.http_client import get as http_get
 
 LEVER_POSTINGS_URL = "https://api.lever.co/v0/postings/{company}"
-_HEADERS = {"User-Agent": "MasarCoreBot/0.1 (+contact via masar)"}
 
 
 def fetch_jobs(company_slug: str, timeout: float = 20.0) -> list[dict]:
     """يرجع قائمة وظائف خام من Lever لشركة واحدة (company_slug)."""
     url = LEVER_POSTINGS_URL.format(company=company_slug)
-    response = httpx.get(url, params={"mode": "json"}, timeout=timeout, headers=_HEADERS)
+    response = http_get(url, params={"mode": "json"}, timeout=timeout)
     response.raise_for_status()
     payload = response.json()
 
