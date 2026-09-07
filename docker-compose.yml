@@ -4,7 +4,7 @@
 # caddy (HTTPS تلقائي عبر دومين)، n8n (أتمتة سير العمل، مستضاف ذاتيًا).
 #
 # قبل التشغيل: انسخ .env.example إلى .env وعدّل القيم (خصوصًا كلمة مرور
-# Postgres والدومين المستخدم لـ Caddy).
+# Postgres والدومين المستخدم لـCaddy).
 
 services:
   postgres:
@@ -47,16 +47,24 @@ services:
       OPS_DIR: /ops
       REPO_DIR: /repo
       MCP_BRIDGE_TOKEN: ${MCP_BRIDGE_TOKEN:-}
+      DATA_DIR: /app/data
     volumes:
       # مجلد "ops runner" (B1a): مشترك مع المضيف — core يكتب طلبات تنفيذ
       # هنا (/ops/queue) وسكربت autodeploy على المضيف (خارج أي حاوية) يقرأها
-      # وينفّذها وحده، ثم يكتب النتيجة (/ops/results) ليقرأها core. هذا بديل
+      # وينفذها، ثم يكتب النتيجة (/ops/results) ليقرأها core. هذا بديل
       # عن SSH أو تركيب Docker socket داخل الحاوية.
       - ./ops:/ops
       # جسر MCP (B1b): تركيب للقراءة فقط لجذر المستودع — أدوات repo_read/
       # repo_list تقرأ منه مباشرة؛ الكتابة الفعلية (repo_write) تمر عبر
       # staging + قائمة انتظار ops أعلاه، لأن هذا التركيب read-only عمدًا.
       - ./:/repo:ro
+      # بيانات الاكتشاف (B2): معجم taxonomy_local.yaml وsources_seed.csv —
+      # للقراءة فقط، مركّبة مباشرة (بلا إعادة بناء الصورة) حتى يعكس أي
+      # تحديث للملف أثره فورًا بعد إعادة تشغيل الحاوية القادمة (autodeploy
+      # يعيد "up -d --build" على كل تغيير على أي حال). core نفسها تحتاجها
+      # أيضًا لأن /admin/discovery/run-now و/admin/discovery/seed-sources
+      # يُنفّذان داخل عملية core (FastAPI) بواسطة BackgroundTasks.
+      - ./data:/app/data:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,6 +83,12 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-masar}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-masar}
+      DATA_DIR: /app/data
+    volumes:
+      # نفس ملاحظة data أعلاه — الجامع نفسه (core.app.discovery) يقرأ
+      # taxonomy_local.yaml لتصنيف العائلة المهنية وsources_seed.csv للبذر
+      # عند كل إقلاع.
+      - ./data:/app/data:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -129,7 +143,7 @@ services:
       N8N_PROXY_HOPS: "1"
       GENERIC_TIMEZONE: Asia/Riyadh
       TZ: Asia/Riyadh
-      # مفتاح التشفير: لا نمرّره كمتغير بيئة عمدًا — n8n يولّده عند أول إقلاع
+      # مفتاح التشفير: لا نمررّه كمتغير بيئة عمدًا — n8n يولّده عند أول إقلاع
       # ويحفظه في /home/node/.n8n/config داخل volume n8n_data (مصدر الحقيقة
       # الوحيد؛ backup.sh ينسخه). تمرير مفتاح مختلف عبر البيئة يمنع n8n من الإقلاع.
       DB_TYPE: postgresdb
