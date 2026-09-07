@@ -7,16 +7,15 @@ job_board_name هو الاسم الظاهر برابط صفحة الوظائف (
 """
 from __future__ import annotations
 
-import httpx
+from app.collectors.http_client import get as http_get
 
 ASHBY_JOB_BOARD_URL = "https://api.ashbyhq.com/posting-api/job-board/{board}"
-_HEADERS = {"User-Agent": "MasarCoreBot/0.1 (+contact via masar)"}
 
 
 def fetch_jobs(job_board_name: str, timeout: float = 20.0) -> list[dict]:
     """يرجع قائمة وظائف خام من Ashby للوحة وظائف واحدة (job_board_name)."""
     url = ASHBY_JOB_BOARD_URL.format(board=job_board_name)
-    response = httpx.get(url, timeout=timeout, headers=_HEADERS)
+    response = http_get(url, timeout=timeout)
     response.raise_for_status()
     payload = response.json()
 
