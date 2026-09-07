@@ -4,6 +4,13 @@
 الصياغة (مقتبسة من نمط إعلانات وظائف فعلي) حسب معيار قبول B2 بـPLAN.md:
 "عينة 50 وظيفة بحقول سنوات/أقدمية/مدينة صحيحة ≥ 90%".
 
+مراجعة B2 (ACCEPT-WITH-FIXES):
+    R2/R7: اختبارات انحدار صريحة لمطابقة الأقدمية بحدود كلمة (لا سلسلة فرعية)
+        — الحالات الخمس التي حدّدتها المراجعة تحديدًا.
+    R5: dedup_key لم يعد يقبل external_key — الصيغة الجديدة تعتمد على
+        (شركة، مسمى، مدينة، مسار apply_url بلا سلسلة استعلام)؛ استُبدل
+        اختباري external_key القديمين باختبارات تعكس السلوك الجديد.
+
 يُشغّل محليًا بـpytest قبل كل commit (الدليل التنفيذي، القسم "الاختبار قبل
 DONE"). لا يحتاج قاعدة بيانات ولا شبكة — دوال نقية فقط.
 
@@ -116,6 +123,42 @@ def test_no_years_mentioned_returns_none() -> None:
 
 
 # ---------------------------------------------------------------------------
+# مراجعة B2 R2/R7 — انحدار مطابقة الأقدمية بحدود كلمة صريحة (لا سلسلة فرعية)
+#
+# الحالات الخمس المحدَّدة صراحةً بتقرير المراجعة (docs/reports/B2-review.md):
+# كانت "intern" تُطابق داخل "internal"/"international" بمطابقة السلسلة
+# الفرعية القديمة — الحل: تعابير نمطية بحدود كلمة (\b...\b) مُجمَّعة مسبقًا.
+# ---------------------------------------------------------------------------
+
+SENIORITY_REGRESSION_CASES: list[tuple[str, str | None]] = [
+    ("International Sales Manager", "manager"),
+    ("Internal Auditor", None),
+    ("Senior Internal Comms", "senior"),
+    ("Intern - Process Engineering", "intern"),
+    ("Graduate Trainee", "intern"),
+]
+
+
+@pytest.mark.parametrize("title,expected_seniority", SENIORITY_REGRESSION_CASES)
+def test_seniority_word_boundary_regression(title: str, expected_seniority: str | None) -> None:
+    """مراجعة B2 R2/R7: extract_seniority(text, title=...) — التمرير عبر
+    title صراحةً (كما يفعل discovery.py فعليًا) لضمان تغطية مسار الفحص
+    الأول (العنوان) قبل الرجوع للنص الكامل."""
+    result = extract_seniority(title, title=title)
+    assert result == expected_seniority, (
+        f"أقدمية (R7): {title!r} → {result} (متوقع {expected_seniority}) — "
+        "احتمال مطابقة سلسلة فرعية بدل حدود كلمة"
+    )
+
+
+def test_seniority_substring_false_positive_regression_within_longer_text() -> None:
+    """التأكد أن 'intern' لا يُطابق داخل نص أطول يحتوي 'international'/
+    'internal' حتى حين لا تُمرَّر title (المسار الاحتياطي على النص الكامل)."""
+    text = "We are hiring for our International Sales division — Internal Auditor role based in Riyadh"
+    assert extract_seniority(text) != "intern"
+
+
+# ---------------------------------------------------------------------------
 # normalize_text / company_key / dedup_key
 # ---------------------------------------------------------------------------
 
@@ -148,21 +191,50 @@ def test_dedup_key_different_city_different_key() -> None:
     assert key_riyadh != key_dammam
 
 
-def test_dedup_key_prefers_external_key_when_present() -> None:
-    key = dedup_key("Any Company", "Any Title", "Any City", external_key="greenhouse:12345")
-    assert key == "greenhouse:12345"
+# --- مراجعة B2 R5: dedup_key الجديد (apply_url بدل external_key) ---
 
 
-def test_dedup_key_external_key_ignores_company_title_variance() -> None:
-    # نفس external_key من نفس المنصّة والمعرّف → نفس المفتاح دائمًا، حتى لو
-    # اختلف اسم الشركة المخزّن بمصدرين مختلفين لأي سبب.
-    key_a = dedup_key("Company A", "Title A", "City A", external_key="lever:abc-123")
-    key_b = dedup_key("Company B", "Title B", "City B", external_key="lever:abc-123")
+def test_dedup_key_ignores_apply_url_query_string() -> None:
+    """اختلاف معاملات تتبّع (?utm_source=...) بين جلبتين لنفس الرابط لا يجب
+    أن يُنتج مفتاحًا مختلفًا — نأخذ مسار الرابط فقط."""
+    key_a = dedup_key("Zeeco", "Process Engineer", "Dammam", "https://x.com/jobs/123?utm_source=linkedin")
+    key_b = dedup_key("Zeeco", "Process Engineer", "Dammam", "https://x.com/jobs/123?utm_source=twitter&ref=x")
+    assert key_a == key_b
+
+
+def test_dedup_key_different_apply_url_path_different_key() -> None:
+    """نفس (شركة، مسمى، مدينة) لكن مسار رابط مختلف فعليًا → وظيفتان مختلفتان
+    (مثال واقعي: Fuku تنشر نفس المسمى بمدن مختلفة عبر روابط Workable مستقلة) —
+    apply_url يُميّز بينهما حتى لو تطابقت الحقول الثلاثة الأخرى تمامًا."""
+    key_a = dedup_key("Fuku", "Creative Director", "Riyadh", "https://apply.workable.com/fuku/j/AAA111")
+    key_b = dedup_key("Fuku", "Creative Director", "Riyadh", "https://apply.workable.com/fuku/j/BBB222")
+    assert key_a != key_b
+
+
+def test_dedup_key_no_apply_url_still_collapses_true_content_duplicates() -> None:
+    """بلا apply_url إطلاقًا (بعض المصادر لا ترجع رابطًا موثوقًا)، يبقى
+    (شركة، مسمى، مدينة) وحده كافيًا لكشف تكرار محتوى حقيقي — هذا هو صلب
+    إصلاح R5 (كان الاعتماد السابق على معرّف المنصّة فقط لا يكشف هذه الحالة)."""
+    key_a = dedup_key("Zeeco", "Process Engineer", "Dammam", None)
+    key_b = dedup_key("Zeeco Inc", "process engineer", "dammam", None)
     assert key_a == key_b
 
 
 def test_dedup_key_length_within_jobs_column_limit() -> None:
     # عمود jobs.dedup_key هو varchar(600) بالترحيل 0001 — sha1 hex (40 حرفًا)
-    # أو external_key (نحدّه صراحةً بـ600 حرف بـdedup_key نفسها).
-    key = dedup_key("شركة طويلة جدًا " * 20, "مسمى وظيفي طويل جدًا " * 20, "الرياض")
+    # ثابت الطول دائمًا (مراجعة B2 R5)، ضمن الحد بمسافة واسعة أيًا كان طول
+    # المدخلات.
+    key = dedup_key(
+        "شركة طويلة جدًا " * 20,
+        "مسمى وظيفي طويل جدًا " * 20,
+        "الرياض",
+        "https://example.com/" + ("a" * 1000),
+    )
     assert len(key) <= 600
+    assert len(key) == 40  # sha1 hex digest length
+
+
+def test_dedup_key_deterministic() -> None:
+    """نفس المدخلات تمامًا → نفس المفتاح دائمًا (بلا عشوائية بالتنفيذ)."""
+    args = ("Aramco", "Process Engineer", "Dhahran", "https://x.com/jobs/1")
+    assert dedup_key(*args) == dedup_key(*args)
