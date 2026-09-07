@@ -63,8 +63,11 @@ _SENIORITY_KEYWORDS: list[tuple[str, list[str]]] = [
     ("intern", ["intern", "internship", "trainee", "متدرب", "تدريب"]),
     ("entry", ["entry level", "junior", "fresh graduate", "حديث التخرج", "مبتدئ"]),
     ("senior", ["senior", "sr.", "خبير", "أول"]),
-    ("lead", ["lead ", "principal", "قائد فريق"]),
+    # "manager" قبل "lead" عمدًا: "lead" تُستخدم غالبًا كفعل بوصف الوظيفة
+    # ("must lead a team") وليست دائمًا مسمّى وظيفيًا؛ حين يظهر "manager" أو
+    # مرادفاتها الأقوى بنفس النص فهي الإشارة الأصدق لمستوى الأقدمية الفعلي.
     ("manager", ["manager", "head of", "director", "مدير", "رئيس قسم"]),
+    ("lead", ["lead ", "principal", "قائد فريق"]),
 ]
 
 
