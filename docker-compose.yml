@@ -35,6 +35,25 @@ services:
     networks:
       - masar_internal
 
+  # mailpit: صندوق sink للتطوير/الاختبار المحلي (B4، الدليل: "DRY_RUN
+  # افتراضي؛ لا اتصال SMTP حقيقي؛ sink = mailpit داخل compose" — تصحيح
+  # Critical 2 بمراجعة B4 الأوفلاين، docs/reports/B4-offline-review.md).
+  # شبكة داخلية فقط (masar_internal، لا masar_public) — لا يُنشر أي منفذ
+  # للخارج عمدًا: SMTP (1025) وواجهة الويب/HTTP API (8025) يصلان فقط من
+  # core/core-scheduler داخل الشبكة الداخلية. core.app.sender يستهدفه عبر
+  # MAIL_SINK_SMTP=mailpit:1025، وcore.app.mail_api (`GET /admin/mail/sink/messages`)
+  # عبر MAIL_SINK_API_URL=http://mailpit:8025 (واجهة mailpit HTTP API
+  # `GET /api/v1/messages` — تُقرأ من خلف توكن الإدارة، لا تُنشر مباشرة).
+  mailpit:
+    image: axllent/mailpit
+    restart: unless-stopped
+    networks:
+      - masar_internal
+    # لا `ports:` هنا عمدًا (لا نشر علني) — فقط `expose` داخل الشبكة الداخلية.
+    expose:
+      - "1025"
+      - "8025"
+
   core:
     build:
       context: ./core
@@ -48,6 +67,16 @@ services:
       REPO_DIR: /repo
       MCP_BRIDGE_TOKEN: ${MCP_BRIDGE_TOKEN:-}
       DATA_DIR: /app/data
+      # B4 — تصحيح Critical 1/2 بمراجعة B4 الأوفلاين: بلا هذه المتغيرات
+      # داخل بيئة الحاوية فعليًا (compose لا يمرّر .env تلقائيًا للحاوية —
+      # فقط يستبدلها ذاتيًا بـ${VAR} هنا)، كل تشفير/فك تشفير سرّ بريد يفشل
+      # دومًا (MailCryptoUnavailable)، ولا مسار sink قابل للتفعيل إطلاقًا.
+      MAIL_FERNET_KEY: ${MAIL_FERNET_KEY:-}
+      MAIL_SINK_SMTP: ${MAIL_SINK_SMTP:-mailpit:1025}
+      MAIL_SINK_API_URL: ${MAIL_SINK_API_URL:-http://mailpit:8025}
+      DRY_RUN_TO: ${DRY_RUN_TO:-}
+      MAIL_LIVE: ${MAIL_LIVE:-false}
+      CV_DATA_DIR: /data/cv
     volumes:
       # مجلد "ops runner" (B1a): مشترك مع المضيف — core يكتب طلبات تنفيذ
       # هنا (/ops/queue) وسكربت autodeploy على المضيف (خارج أي حاوية) يقرأها
@@ -65,10 +94,18 @@ services:
       # أيضًا لأن /admin/discovery/run-now و/admin/discovery/seed-sources
       # يُنفّذان داخل عملية core (FastAPI) بواسطة BackgroundTasks.
       - ./data:/app/data:ro
+      # ملفات السيرة الذاتية المولَّدة (B4، cv_builder.CV_DATA_DIR) — volume
+      # مُسمّى مشترك مع core-scheduler (تصحيح Medium 2 بمراجعة B4 الأوفلاين):
+      # queue-now يدوي من core وإرسال تلقائي من core-scheduler قد يفصل
+      # بينهما ساعات؛ بلا volume مشترك يُفقَد ملف PDF عند أي إعادة نشر
+      # ويُرسَل البريد بلا مرفق سيرة ذاتية بصمت.
+      - cv_data:/data/cv
     depends_on:
       postgres:
         condition: service_healthy
       gotenberg:
+        condition: service_started
+      mailpit:
         condition: service_started
     networks:
       - masar_internal
@@ -83,15 +120,31 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-masar}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-masar}
+      GOTENBERG_URL: http://gotenberg:3000
       DATA_DIR: /app/data
+      # نفس متغيّرات core أعلاه بالضبط — core-scheduler هو من يبني الطابور
+      # فعليًا (send_builder، كل 10 دقائق) ويرسل (sender، كل دقيقة) ويقرأ
+      # الوارد (inbox، كل 15 دقيقة)، فيحتاجها جميعًا لا core وحدها.
+      MAIL_FERNET_KEY: ${MAIL_FERNET_KEY:-}
+      MAIL_SINK_SMTP: ${MAIL_SINK_SMTP:-mailpit:1025}
+      MAIL_SINK_API_URL: ${MAIL_SINK_API_URL:-http://mailpit:8025}
+      DRY_RUN_TO: ${DRY_RUN_TO:-}
+      MAIL_LIVE: ${MAIL_LIVE:-false}
+      CV_DATA_DIR: /data/cv
     volumes:
       # نفس ملاحظة data أعلاه — الجامع نفسه (core.app.discovery) يقرأ
       # taxonomy_local.yaml لتصنيف العائلة المهنية وsources_seed.csv للبذر
       # عند كل إقلاع.
       - ./data:/app/data:ro
+      # نفس volume السيرة الذاتية المشترك مع core أعلاه (تصحيح Medium 2).
+      - cv_data:/data/cv
     depends_on:
       postgres:
         condition: service_healthy
+      gotenberg:
+        condition: service_started
+      mailpit:
+        condition: service_started
     networks:
       - masar_internal
       - masar_public   # الجامع يحتاج وصولًا للإنترنت لقراءة المصادر (masar_internal شبكة مغلقة)
@@ -199,3 +252,6 @@ volumes:
   caddy_data:
   caddy_config:
   n8n_data:
+  # سيرة ذاتية مولَّدة (B4) — مشتركة بين core وcore-scheduler (راجع تعليق
+  # Medium 2 عند خدمة core أعلاه).
+  cv_data:
