@@ -41,7 +41,7 @@ IMAP_TEST_TIMEOUT = 10.0
 
 def _test_smtp(host: str, port: int, address: str, password: str) -> str | None:
     """يحاول تسجيل دخول SMTP فعلياً (STARTTLS). يرجع None عند النجاح، أو
-    رسالة خطأ عامة (بلا تفاصيل قد تحمل أثراً لكلمة المرور) عند الفشل."""
+    رسالة خطأ عامة (بلا تفاصيل قد تحمل أثرًا لكلمة المرور) عند الفشل."""
     try:
         with smtplib.SMTP(host, port, timeout=SMTP_TEST_TIMEOUT) as smtp:
             smtp.starttls()
@@ -73,13 +73,33 @@ class MailLinkCreateRequest(BaseModel):
     smtp_port: int = 587
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
+    # تصحيح F1 (مراجعة حيّة docs/reports/B3B4-live-review.md، استنتاج عالٍ 1):
+    # تجاوز إداري صريح لاختبار SMTP/IMAP الحيّ — مرفوض كليًا (400) إن لم يكن
+    # DRY_RUN فعّالًا (sender.is_dry_run()، أي MAIL_LIVE=true بالبيئة). لا
+    # يُستخدَم أبدًا بمسار الإنتاج الحقيقي: الهدف تمكين اختبار المسار الكامل
+    # (send_builder → sender → mailpit) ببيئة لا توفّر IMAP حقيقيًا (mailpit)
+    # ولا حساب Gmail اختباري، بلا التحايل على فحص fail-closed الحقيقي أبدًا
+    # حين الإرسال الحي مفعّل فعلاً.
+    skip_verify: bool = False
 
 
 @mail_link_router.post("")
 async def create_mail_link(body: MailLinkCreateRequest) -> dict:
     """يختبر SMTP+IMAP فعلياً بكلمة المرور المُرسَلة قبل التخزين — لا يُخزّن
     صندوق فشل الاختبار كـ'ok' أبداً (يُخزّن كـ'failed' مع last_error عامًا،
-    ما يسمح للمستخدم بإعادة المحاولة عبر نفس النقطة بلا تكرار صفوف)."""
+    ما يسمح للمستخدم بإعادة المحاولة عبر نفس النقطة بلا تكرار صفوف).
+
+    استثناء وحيد: `skip_verify=true` **و** DRY_RUN فعّال معًا (F1) — يتخطّى
+    اختبار SMTP/IMAP الحيّ كليًا ويسجّل status='ok' مباشرة مع
+    verified_via='skipped-dry-run' (علامة صريحة تمنع الالتباس لاحقًا مع
+    تحقّق حقيقي ناجح). `skip_verify=true` بمعزل عن DRY_RUN (أي MAIL_LIVE=true)
+    يُرفَض بـ400 فورًا — لا مسار يتجاوز التحقق الحيّ بوضع الإنتاج الحقيقي."""
+    if body.skip_verify and not sender.is_dry_run():
+        raise HTTPException(
+            status_code=400,
+            detail="skip_verify مسموح به فقط حين DRY_RUN فعّال (MAIL_LIVE ليست true) — الإنتاج الحي يتطلّب تحقّق SMTP/IMAP حقيقي دومًا",
+        )
+
     engine = get_engine()
     with engine.connect() as conn:
         customer = conn.execute(
@@ -88,10 +108,16 @@ async def create_mail_link(body: MailLinkCreateRequest) -> dict:
     if not customer:
         raise HTTPException(status_code=404, detail="عميل غير موجود")
 
-    smtp_error = _test_smtp(body.smtp_host, body.smtp_port, body.address, body.app_password)
-    imap_error = _test_imap(body.imap_host, body.imap_port, body.address, body.app_password) if not smtp_error else None
-    error = smtp_error or imap_error
-    status = "ok" if not error else "failed"
+    if body.skip_verify:
+        error = None
+        status = "ok"
+        verified_via = "skipped-dry-run"
+    else:
+        smtp_error = _test_smtp(body.smtp_host, body.smtp_port, body.address, body.app_password)
+        imap_error = _test_imap(body.imap_host, body.imap_port, body.address, body.app_password) if not smtp_error else None
+        error = smtp_error or imap_error
+        status = "ok" if not error else "failed"
+        verified_via = None
 
     secret_enc = mail_crypto.encrypt_secret(body.app_password)
 
@@ -102,10 +128,10 @@ async def create_mail_link(body: MailLinkCreateRequest) -> dict:
                 """
                 INSERT INTO mail_links (
                     customer_id, address, smtp_host, smtp_port, imap_host, imap_port,
-                    secret_enc, status, last_check_at, last_error, created_at
+                    secret_enc, status, last_check_at, last_error, verified_via, created_at
                 ) VALUES (
                     :customer_id, :address, :smtp_host, :smtp_port, :imap_host, :imap_port,
-                    :secret_enc, :status, now(), :error, now()
+                    :secret_enc, :status, now(), :error, :verified_via, now()
                 )
                 ON CONFLICT (customer_id) DO UPDATE SET
                     address = EXCLUDED.address,
@@ -116,7 +142,8 @@ async def create_mail_link(body: MailLinkCreateRequest) -> dict:
                     secret_enc = EXCLUDED.secret_enc,
                     status = EXCLUDED.status,
                     last_check_at = now(),
-                    last_error = EXCLUDED.last_error
+                    last_error = EXCLUDED.last_error,
+                    verified_via = EXCLUDED.verified_via
                 RETURNING id
                 """
             ),
@@ -130,10 +157,11 @@ async def create_mail_link(body: MailLinkCreateRequest) -> dict:
                 "secret_enc": secret_enc,
                 "status": status,
                 "error": error,
+                "verified_via": verified_via,
             },
         ).first()
 
-    return {"ok": error is None, "mail_link_id": row[0], "status": status, "error": error}
+    return {"ok": error is None, "mail_link_id": row[0], "status": status, "error": error, "verified_via": verified_via}
 
 
 @mail_link_router.delete("/{customer_id}")
@@ -153,7 +181,7 @@ async def get_mail_link(customer_id: int) -> dict:
             text(
                 """
                 SELECT id, customer_id, address, smtp_host, smtp_port, imap_host, imap_port,
-                       status, last_check_at, last_error, warmup_day, created_at
+                       status, last_check_at, last_error, verified_via, warmup_day, created_at
                 FROM mail_links WHERE customer_id = :id
                 """
             ),
@@ -213,7 +241,7 @@ async def send_now(limit: int = 200) -> dict:
 @admin_router.get("/sink/messages")
 async def sink_messages(limit: int = 50) -> dict:
     """يعرض رسائل صندوق mailpit (sink التطوير) عبر واجهة mailpit HTTP API —
-    يتحقق بصريًا من وصول الرسائل (موضوع/CC/مرفق PDF) بلا أي إرسال حقيقي."""
+    يتحقق بصرياً من وصول الرسائل (موضوع/CC/مرفق PDF) بلا أي إرسال حقيقي."""
     sink_api_url = os.environ.get("MAIL_SINK_API_URL", "").strip()
     if not sink_api_url:
         sink_smtp = os.environ.get("MAIL_SINK_SMTP", "").strip()
@@ -241,9 +269,9 @@ class LoadTestRequest(BaseModel):
 async def load_test(body: LoadTestRequest) -> dict:
     """يبني صفوف send_queue اصطناعية (synthetic=true) لقياس معدّل التصريف
     (drain rate) دون المرور بأي منطق تخطيط/مطابقة حقيقي ودون أي أثر جانبي
-    حقيقي (applications/company_cooldowns/ledger مُستبعدة صراحةً لصفوف
+    حقيقي (applications/company_cooldowns/ledger مُستبعدة صراحًة لصفوف
     synthetic بمنطق sender._mark_success). عملاء الاختبار حقيقيون بقاعدة
-    البيانات (قيد FK يتطلب ذلك) لكن بحالة 'paused' (مُستبعدون تلقائيًا من
+    البيانات (قيد FK يتطلب ذلك) لكن بحالة 'paused' (مُستبعدون تلقائياً من
     أي معالجة حقيقية بـplanner.py/send_builder.py التي تفلتر status='active')."""
     batch_tag = uuid.uuid4().hex[:8]
     engine = get_engine()
