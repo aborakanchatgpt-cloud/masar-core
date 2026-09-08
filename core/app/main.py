@@ -48,6 +48,14 @@ app.include_router(customers_router)
 # آخر يملك هذين الملفين، لا نلمسهما من هنا): إدراج محروس بحيث يبدأ عملهما
 # فور دفع ملفاتهما بلا أي تعديل إضافي بـmain.py — غيابهما الآن ImportError
 # متوقع، يُسجّل معلوماتيًا فقط ولا يوقف إقلاع الخدمة.
+#
+# تصحيح Medium 3 بمراجعة B4 الأوفلاين (docs/reports/B4-offline-review.md):
+# `except ImportError` وحدها لا تلتقط SyntaxError ولا أي استثناء آخر يحدث
+# أثناء تحميل هذه الوحدات أو أي وحدة تستوردها (هذا حدث فعليًا بالإنتاج —
+# commit "B4 hotfix: comment out stray line in mail_api.py" — أسقط main.py
+# بالكامل رغم أن نية العزل كانت واضحة). `except Exception` هنا تحمي /health
+# وكل نقاط B1/B2/B3 من أي عطل بملف B4 وحده مهما كان نوعه، مع تسجيل كامل
+# (traceback) بدل الصمت.
 for mod_name in ("app.mail_api", "app.inbox_api"):
     try:
         module = __import__(mod_name, fromlist=["router"])
@@ -55,6 +63,8 @@ for mod_name in ("app.mail_api", "app.inbox_api"):
         logger.info("تم تحميل راوتر %s", mod_name)
     except ImportError:
         logger.info("راوتر %s غير موجود بعد (متوقّع قبل اكتمال B4) — تخطّي", mod_name)
+    except Exception:  # noqa: BLE001 — أي عطل آخر (SyntaxError إلخ) يجب ألا يُسقط main.py
+        logger.exception("تعذّر تحميل راوتر %s بخطأ غير متوقع (غير ImportError) — تخطّي وإبقاء بقية الخدمة حية", mod_name)
 
 
 class HealthResponse(BaseModel):

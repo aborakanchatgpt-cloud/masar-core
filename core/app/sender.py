@@ -169,7 +169,18 @@ def _claim_due_batch(engine: Engine, limit: int) -> list[dict]:
     """يطالب بدفعة مستحقة عبر CTE بـFOR UPDATE SKIP LOCKED — يسمح بتشغيل
     عدة استدعاءات send_tick متوازية (SEND_WORKERS) بلا تصادم على نفس الصفوف،
     ويحدّد locked_until (LOCK_DURATION_MINUTES) كشبكة أمان ضد عملية تعطّلت
-    منتصف الإرسال (صف مقفل لن يُطالَب به مجددًا حتى تنتهي مهلة القفل)."""
+    منتصف الإرسال (صف مقفل لن يُطالَب به مجددًا حتى تنتهي مهلة القفل).
+
+    تصحيح Critical/High 1 (F1) بمراجعة B4 الأوفلاين (docs/reports/B4-offline-review.md):
+    الشرط `status = 'queued'` وحده كان يمنع فعليًا استرداد صفّ عالق بحالة
+    'sending' (عملية أُنهيت — SIGTERM/تعطّل — بين نجاح SMTP فعليًا وتنفيذ
+    _mark_success) رغم أن التعليق أعلاه يصف "شبكة أمان" تعتمد صراحة على
+    انتهاء locked_until؛ الصفّ كان يبقى عالقًا للأبد بلا استرداد إطلاقًا (لا
+    ازدواج، لكن فقدان فعلي للصفّ). الآن `status IN ('queued','sending')` مع
+    نفس فحص `locked_until` يُطبّق فعليًا هذه الشبكة كما تصفها الوثائق —
+    والحماية من الازدواج الفعلي (رسالة SMTP خرجت فعلًا قبل الانهيار) تقع
+    بعدها في `_process_row` (فحص idempotency ضد `applications` قبل أي اتصال
+    SMTP جديد لصفّ استُعيد بهذا المسار)."""
     now = datetime.now(timezone.utc)
     lock_until = now + timedelta(minutes=LOCK_DURATION_MINUTES)
     with engine.begin() as conn:
@@ -178,7 +189,7 @@ def _claim_due_batch(engine: Engine, limit: int) -> list[dict]:
                 """
                 WITH due AS (
                     SELECT id FROM send_queue
-                    WHERE status = 'queued' AND send_after <= :now
+                    WHERE status IN ('queued', 'sending') AND send_after <= :now
                       AND (locked_until IS NULL OR locked_until < :now)
                     ORDER BY send_after
                     LIMIT :limit
@@ -202,6 +213,56 @@ def _fetch_mail_link(conn, customer_id: int) -> dict | None:
     return dict(row) if row else None
 
 
+def _existing_application(conn, row: dict) -> dict | None:
+    """تحقّق idempotency (تصحيح High/F1 بمراجعة B4 الأوفلاين): هل توجد أصلًا
+    صفّ `applications` ناجح لنفس (customer_id, job_id, opportunity_id)؟ إن
+    وُجد فهذا يعني أن الرسالة **خرجت فعليًا عبر SMTP بدورة سابقة** (applications
+    يُدرَج فقط من `_mark_success` بعد نجاح `_smtp_send`) وأن الانهيار الذي
+    ترك صفّ send_queue عالقًا بحالة 'sending' حدث *بعد* الإرسال الفعلي، لا
+    قبله — تجنّب اتصال SMTP جديد كليًا في هذه الحالة (لا يستهلك رصيدًا إضافيًا
+    أصلًا، فقط يمنع رسالة مزدوجة فعلية لنفس الشركة). صفوف synthetic
+    (job_id/opportunity_id فارغان دومًا) لا تُنشئ applications أبدًا فلا
+    تتطابق هنا بأمان.
+
+    يرجع القاموس (وليس message_id مباشرة) عمدًا: العمود قابل للـNULL
+    بالمخطّط، وفحص `is not None` على القيمة نفسها كان سيُخطئ في التعامل مع
+    صفّ موجود فعليًا لكن message_id به NULL كأنه "لا يوجد صفّ إطلاقًا"."""
+    if row.get("job_id") is None or row.get("opportunity_id") is None:
+        return None
+    existing = conn.execute(
+        text(
+            """
+            SELECT message_id FROM applications
+            WHERE customer_id = :cid AND job_id = :jid AND opportunity_id = :oid
+            ORDER BY id LIMIT 1
+            """
+        ),
+        {"cid": row["customer_id"], "jid": row["job_id"], "oid": row["opportunity_id"]},
+    ).mappings().first()
+    return dict(existing) if existing is not None else None
+
+
+def _mark_already_sent(conn, row: dict, message_id: str) -> None:
+    """صفّ send_queue استُعيد (reclaimed) وتبيّن أن تطبيقًا ناجحًا مسجّل أصلًا
+    لنفس الفرصة (`_existing_application_message_id`) — يُعلَّم كـ'sent'
+    مباشرة بلا اتصال SMTP جديد ولا إدراج applications/company_cooldowns
+    مكرّر (السجلّ الأصلي من المحاولة الناجحة الأولى كافٍ ودقيق)."""
+    conn.execute(
+        text(
+            """
+            UPDATE send_queue SET status = 'sent', message_id = :mid, locked_until = NULL, error = NULL
+            WHERE id = :id
+            """
+        ),
+        {"mid": message_id or f"<masar-{row['id']}@masar.local>", "id": row["id"]},
+    )
+    if row.get("opportunity_id") is not None:
+        conn.execute(
+            text("UPDATE opportunities SET status = 'sent' WHERE id = :id"),
+            {"id": row["opportunity_id"]},
+        )
+
+
 def _mark_success(conn, row: dict, message_id: str) -> None:
     conn.execute(
         text(
@@ -212,6 +273,14 @@ def _mark_success(conn, row: dict, message_id: str) -> None:
         ),
         {"mid": message_id, "id": row["id"]},
     )
+    # المصدر الحقيقي الوحيد لـ"أُرسل فعليًا" هو هذه النقطة (بعد نجاح SMTP
+    # فعليًا) — تصحيح Critical/High 2 بمراجعة B4 الأوفلاين: send_builder.py
+    # لم يعد يضبط opportunities.status='sent' وقت البناء، بل 'queued' فقط.
+    if row.get("opportunity_id") is not None:
+        conn.execute(
+            text("UPDATE opportunities SET status = 'sent' WHERE id = :id"),
+            {"id": row["opportunity_id"]},
+        )
     if row.get("synthetic"):
         return
 
@@ -281,6 +350,15 @@ def _mark_failure(conn, row: dict, error_text: str) -> None:
                 ),
                 {"cid": row["customer_id"], "ref": f"send_queue_failed:{row['id']}"},
             )
+        # تصحيح Critical/High 2 (نفس منطق _mark_success أعلاه بالاتجاه
+        # المعاكس): فشل نهائي يعني أن التقديم لم يُرسَل فعليًا إطلاقًا —
+        # opportunities.status='skipped' لا تبقى 'queued' للأبد (تُفسِد أي
+        # تقرير/إحصاء يعتمدها كمصدر حقيقة).
+        if row.get("opportunity_id") is not None:
+            conn.execute(
+                text("UPDATE opportunities SET status = 'skipped' WHERE id = :id"),
+                {"id": row["opportunity_id"]},
+            )
         return
 
     conn.execute(
@@ -303,6 +381,21 @@ def _mark_failure(conn, row: dict, error_text: str) -> None:
 def _process_row(engine: Engine, row: dict) -> bool:
     with engine.connect() as conn:
         mail_link = _fetch_mail_link(conn, row["customer_id"])
+        existing_application = _existing_application(conn, row)
+
+    if existing_application is not None:
+        # فحص idempotency (تصحيح High/F1): صفّ استُعيد (locked_until انتهى،
+        # status كان 'sending' — راجع _claim_due_batch) وتطبيق ناجح مسجّل
+        # أصلًا لنفس الفرصة — أُرسلت الرسالة فعليًا بمحاولة سابقة قبل أن
+        # يُقتَل العملية بين نجاح SMTP وتنفيذ _mark_success؛ لا نتصل بـSMTP
+        # مجددًا إطلاقًا (يمنع رسالة مزدوجة فعلية لنفس الشركة).
+        logger.info(
+            "send_queue #%s: تطبيق ناجح موجود أصلًا لنفس الفرصة (idempotency) — تعليم كـsent بلا إرسال جديد",
+            row["id"],
+        )
+        with engine.begin() as conn:
+            _mark_already_sent(conn, row, existing_application.get("message_id"))
+        return True
 
     transport = resolve_transport(row["customer_id"], mail_link)
     if transport is None:

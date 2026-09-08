@@ -77,11 +77,43 @@ if [ "$BEFORE" != "$AFTER" ] || [ -f "$APP_DIR/ops/.deploy_needed" ]; then
   deploy_ok=1
 
   if timeout -k 30 1500 docker compose up -d --build; then
+    # HARDENING (إصلاح تجمّد alembic upgrade head — رُصد مرتين بالإنتاج
+    # اليوم حتى انتهاء مهلة الـ600 ثانية): core-scheduler يُشغّل
+    # run_collector_round() فورًا عند إقلاعه (scheduler_main.py، أول استدعاء
+    # قبل scheduler.start()) ماسكًا معاملات كتابة مفتوحة على jobs/opportunities،
+    # بينما ترحيلات 0005/0006 تُنشئ مفاتيح أجنبية/فهارس/قيود CHECK تُشير
+    # لنفس الجداول (ALTER TABLE يحتاج قفل حصري) → انتظار قفل قد يتجاوز
+    # المهلة كليًا. نوقف core-scheduler مؤقتًا قبل الترحيل، ونُعيد تشغيله
+    # دومًا (نجاح الترحيل أو فشله أو حتى خطأ غير متوقع) عبر مصيدة EXIT
+    # مُقيَّدة بهذا النطاق فقط — نفس أسلوب مصائد run_queue.sh.
+    scheduler_stopped_for_migration=0
+    restart_scheduler_after_migration() {
+      if [ "$scheduler_stopped_for_migration" -eq 1 ]; then
+        echo "$(date -u +%FT%TZ) — إعادة تشغيل core-scheduler بعد الترحيل..."
+        timeout -k 10 60 docker compose start core-scheduler || true
+        scheduler_stopped_for_migration=0
+      fi
+    }
+    trap restart_scheduler_after_migration EXIT
+
+    echo "$(date -u +%FT%TZ) — إيقاف core-scheduler مؤقتًا قبل الترحيل (تجنّب انتظار قفل مع run_collector_round عند الإقلاع)..."
+    timeout -k 10 60 docker compose stop core-scheduler || true
+    scheduler_stopped_for_migration=1
+
     echo "$(date -u +%FT%TZ) — تطبيق ترحيلات قاعدة البيانات (alembic upgrade head)..."
-    if ! timeout -k 10 600 docker compose run --rm -v "$APP_DIR/migrations:/migrations" core sh -c "cd /migrations && alembic upgrade head"; then
+    # PGOPTIONS='-c lock_timeout=120s': DATABASE_URL يُستخدم عبر psycopg (v3،
+    # مبنية على libpq التي تحترم PGOPTIONS تلقائيًا بلا حاجة لتعديل conninfo) —
+    # يمنع انتظار قفل غير محدود حتى لو بقيت عملية أخرى ماسكة بالجدول لسبب
+    # غير متوقع، فيفشل الترحيل بوضوح (رسالة lock_timeout) بدل التعليق حتى
+    # مهلة الـ600 ثانية الخارجية. يُمرَّر عبر `-e` مباشرة لبيئة الحاوية
+    # المُنشأة بـ"docker compose run" (لا يعتمد على بيئة المضيف نفسها).
+    if ! timeout -k 10 600 docker compose run --rm -e PGOPTIONS='-c lock_timeout=120s' -v "$APP_DIR/migrations:/migrations" core sh -c "cd /migrations && alembic upgrade head"; then
       echo "$(date -u +%FT%TZ) — فشل/انتهت مهلة alembic upgrade head — سنُبقي علامة .deploy_needed لإعادة المحاولة في التكة القادمة، ونُكمل لتشغيل طابور ops." >&2
       deploy_ok=0
     fi
+
+    restart_scheduler_after_migration
+    trap - EXIT
   else
     echo "$(date -u +%FT%TZ) — فشل/انتهت مهلة docker compose up -d --build — سنُبقي علامة .deploy_needed لإعادة المحاولة في التكة القادمة، ونُكمل لتشغيل طابور ops." >&2
     deploy_ok=0
