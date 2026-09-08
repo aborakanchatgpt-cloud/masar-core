@@ -51,6 +51,25 @@ BACKOFF_MINUTES = {1: 1, 2: 5}
 MAX_ATTEMPTS = 3
 
 
+def is_dry_run() -> bool:
+    """DRY_RUN هو الوضع الافتراضي دومًا (الدليل: "DRY_RUN افتراضي دومًا") —
+    يُعتبر معطَّلاً (إرسال حي فعلي مسموح به) فقط حين MAIL_LIVE=true صراحة
+    بالبيئة. يُستخدَم هنا (F2 — تجاوز نافذة الإرسال التطويري) وبـmail_api.py
+    (F1 — تجاوز التحقق الحيّ لـSMTP/IMAP عبر skip_verify) — مصدر حقيقة واحد
+    لمعنى "DRY_RUN فعّال" بكل الكود (مراجعة حيّة docs/reports/B3B4-live-review.md)."""
+    return os.environ.get("MAIL_LIVE", "false").strip().lower() != "true"
+
+
+def _send_window_override_active() -> bool:
+    """تجاوز نافذة الإرسال المخصّص للتطوير فقط (F2 بمراجعة B3B4-live-review.md،
+    استنتاج متوسط 2): يُشترط كلا الأمرين معًا — MAIL_IGNORE_SEND_WINDOW=true
+    صراحة بالبيئة **و** DRY_RUN فعّال (is_dry_run()) — لا يعمل هذا التجاوز
+    إطلاقًا بوضع الإنتاج الحي (MAIL_LIVE=true) بصرف النظر عن قيمة المتغيّر،
+    منعًا لتسرّبه للإنتاج بالخطأ (نسيان إزالته من .env لا يكفي وحده لتفعيله)."""
+    override = os.environ.get("MAIL_IGNORE_SEND_WINDOW", "false").strip().lower() == "true"
+    return override and is_dry_run()
+
+
 def resolve_transport(customer_id: int, mail_link: dict | None) -> dict | None:
     """يحدّد إعدادات النقل الفعلية (SMTP) لهذا العميل حسب أولوية sink>real:
     - MAIL_SINK_SMTP معرّف (مثال "mailpit:1025") → يُستخدم دومًا (تطوير)،
@@ -448,14 +467,22 @@ def send_tick(*, limit: int = CLAIM_BATCH_LIMIT_DEFAULT, ignore_window: bool = F
     الفوري بلا انتظار نافذة الإرسال الحقيقية (الإرسال الفعلي بالمقابل يبقى
     محكومًا بأن send_after لكل صفّ كان قد حُسِب أصلًا ضمن النافذة من
     send_builder.py — تجاوز الفحص هنا لا يُعيد جدولة صفوف قديمة خارج
-    النافذة، فقط يسمح بمعالجتها الآن بدل الانتظار لدورة داخل
-    النافذة)."""
+    النافذة، فقط يسمح بمعالجتها الآن بدل الانتظار لدورة داخل النافذة).
+
+    تصحيح F2 (مراجعة حيّة docs/reports/B3B4-live-review.md، استنتاج متوسط 2):
+    فحص النافذة أصبح **غير مشروط** بوجود MAIL_SINK_SMTP (كان يتجاوز النافذة
+    كليًا طالما sink مفعّل — وهو الافتراضي الدائم بـdocker-compose.yml، ما
+    يعني أن الإرسال الفعلي لم يكن محكومًا بالنافذة إطلاقًا بأي بيئة تستخدم
+    sink) — الآن يستخدم نفس `pacing.is_in_window` غير المشروط الذي تستخدمه
+    `scheduler_main.run_queue_builder_job` تمامًا، بصرف النظر عن sink/dry-run/
+    حقيقي. المسار الوحيدان لتجاوز النافذة الآن: `ignore_window=True` الصريح
+    (الاستدعاء الإداري اليدوي)، أو `MAIL_IGNORE_SEND_WINDOW=true` **مع**
+    DRY_RUN فعّال معًا (`_send_window_override_active`، تطوير محلي فقط)."""
     engine = engine or get_engine()
 
-    if not ignore_window:
+    if not ignore_window and not _send_window_override_active():
         riyadh_now = pacing.to_riyadh_naive(pacing.utc_now())
-        sink_active = bool(os.environ.get("MAIL_SINK_SMTP", "").strip())
-        if not sink_active and not pacing.is_in_window(riyadh_now):
+        if not pacing.is_in_window(riyadh_now):
             return {"ok": True, "sent": 0, "failed": 0, "note": "خارج نافذة الإرسال"}
 
     batch = _claim_due_batch(engine, limit)
