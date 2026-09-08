@@ -120,7 +120,7 @@ def _fetch_active_customers(conn: Connection, customer_ids: list[int] | None) ->
 def _fetch_existing_planned(
     conn: Connection, customer_ids: list[int], planned_for: date
 ) -> tuple[dict[int, set[int]], dict[int, set[str]]]:
-    """وظائف/شركات مخطّطة أصلًا اليوم لكل عميل (planned/sent) — تُستخدم
+    """وظائف/شركات مخطّطة أصلًا اليوم لكل عميل (planned/queued/sent) — تُستخدم
     لاستبعادها من مجموعة المرشّحين قبل الاختيار بالتشغيلات اللاحقة (التعبئة
     الساعية — §3.8)، لسببين:
     1. بلا استبعاد job_id: إعادة اختيار وظيفة مخطّطة أصلًا تمر عبر
@@ -139,7 +139,7 @@ def _fetch_existing_planned(
             """
             SELECT o.customer_id, o.job_id, j.company_name
             FROM opportunities o JOIN jobs j ON j.id = o.job_id
-            WHERE o.planned_for = :planned_for AND o.status IN ('planned','sent')
+            WHERE o.planned_for = :planned_for AND o.status IN ('planned','queued','sent')
               AND o.customer_id = ANY(:ids)
             """
         ),

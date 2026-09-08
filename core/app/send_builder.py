@@ -81,12 +81,22 @@ def _fetch_active_customers_with_mail(conn: Connection, customer_ids: list[int] 
     return [dict(r) for r in rows]
 
 
+MAX_CANDIDATES_PER_CUSTOMER = 300
+
+
 def _fetch_candidate_opportunities(conn: Connection, customer_id: int, today: date) -> list[dict]:
     """فرص اليوم (وأي فرص متبقية من أيام سابقة لم تُرسل بعد — planned_for
     <= today عمدًا لا = فقط: يلتقط أي تراكم متأخر من فرص planner.py التي
     لم تصل قط لطابور إرسال، قرار تصميم بنطاق B4 موثّق هنا صراحة، لا يعدّل
     planner.py نفسه) غير المُدرجة بطابور إرسال فعّال (أي صفّ send_queue
-    غير 'cancelled' لنفس opportunity_id يمنع إعادة إدراجها)."""
+    غير 'cancelled' لنفس opportunity_id يمنع إعادة إدراجها).
+
+    `LIMIT MAX_CANDIDATES_PER_CUSTOMER` (تصحيح Low 3 بمراجعة B4 الأوفلاين،
+    docs/reports/B4-offline-review.md): بلا حدّ أعلى، عميل مُعلَّق طويلًا ثم
+    أُعيد تفعيله بتراكم كبير من فرص planned قديمة قد يُحمِّل آلاف الصفوف
+    بالذاكرة لعميل واحد رغم أن الحلقة المستدعية تتوقف مبكرًا عند بلوغ الهدف
+    اليومي (remaining) — الترتيب `score DESC` أصلًا يضمن مرور أفضل المرشّحين
+    أولًا فلا يتأثر السلوك الفعلي، فقط الاستهلاك الأقصى للذاكرة."""
     rows = conn.execute(
         text(
             """
@@ -100,9 +110,10 @@ def _fetch_candidate_opportunities(conn: Connection, customer_id: int, today: da
                   WHERE sq.opportunity_id = o.id AND sq.status != 'cancelled'
               )
             ORDER BY o.score DESC, o.id
+            LIMIT :max_candidates
             """
         ),
-        {"cid": customer_id, "today": today},
+        {"cid": customer_id, "today": today, "max_candidates": MAX_CANDIDATES_PER_CUSTOMER},
     ).mappings().all()
     return [dict(r) for r in rows]
 
@@ -401,8 +412,15 @@ def build_queue_for_customer(conn: Connection, customer: dict, today: date, rng:
             text("UPDATE ledger SET ref_id = :ref WHERE id = :id"),
             {"ref": f"send_queue:{queue_id}", "id": ledger_id},
         )
+        # 'queued' لا 'sent' هنا عمدًا (تصحيح Critical/High 2 بمراجعة B4
+        # الأوفلاين، docs/reports/B4-offline-review.md): الإدراج بـsend_queue
+        # لا يعني إرسالًا فعليًا بعد — 'sent' الحقيقية تُضبط فقط داخل
+        # sender._mark_success بعد نجاح SMTP فعليًا، و'skipped' عند فشل
+        # نهائي (sender._mark_failure، MAX_ATTEMPTS) حتى لا يبقى opportunities.status
+        # كاذبًا لو فشل الإرسال لاحقًا (migration 0006_b4_fixes يضيف 'queued'
+        # لقيد CHECK).
         conn.execute(
-            text("UPDATE opportunities SET status = 'sent' WHERE id = :id"),
+            text("UPDATE opportunities SET status = 'queued' WHERE id = :id"),
             {"id": cand["opportunity_id"]},
         )
 
