@@ -366,8 +366,16 @@ PYEOF
         ;;
 
       migrate)
-        timeout -k 10 120 docker compose run --rm -v "$APP_DIR/migrations:/migrations" core sh -c "cd /migrations && alembic upgrade head" >"$out_tmp" 2>&1
+        # HARDENING: نفس نمط autodeploy.sh (إصلاح تجمّد alembic upgrade head
+        # — core-scheduler يُشغّل run_collector_round() فورًا عند إقلاعه
+        # ماسكًا معاملات كتابة على jobs/opportunities تتصادم مع ALTER TABLE
+        # بالترحيلات). نوقف core-scheduler، نُرحّل، ثم نُعيد تشغيله دومًا —
+        # الأوامر الثلاثة متتالية (لا "&&") فيُنفَّذ التشغيل حتى لو فشل/انتهت
+        # مهلة أمر الترحيل نفسه.
+        timeout -k 10 60 docker compose stop core-scheduler >>"$out_tmp" 2>&1
+        timeout -k 10 120 docker compose run --rm -e PGOPTIONS='-c lock_timeout=120s' -v "$APP_DIR/migrations:/migrations" core sh -c "cd /migrations && alembic upgrade head" >>"$out_tmp" 2>&1
         exit_code=$?
+        timeout -k 10 60 docker compose start core-scheduler >>"$out_tmp" 2>&1
         ;;
 
       backup-now)
