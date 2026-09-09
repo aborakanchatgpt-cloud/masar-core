@@ -30,7 +30,7 @@ logger = logging.getLogger("masar.mail_api")
 
 # main.py يستورد `router` وحده (app.include_router(module.router)) — لذا
 # نجمع هنا راوترين بادئتين مختلفتين (/mail-link و/admin/mail) داخل راوتر
-واحد بلا بادئة إضافية خاصة به، عبر include_router بلا prefix زائد.
+# واحد بلا بادئة إضافية خاصة به، عبر include_router بلا prefix زائد.
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 mail_link_router = APIRouter(prefix="/mail-link", tags=["mail"])
 admin_router = APIRouter(prefix="/admin/mail", tags=["mail-admin"])
