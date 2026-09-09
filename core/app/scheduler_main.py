@@ -33,7 +33,7 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app import discovery, inbox, pacing, planner, send_builder, sender
+from app import discovery, guarantee, inbox, pacing, planner, reports, send_builder, sender
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("masar-scheduler")
@@ -82,12 +82,32 @@ def run_sender_tick_job() -> None:
 
 
 def run_inbox_round_job() -> None:
-    """B4: قراءة الوارد — بلا قيد نافذة (ارتدادات/ردود الشركات تصل بأي وقت)."""
+    """B4: قراءة الوارد — بلا قيد نافذة (الارتدادات/ردود الشركات تصل بأي وقت)."""
     try:
         result = inbox.run_inbox_round()
         logger.info("نتيجة جولة الوارد: %s", result)
     except Exception:  # noqa: BLE001
         logger.exception("جولة الوارد فشلت بخطأ غير متوقع — ستُحاول مجددًا بالدورة القادمة")
+
+
+def run_daily_reports_job() -> None:
+    """B5a: تقرير العميل اليومي — 19:00 الرياض (16:00 UTC، راجع CronTrigger
+    أدناه) لكل عميل نشط، idempotent per (customer_id, report_date)."""
+    try:
+        result = reports.run_reports_round()
+        logger.info("نتيجة جولة التقارير اليومية: %s", result)
+    except Exception:  # noqa: BLE001
+        logger.exception("جولة التقارير اليومية فشلت بخطأ غير متوقع — ستُحاول مجددًا غدًا")
+
+
+def run_guarantee_round_job() -> None:
+    """B5a: تقييم دفتر الضمان — 00:30 الرياض (21:30 UTC اليوم السابق) لكل
+    اشتراك انتهت فترته فعليًا (تمديد يومين تلقائي/تعويض/تمديد انقطاع بريد)."""
+    try:
+        result = guarantee.run_guarantee_round()
+        logger.info("نتيجة جولة تقييم الضمان: %s", result)
+    except Exception:  # noqa: BLE001
+        logger.exception("جولة تقييم الضمان فشلت بخطأ غير متوقع — ستُحاول مجددًا غدًا")
 
 
 def main() -> None:
@@ -143,10 +163,28 @@ def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    # B5a: التقرير اليومي 19:00 الرياض = 16:00 UTC (ثابت، بلا توقيت صيفي —
+    # نفس ثابت RIYADH_OFFSET بكل الملفات).
+    scheduler.add_job(
+        run_daily_reports_job,
+        trigger=CronTrigger(hour=16, minute=0),
+        id="daily_reports",
+        max_instances=1,
+        coalesce=True,
+    )
+    # B5a: تقييم دفتر الضمان يوميًا 00:30 الرياض = 21:30 UTC (اليوم السابق).
+    scheduler.add_job(
+        run_guarantee_round_job,
+        trigger=CronTrigger(hour=21, minute=30),
+        id="guarantee_round",
+        max_instances=1,
+        coalesce=True,
+    )
     logger.info(
         "Masar Core Scheduler بدأ التشغيل — جولة جامع فورًا ثم كل 30 دقيقة؛ "
         "جولة تخطيط 03:00-12:00 UTC (06:00-15:00 الرياض) كل ساعة؛ "
-        "B4: بناء طابور كل 10 دقائق، إرسال كل دقيقة، وارد كل 15 دقيقة."
+        "B4: بناء طابور كل 10 دقائق، إرسال كل دقيقة، وارد كل 15 دقيقة؛ "
+        "B5a: تقرير يومي 16:00 UTC، تقييم ضمان 21:30 UTC."
     )
     run_collector_round()
     scheduler.start()
