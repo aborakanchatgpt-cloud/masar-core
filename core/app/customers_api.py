@@ -5,6 +5,9 @@ Masar Core — نقاط نهاية العملاء/الملف الشخصي/الم
 
     POST /customers                          إنشاء عميل (المدن/العائلات/الهدف اليومي)
     GET  /customers/{id}                     عميل + ملفه + رصيده
+    GET  /customers/by-telegram/{chat_id}    telegram_chat_id → {customer_id, status} (B5c)
+    POST /customers/{id}/status              تفعيل/إيقاف + سجلّ تدقيق (B5c)
+    POST /customers/{id}/cv                  رفع سيرة PDF خام (multipart) (B5c)
     POST /customers/{id}/profile             ملف مهيكل (JSON) + cv_text اختياري
                                               → استخراج حتمي (rules) للحقول الناقصة
     POST /wallet/{customer_id}/credit         قيد دفتر رصيد + تحديث wallets بمعاملة واحدة
@@ -13,14 +16,20 @@ Masar Core — نقاط نهاية العملاء/الملف الشخصي/الم
     GET  /plan/{customer_id}/today            فرص اليوم المخطّطة (الطبقة/الدرجة/الأسباب)
     POST /plan/run-now                        تشغيل المخطِّط فورًا (عميل واحد=مزامن، الكل=خلفية)
     GET  /admin/matching/explain              شرح درجة/استبعاد زوج (عميل، وظيفة) — للمراجع
+
+B5c: `by-telegram`/`/status`/`/cv` تسدّ NEEDS-CORE #2/#3/#4. `email_service`
+أصبح NULLable (0010)؛ create_mail_link يملؤه لاحقًا (COALESCE).
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
@@ -39,6 +48,11 @@ COOLDOWN_DAYS = planner.COOLDOWN_DAYS
 WEEKLY_CAP_WINDOW_DAYS = planner.WEEKLY_CAP_WINDOW_DAYS
 WEEKLY_CAP_CUSTOMERS = planner.WEEKLY_CAP_CUSTOMERS
 
+# B5c
+CV_MAX_BYTES = 5 * 1024 * 1024  # 5MB
+_PDF_MAGIC = b"%PDF-"
+CUSTOMER_STATUS_ALLOWED_VALUES = {"active", "paused"}
+
 
 # ---------------------------------------------------------------------------
 # customers
@@ -47,7 +61,7 @@ WEEKLY_CAP_CUSTOMERS = planner.WEEKLY_CAP_CUSTOMERS
 
 class CustomerCreateRequest(BaseModel):
     name: str
-    email_service: str
+    email_service: str | None = None  # B5c: اختياري (0010) — يملؤه create_mail_link لاحقًا
     telegram_chat_id: int | None = None
     phone: str | None = None
     cities: list[str] = Field(default_factory=list)
@@ -111,6 +125,98 @@ async def get_customer(customer_id: int) -> dict:
             text("SELECT * FROM profiles WHERE customer_id = :id"), {"id": customer_id}
         ).mappings().first()
     return {"customer": customer, "profile": dict(profile) if profile else None}
+
+
+# B5c — NEEDS-CORE #2 (فهرس فريد جزئي 0010 يضمن نتيجة واحدة).
+@router.get("/customers/by-telegram/{chat_id}")
+async def get_customer_by_telegram(chat_id: int) -> dict:
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id, status FROM customers WHERE telegram_chat_id = :chat_id"),
+            {"chat_id": chat_id},
+        ).mappings().first()
+    if not row:
+        raise HTTPException(status_code=404, detail="لا يوجد عميل بمعرّف محادثة تيليجرام هذا")
+    return {"customer_id": row["id"], "status": row["status"]}
+
+
+# B5c — تفعيل/إيقاف + سجلّ تدقيق (customer_status_audit، 0010) — NEEDS-CORE #4.
+class CustomerStatusRequest(BaseModel):
+    status: str
+    note: str | None = None
+
+
+@router.post("/customers/{customer_id}/status")
+async def update_customer_status(customer_id: int, body: CustomerStatusRequest) -> dict:
+    if body.status not in CUSTOMER_STATUS_ALLOWED_VALUES:
+        raise HTTPException(status_code=400, detail=f"status غير مسموح: {body.status}")
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        customer = conn.execute(
+            text("SELECT id, status FROM customers WHERE id = :id FOR UPDATE"), {"id": customer_id}
+        ).mappings().first()
+        if not customer:
+            raise HTTPException(status_code=404, detail="عميل غير موجود")
+
+        old_status = customer["status"]
+        if old_status not in CUSTOMER_STATUS_ALLOWED_VALUES:
+            raise HTTPException(status_code=409, detail=f"لا يمكن تغيير حالة عميل بحالة '{old_status}'")
+
+        conn.execute(
+            text("UPDATE customers SET status = :s, updated_at = now() WHERE id = :id"),
+            {"s": body.status, "id": customer_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO customer_status_audit (customer_id, old_status, new_status, note, created_at) "
+                "VALUES (:cid, :old, :new, :note, now())"
+            ),
+            {"cid": customer_id, "old": old_status, "new": body.status, "note": body.note},
+        )
+
+    return {"ok": True, "customer_id": customer_id, "old_status": old_status, "new_status": body.status}
+
+
+# B5c — NEEDS-CORE #3. CV_DATA_DIR/<id>/uploaded_cv.pdf (اتفاقية cv_builder.py)؛
+# المسار/hash على customers مباشرة (0010) لا profiles (قد لا يوجد صفّها بعد).
+@router.post("/customers/{customer_id}/cv")
+async def upload_customer_cv(customer_id: int, file: UploadFile = File(...)) -> dict:
+    engine = get_engine()
+    with engine.connect() as conn:
+        if not _fetch_customer_row(conn, customer_id):
+            raise HTTPException(status_code=404, detail="عميل غير موجود")
+
+    content = await file.read()
+    if len(content) > CV_MAX_BYTES:
+        raise HTTPException(status_code=400, detail=f"حجم الملف يتجاوز {CV_MAX_BYTES // (1024 * 1024)}MB")
+    if not content.startswith(_PDF_MAGIC):
+        raise HTTPException(status_code=400, detail="الملف المرفوع ليس PDF صالحًا")
+
+    sha256_hex = hashlib.sha256(content).hexdigest()
+    cv_dir = Path(os.environ.get("CV_DATA_DIR", "/data/cv")) / str(customer_id)
+    cv_dir.mkdir(parents=True, exist_ok=True)
+    cv_path = cv_dir / "uploaded_cv.pdf"
+    cv_path.write_bytes(content)
+
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE customers SET cv_pdf_path = :path, cv_pdf_sha256 = :sha, "
+                "cv_pdf_uploaded_at = now(), updated_at = now() WHERE id = :id"
+            ),
+            {"path": str(cv_path), "sha": sha256_hex, "id": customer_id},
+        )
+
+    return {
+        "ok": True,
+        "customer_id": customer_id,
+        "cv_pdf_path": str(cv_path),
+        "cv_pdf_sha256": sha256_hex,
+        "bytes": len(content),
+    }
 
 
 # ---------------------------------------------------------------------------
