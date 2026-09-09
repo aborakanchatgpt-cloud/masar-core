@@ -58,6 +58,8 @@
 4. [متوسط] إصلاح بقايا خلل الأقدمية (انحدار R2 جزئي، 6 صفوف) بإعطاء الأولوية لأقوى إشارة أقدمية موجودة بدل أول تطابق (تفصيل R13).
 5. [متوسط] إعادة تعريف `dup_ratio_24h_in_region` بصيغة `apply_url`-محورية بعد إصلاح البند 1 (SQL كامل بالتقرير، تفصيل R14).
 
+**تحديث تنفيذ B2b (2026-09-09، لا يُغيّر حكم REJECT أعلاه — البنود 1، 2، 4، 5 لم تُلمَس):** البند 3 (توسعة `taxonomy_local.yaml` + تمييز "غير مصنّف" عن "مستبعد عمدًا") **نُفِّذ ونُشر حيًّا** ضمن B2b — راجع قسم B2b أدناه للتفاصيل والأدلة الرقمية الكاملة (`family_classified_pct_in_region` 35.9%→85.3%، `family_real_pct_in_region`→75.13%). لا يزال B2 نفسه REJECT حتى تُعالَج البنود 1/2/4/5 (dedup_key بـapply_url، تصحيح extract_country_code، بقايا خلل الأقدمية، dup_ratio_24h_in_region الجديدة) — لم تكن ضمن نطاق B2b (الذي يغطي فقط التصنيف والمصادر حسب تعريفه في القسم 2 أدناه).
+
 ### B3 — WIP (منفَّذ محليًا، فحص حي جزئي 2026-09-08، بانتظار معيار الحمل الرقمي) — المطابقة والملف والمحفظة (المرحلة 3)
 حسب الدليل §3.3، §3.6، §3.7، §3.12: جداول `customers/profiles/products/orders/ledger/subscriptions/opportunities/applications/feedback`، الاستبعاد القاطع، الدرجة، الطبقات A/B/C/C2/D، دفتر الرصيد بمعاملة واحدة مع الإدراج، وواجهات `/customers`, `/wallet`, `/plan/{customer}/today`. **معيار الحمل:** خطة يومية لـ 1,500 ملف × 3,000 وظيفة تكتمل في < 5 دقائق (قِسها بسكربت `scripts/bench_planner.py` ببيانات اصطناعية).
 
@@ -72,10 +74,18 @@
 
 **تصحيحات المنفّذ لفحوصات المراجعة الحيّة (2026-09-09، `docs/reports/B4-live-fixes.md`):** الفحوصات الثلاثة (F1 عالٍ، F2 متوسط، F3 منخفض) نُفِّذت ونُشرت حيًّا وتحقّقت. **F1:** `POST /mail-link` يقبل `skip_verify: bool` جديدًا — يتخطّى اختبار SMTP/IMAP الحيّ ويضبط `status='ok'` مباشرة (عمود جديد `mail_links.verified_via='skipped-dry-run'`، migration `0007`) **فقط** حين DRY_RUN فعّال (`sender.is_dry_run()`)؛ مرفوض بـ400 خارج DRY_RUN. **F2:** فحص نافذة الإرسال بـ`sender.send_tick` أصبح غير مشروط بوجود `MAIL_SINK_SMTP`، بنفس منطق `pacing.is_in_window`؛ تجاوز تطويري `MAIL_IGNORE_SEND_WINDOW` مع DRY_RUN فقط. **F3:** `core-scheduler` يحمل الآن `healthcheck: disable: true` صراحة. الدليل: `pytest` محليًا 194→214 (0 فشل)؛ نشر حي عبر 7 commits متتالية — `GET /health` 200، `core-scheduler` بلا unhealthy. يبقى B4 **WIP لا DONE** حتى مراجعة قبول تالية.
 
-### B2b — TODO (غير حاجز) — متابعات B2: توسعة التصنيف والمصادر
-لا يحجب بقية البنود ولا يُعطى أولوية على B3+ إلا بعد إنهائها. عند التقاطه:
-1. توسعة `data/taxonomy_local.yaml` بشكل دوري (Source Curator) اعتمادًا على `GET /admin/unclassified-sample` حتى `family_classified_pct_in_region` (بعد تصحيح المقياس بـR12) ≥ 80%.
-2. جامع جديد لمصادر سعودية مغلقة فعليًا (`sitemap_jsonld`/RSS) بدل الاستمرار بإضافة شركات Greenhouse عالمية هامشية (معدّل نجاح الدفعات السابقة يتراجع بسرعة: 13→8→6→11 مرشّحًا أعطوا 5→1→0→1 مصادر ناجية فقط).
+### B2b — WIP (نُفِّذ ونُشر حيًّا 2026-09-09، بانتظار مراجعة قبول) — متابعات B2: توسعة التصنيف والمصادر
+**تنفيذ 2026-09-09 (`docs/reports/B2b-executor.md`):** الهدف الرقمي **تحقّق حيًّا**: `family_classified_pct_in_region` 32.04%→**85.30%** (الهدف ≥80% ✓)، `family_real_pct_in_region` 31.82%→**75.13%** (الهدف ≥70% ✓)، على نفس مجموعة jobs_in_region=1367 (قياس قبل/بعد على نفس الصفوف عبر ops psql مباشرة). أهم التغييرات:
+1. خطوة تطبيع جديدة (`discovery._normalize_for_match()`: تشكيل/همزات/تاء مربوطة عربي، Sr./Jr.، أرقام رومانية لاحقة، "&"→"and") تُطبَّق على العنوان/الوصف والكلمات المفتاحية معًا؛ `classify_family()` أصبح عنوان-أولًا-ثم-وصف-كملاذ-أخير.
+2. إعادة تسمية `sales_excluded`→`out_of_scope` (يبقى `sales_excluded` مقبولاً للتوافق الرجعي)؛ `out_of_scope` يُحسب "مصنَّفًا" ضمن `family_classified_pct_in_region` ويُستثنى فقط من `family_real_pct_in_region` — وأُعيد تعريف الصيغتين في `discovery_api.py:stats` ليقسما على `jobs_in_region` الكامل لا (الكل − المستبعد) كما كانت الصيغة القديمة.
+3. `data/taxonomy_local.yaml` وُسِّع بدفعتين مقاسَتين حيًّا لكل منهما (الأولى وصلت 65.18%/56.33% فقط دون الهدف؛ الثانية أضافت عائلة `legal_compliance` وكلمات عامة محسوبة الموضع بترتيب الملف مثل `technician`/`foreman`→`maintenance_ops`، `planner`→`project_controls`، `inspector`/`surveyor`→`construction_pm` — وصلت 85.30%/75.13%).
+4. `core/app/reclassify.py` (جديد، عبر `deploy/ops/scripts/reclassify.sh` → `python -m app.reclassify`): يعيد حساب `family` لكل صفوف jobs داخل النطاق دفعة دفعة idempotent — يحلّ مشكلة كاش المعجم على مستوى العملية (تعديل taxonomy_local.yaml وحده لا يُصحّح صفوفًا مُدرَجة مسبقًا).
+5. 8 مصادر خليجية جديدة موثّقة (`SOUM`، `ADIA`، `Decima International`، `Checkout.com`، `BioCatch`، `Squadio`، `Ethos Interactive`، `FlyAkeed`) أُضيفت لـ`data/sources_seed.csv` بأدلة تحقّق فعلي (probe + WebFetch) — كلها enabled=true وحيّة الآن.
+6. اختبارات جديدة: `test_classify_family.py` (14) + `test_reclassify.py` (3، DB-backed) — pytest محليًا 231/231.
+
+**لم يُنجز (متروك لدورة تالية أو للمراجع):** جامع `sitemap_jsonld`/RSS لمصادر سعودية مغلقة (البند 2 الأصلي أدناه — كل المصادر الـ8 الجديدة من نوع ATS)؛ دقّة كل عائلة على حدة لم تُراجَع فرديًا (المقياس المُتحقّق تغطية إجمالية فقط)؛ صفّا Decima International/Checkout.com/BioCatch مكرّران حرفيًا بـ`sources_seed.csv` من دفعة B2 سابقة (upsert idempotent فلا ضرر وظيفي، يستحق تنظيفًا لاحقًا).
+
+2. جامع جديد لمصادر سعودية مغلقة فعليًا (`sitemap_jsonld`/RSS لمواقع توظيف حكومية سعودية كطاقات/جدارة إن وُجد RSS رسمي، أو صفحات وظائف شركات سعودية كبرى بـJSON-LD مضمّن) بدل الاستمرار بإضافة شركات Greenhouse عالمية هامشية (معدّل نجاح الدفعات السابقة يتراجع بسرعة: 13→8→6→11 مرشّحًا أعطوا 5→1→0→1 مصادر ناجية فقط) — **لا يزال TODO**.
 
 ### B5 — WIP — التقارير والتسجيل (المرحلة 5)
 تقرير 19:00، أزرار 👎/🎉، "استبعدنا لك"، تعديلات onboarding في n8n (الدليل §7)، الضمان/التعويض، لوحة الأدمن، مهام Claude الدائمة (الدليل §8) وحذف القديمة بعد التفوّق 3 أيام.
@@ -103,6 +113,7 @@
 - 2026-09-08 — REVIEWER (مراجعة حيّة مستقلة) — B3/B4 — ACCEPT-WITH-FIXES (B4) / فحص سلامة جزئي ناجح (B3) — `docs/reports/B3B4-live-review.md`. بلوكر: mail-link SMTP/IMAP حقيقي بلا mailpit IMAP.
 - 2026-09-09 — EXECUTOR (Sonnet subagent، sandbox، بلا SSH) — B4 (F1/F2/F3) — نُفِّذت ونُشرت حيًّا وتحقّقت — `docs/reports/B4-live-fixes.md`. `pytest` 194→214. `/health` 200.
 - 2026-09-09 — EXECUTOR (Sonnet subagent، sandbox، بلا SSH) — B5a — نُفِّذت ونُشرت حيًّا وتحقّقت، بانتظار مراجعة — `docs/reports/B5a-executor.md`. `pytest` 214→242 (0 فشل)؛ 20 commits؛ `/health` 200، `alembic_version=0008_b5_reports`، `/admin/overview` 200. لم يُلمَس B2b ولا ملفات B3 WIP.
+- 2026-09-09 — EXECUTOR (Sonnet subagent، sandbox، بلا SSH) — B2b — نُفِّذت ونُشرت حيًّا وتحقّقت، بانتظار مراجعة — `docs/reports/B2b-executor.md`. `family_classified_pct_in_region` 32.04%→85.30% (الهدف ≥80% ✓)، `family_real_pct_in_region` 31.82%→75.13% (الهدف ≥70% ✓) عبر `ops psql` مباشرة على نفس jobs_in_region=1367. 8 مصادر جديدة موثّقة مُفعّلة حيًّا. `pytest` 231/231. 10 commits. لم تُلمَس ملفات B5a (reports.py/guarantee.py/customers_api.py/sender.py/send_builder.py/main.py/scheduler_main.py/migration 0008).
 
 ## 4. الواجهات المتاحة للجلسات
 
