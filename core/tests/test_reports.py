@@ -135,7 +135,7 @@ def test_build_customer_report_lists_today_apps_and_excludes_bounced_from_progre
     payload = reports.build_customer_report(ctx["active_customer_id"], today, engine=engine)
 
     assert payload is not None
-    # كلا الصفّين ظهرا بقائمة "اليوم" (أُرسلا فعلًا) — لكن المرتد لا يُحسب
+    # كلا الصفّين ظهرا بقائمة "اليوم" (أُرسلا فعلاً) — لكن المرتد لا يُحسب
     # بالتقدّم (all_time_count بلا اشتراك نشط هنا).
     assert payload["today_count"] == 2
     assert payload["all_time_count"] == 1  # فقط الصفّ status='sent' غير المرتد
@@ -145,6 +145,73 @@ def test_build_customer_report_lists_today_apps_and_excludes_bounced_from_progre
 
 def test_build_customer_report_unknown_customer_returns_none(engine, ctx):
     assert reports.build_customer_report(999_999_999, date.today(), engine=engine) is None
+
+
+# ---------------------------------------------------------------------------
+# 1b. تصحيح B5c (NEEDS-CORE #1): كل عنصر بـtoday_applications يحمل
+#     send_queue_id (+company_id، job_id) — يُشتق من send_queue عبر
+#     opportunity_id، لا NULL حين توجد صفّ send_queue فعلي بحالة 'sent'
+#     لنفس الفرصة، وNULL حين لا opportunity_id على التطبيق (تطبيقات قديمة).
+# ---------------------------------------------------------------------------
+
+
+def test_today_applications_carry_send_queue_id_when_available(engine, ctx):
+    today = date.today()
+    day_start_utc = datetime.now(timezone.utc).replace(hour=6, minute=0, second=0, microsecond=0)
+
+    with engine.begin() as conn:
+        opportunity_id = conn.execute(
+            text(
+                """
+                INSERT INTO opportunities (customer_id, job_id, score, tier, planned_for, status)
+                VALUES (:cid, :jid, 0.9, 'A', :d, 'sent') RETURNING id
+                """
+            ),
+            {"cid": ctx["active_customer_id"], "jid": ctx["job_id"], "d": today},
+        ).scalar_one()
+        send_queue_id = conn.execute(
+            text(
+                """
+                INSERT INTO send_queue (customer_id, opportunity_id, job_id, to_email, subject, body_text,
+                                         send_after, status, synthetic, created_at)
+                VALUES (:cid, :oid, :jid, 'hr@example.invalid', 'Application', 'Body', now(), 'sent', false, now())
+                RETURNING id
+                """
+            ),
+            {"cid": ctx["active_customer_id"], "oid": opportunity_id, "jid": ctx["job_id"]},
+        ).scalar_one()
+        conn.execute(
+            text(
+                """
+                INSERT INTO applications (customer_id, job_id, opportunity_id, sent_at, message_id, status, created_at)
+                VALUES (:cid, :jid, :oid, :sent_at, :mid, 'sent', now())
+                """
+            ),
+            {
+                "cid": ctx["active_customer_id"], "jid": ctx["job_id"], "oid": opportunity_id,
+                "sent_at": day_start_utc, "mid": f"<{uuid.uuid4().hex}@masar.local>",
+            },
+        )
+
+    # طبيق آخر بلا opportunity_id (نمط قديم قبل B3) — send_queue_id يجب أن
+    # يبقى None بلا أي خطأ (LEFT JOIN حقيقي، لا استبعاد للصف).
+    _insert_application(engine, customer_id=ctx["active_customer_id"], job_id=ctx["job_id"], status="sent", sent_at=day_start_utc)
+
+    payload = reports.build_customer_report(ctx["active_customer_id"], today, engine=engine)
+    apps = payload["today_applications"]
+    assert len(apps) == 2
+
+    with_sq = [a for a in apps if a["send_queue_id"] is not None]
+    without_sq = [a for a in apps if a["send_queue_id"] is None]
+    assert len(with_sq) == 1
+    assert len(without_sq) == 1
+    assert with_sq[0]["send_queue_id"] == send_queue_id
+    assert with_sq[0]["job_id"] == ctx["job_id"]
+    assert with_sq[0]["company_id"] == ctx["company_id"]
+
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM send_queue WHERE id = :id"), {"id": send_queue_id})
+        conn.execute(text("DELETE FROM opportunities WHERE id = :id"), {"id": opportunity_id})
 
 
 def test_build_customer_report_no_apps_today_uses_encouraging_line(engine, ctx):
