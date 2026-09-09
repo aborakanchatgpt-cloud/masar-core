@@ -1,18 +1,18 @@
 """
 Masar Core — بناء طابور الإرسال (B4، الدليل: "17-22 رسالة/يوم لكل عميل،
-موزّعة بتباعد ≥8 دقائق ضمن نافذة الإرسال، مع إحماء تدريجي وحدود التبريد").
+موزّعة بتباعد ≥48 دقائق ضمن نافذة الإرسال، مع إحماء تدريجي وحدود التبريد").
 
 يُستدعى كل 10 دقائق من core/app/scheduler_main.py (فقط ضمن نافذة الإرسال —
 الفحص هناك) وعبر `POST /admin/mail/queue-now` يدويًا. لكل عميل نشط يملك
 صندوق بريد بحالة 'ok': يحسب الهدف اليومي المتبقي (أدنى: target_daily،
-سقف الإحماء اليوم، MAX_DAILY، رصيد المحفظة)، يمرّ على فرص اليوم المخطّطة
+سقف الإحماء اليوم، MAX_DAILY، رصيد المحفظة)، يمرّ على فرص اليوم المخططة
 (`opportunities.status='planned'`) التي لم تُدرأج بطابور الإرسال بعد، يختار بريد
 التقديم (apply_email.select_apply_email)، يتحقق من التبريد/السقف
 الأسبوعي لكل شركة (نفس منطق planner.py، استعلامات مباشرة هنا لتجنّب أي
 استيراد متبادل)، يبني الرسالة (composer.build_email) والسيرة الذاتية
 (cv_builder.ensure_cv_variant)، يخصم رصيدًا واحدًا فورًا (قبل الإرسال
 الفعلي — الاسترداد يحدث لاحقًا فقط عند ارتداد مؤكّد، عبر inbox.py)، ثم
-يُدرج صفّ send_queue بموعد إرسال مجدوَل (pacing.next_slot ضمن نافذة اليوم).
+يُدرج صفّ send_queue بموعد إرسال مجدول (pacing.next_slot ضمن نافذة اليوم).
 
 لا يلمس customers_api.py ولا planner.py ولا matching.py — قراءة فقط من
 جداولها (opportunities/customers/profiles/wallets)، واستعلامات SQL مستقلة
@@ -38,7 +38,7 @@ logger = logging.getLogger("masar.send_builder")
 
 # سقف يومي على عدد الرسائل المرسلة لعنوان "عام" (info@/contact@) فقط —
 # الدليل: "info@/contact@ كملاذ أخير فقط" — لا نسمح لأغلب دفعة عميل واحد
-# أن تعتمد على عناوين عامة حتى لو توفّرت لعدد كبير من الوظائف.
+# أن تعتمد على عناوين عامة حتى لو توفرت لعدد كبير من الوظائف.
 MAX_GENERIC_PER_DAY = 3
 
 COOLDOWN_DAYS = 60
@@ -92,8 +92,8 @@ def _fetch_candidate_opportunities(conn: Connection, customer_id: int, today: da
     غير 'cancelled' لنفس opportunity_id يمنع إعادة إدراجها).
 
     `LIMIT MAX_CANDIDATES_PER_CUSTOMER` (تصحيح Low 3 بمراجعة B4 الأوفلاين،
-    docs/reports/B4-offline-review.md): بلا حدّ أعلى، عميل مُعلَّق طويلًا ثم
-    أُعيد تفعيله بتراكم كبير من فرص planned قديمة قد يُحمِّل آلاف الصفوف
+    docs/reports/B4-offline-review.md): بلا حدّ أعلى، عميل مُعلّق طويلاً ثم
+    أُعيد تفعيله بتراكم كبير من فرص planned قديمة قد يُحمّل آلاف الصفوف
     بالذاكرة لعميل واحد رغم أن الحلقة المستدعية تتوقف مبكرًا عند بلوغ الهدف
     اليومي (remaining) — الترتيب `score DESC` أصلًا يضمن مرور أفضل المرشّحين
     أولًا فلا يتأثر السلوك الفعلي، فقط الاستهلاك الأقصى للذاكرة."""
@@ -108,6 +108,17 @@ def _fetch_candidate_opportunities(conn: Connection, customer_id: int, today: da
               AND NOT EXISTS (
                   SELECT 1 FROM send_queue sq
                   WHERE sq.opportunity_id = o.id AND sq.status != 'cancelled'
+              )
+              -- B5a البند 2 (customer_company_exclusions، ترحيل 0008): عميل
+              -- استبعد هذه الشركة (👎 عبر feedback_api.py) — تُستبعَد فورًا
+              -- من طابور الإرسال حتى لو كانت مخطّطة أصلًا قبل الاستبعاد
+              -- (لا يلمس opportunities.status نفسه — يبقى 'planned' بصمت،
+              -- planner.py يملك المسؤولية الوحيدة لتعديل تلك الصفوف).
+              -- مفهرس عبر uq_customer_company_exclusions_customer_company
+              -- (customer_id, company_id) — نفس أعمدة شرط EXISTS بالضبط.
+              AND NOT EXISTS (
+                  SELECT 1 FROM customer_company_exclusions cce
+                  WHERE cce.customer_id = :cid AND cce.company_id = j.company_id
               )
             ORDER BY o.score DESC, o.id
             LIMIT :max_candidates
@@ -208,7 +219,7 @@ def _debit_one_credit(conn: Connection, customer_id: int) -> tuple[int, int]:
         conn.execute(text("INSERT INTO wallets (customer_id, balance) VALUES (:id, 0)"), {"id": customer_id})
     new_balance = current - 1
     if new_balance < 0:
-        raise ValueError(f"رصيد غير كافِِِِِِِِِِِِِِِِِِِ للعميل {customer_id}")
+        raise ValueError(f"رصيد غير كافِِِِِِِِِِِِِِِِِِ للعميل {customer_id}")
     conn.execute(
         text("UPDATE wallets SET balance = :b, updated_at = now() WHERE customer_id = :id"),
         {"b": new_balance, "id": customer_id},
@@ -415,7 +426,7 @@ def build_queue_for_customer(conn: Connection, customer: dict, today: date, rng:
         # 'queued' لا 'sent' هنا عمدًا (تصحيح Critical/High 2 بمراجعة B4
         # الأوفلاين، docs/reports/B4-offline-review.md): الإدراج بـsend_queue
         # لا يعني إرسالًا فعليًا بعد — 'sent' الحقيقية تُضبط فقط داخل
-        # sender._mark_success بعد نجاح SMTP فعليًا، و'skipped' عند فشل
+        # sender._mark_success بعد نجاح SMTP فعليًا،و'skipped' عند فشل
         # نهائي (sender._mark_failure، MAX_ATTEMPTS) حتى لا يبقى opportunities.status
         # كاذبًا لو فشل الإرسال لاحقًا (migration 0006_b4_fixes يضيف 'queued'
         # لقيد CHECK).
