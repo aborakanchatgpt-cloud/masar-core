@@ -74,8 +74,10 @@ BACKFILL_BATCH_SIZE = 500
 
 # مراجعة B2 R12: عائلات مُستبعدة عمدًا من مقياس "التصنيف الفعلي" — راجع
 # discovery.EXCLUDED_FAMILY_NAMES (نفس القيمة، مكرّرة هنا كسلسلة SQL جاهزة
-# لأن استعلامات هذا الملف نصّية مباشرة.
-_EXCLUDED_FAMILIES_SQL_LIST = "('sales_excluded')"
+# لأن استعلامات هذا الملف نصّية مباشرة).
+# مراجعة B2b: sales_excluded أُعيدت تسميته out_of_scope بـtaxonomy_local.yaml؛
+# الاسمان معًا هنا للتوافق الرجعي مع أي صفّ قديم لم يُعِد reclassify تصنيفه.
+_EXCLUDED_FAMILIES_SQL_LIST = "('out_of_scope', 'sales_excluded')"
 
 
 class SourceCreateRequest(BaseModel):
@@ -209,7 +211,7 @@ async def dedupe_cleanup() -> dict:
     "لا نحذف من jobs أبدًا" (كـ purge-jobs أعلاه): أصلحت تراكم صفوف مكرّرة
     نتج عن تغيّر صيغة dedup_key من platform:external_id إلى sha1 بالمدينة
     المُستخرَجة عبر NLP، إلى sha1 بـlocation_text الخام (R6). معيار "نفس
-    الوظيفة" هنا: (company_name, title, url) متطابقة حرفيًّا — يُبقي أقدم
+    الوظيفة" هنا: (company_name, title, url) متطابقة حرفيًّا — يُبقي أقدم
     صفّ ويحذف الباقي. **لمعالجة التكرار المتبقي الأكبر (تعدّد المواقع لنفس
     apply_url — R10) استخدم POST /admin/discovery/merge-locations-cleanup
     بدلًا من هذه النقطة.**"""
@@ -230,7 +232,7 @@ async def dedupe_cleanup() -> dict:
             )
         )
     logger.warning(
-        "dedupe-cleanup: حُذف %s صف مكرّر (company_name+title+url متطابقة حرفيًّا)",
+        "dedupe-cleanup: حُذف %s صف مكرّر (company_name+title+url متطابقة حرفيًّا)",
         result.rowcount,
     )
     return {"ok": True, "deleted": result.rowcount}
@@ -464,10 +466,16 @@ async def stats() -> dict:
         ).all()
         jobs_new_24h_in_region_by_family = {r[0]: r[1] for r in by_family_rows}
 
-        # مراجعة B2 R12: نسبة التصنيف الفعلية — على كل صفوف "داخل النطاق"
-        # باستثناء العائلات المُستبعدة عمدًا (sales_excluded) من المقام
-        # كليًا (لا تُحسب "غير مصنّفة" ولا "مصنّفة" — مُستبعدة فقط) بدل
-        # الصيغة القديمة التي كانت تحسبها ضمن "غير مصنّف" زورًا.
+        # مراجعة B2 R12 + B2b: نسبة التصنيف — على كل صفوف "داخل النطاق".
+        # classified_n = عائلة حقيقية (ليست out_of_scope/sales_excluded).
+        # excluded_n = out_of_scope (وظيفة خارج نطاق المنصّة صراحة، مثل مبيعات).
+        #
+        # مراجعة B2b (PLAN.md §B2b): المقياسان الآن يقسمان على jobs_in_region
+        # الكامل (total_n) لا (total_n − excluded_n) كما كانت الصيغة القديمة —
+        # تلك الصيغة كانت تُخرج out_of_scope من المقام كليًا فتُخفي حجمها
+        # الفعلي عن القارئ. الصيغة الجديدة تطابق هدف B2b حرفيًا:
+        #   family_classified_pct_in_region = (مصنَّف حقيقي + out_of_scope) / الكل  (الهدف ≥80%)
+        #   family_real_pct_in_region       = مصنَّف حقيقي فقط / الكل             (الهدف ≥70%)
         family_row = conn.execute(
             text(
                 f"""
@@ -482,8 +490,8 @@ async def stats() -> dict:
             )
         ).first()
         classified_n, excluded_n, total_n = family_row[0], family_row[1], family_row[2]
-        considered_n = total_n - excluded_n
-        family_classified_pct_in_region = (classified_n / considered_n) if considered_n else 0.0
+        family_real_pct_in_region = (classified_n / total_n) if total_n else 0.0
+        family_classified_pct_in_region = ((classified_n + excluded_n) / total_n) if total_n else 0.0
 
         sources_active = conn.execute(text("SELECT count(*) FROM sources WHERE enabled = true")).scalar()
         disabled_rows = conn.execute(
@@ -566,6 +574,7 @@ async def stats() -> dict:
         "jobs_new_24h": jobs_new_24h,
         "jobs_new_24h_in_region_by_family": jobs_new_24h_in_region_by_family,
         "family_classified_pct_in_region": round(family_classified_pct_in_region, 4),
+        "family_real_pct_in_region": round(family_real_pct_in_region, 4),
         "family_excluded_in_region": int(excluded_n),
         "sources_active": sources_active,
         "sources_disabled": [dict(r) for r in disabled_rows],
