@@ -65,7 +65,7 @@ from app.collectors.field_extractor import (
     extract_years_required,
     is_saudi_only,
 )
-from app.collectors.normalizer import dedup_key
+from app.collectors.normalizer import dedup_key, normalize_text
 
 logger = logging.getLogger("masar.discovery")
 
@@ -77,10 +77,13 @@ ROUND_BUDGET_SECONDS = 20 * 60
 GCC_ZERO_ROUNDS_DISABLE_THRESHOLD = 2
 
 # مراجعة B2 R12 (docs/reports/B2-review-2.md): عائلات مُستبعدة عمدًا من
-# التصنيف (مثل sales_excluded) يجب ألا تُحسب ضمن "غير مصنّف" — تُفصل صراحة
+# التصنيف (مثل out_of_scope) يجب ألا تُحسب ضمن "غير مصنّف" — تُفصل صراحة
 # عن مقياس family_classified_pct_in_region (discovery_api.py) بدل الخلط
 # بينها وبين فجوة معجم حقيقية.
-EXCLUDED_FAMILY_NAMES = {"sales_excluded"}
+# مراجعة B2b: أُعيدت تسمية sales_excluded → out_of_scope (استُعمل عمومًا لأي
+# دور خارج نطاق المنصّة صراحة، لا مبيعات فقط) — الاسم القديم مُبقًى هنا أيضًا
+# للتوافق مع أي صفّ لم يُعِد reclassify تصنيفه بعد.
+EXCLUDED_FAMILY_NAMES = {"out_of_scope", "sales_excluded"}
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
@@ -126,14 +129,22 @@ def get_engine() -> Engine:
 # تصنيف العائلة المهنية — يقرأ data/taxonomy_local.yaml (مُركّب read-only)
 #
 # مراجعة B2 R6: مطابقة بحدود كلمة صريحة (لا سلسلة فرعية) عبر تعابير نمطية
-# مُجمَّعة مسبقًا لكل عائلة، على العنوان + أول 300 حرف من الوصف معًا (كان
-# سابقًا العنوان فقط بمطابقة سلسلة فرعية بسيطة).
+# مُجمَّعة مسبقًا لكل عائلة، على العنوان أولًا ثم الوصف كملاذ أخير (مراجعة
+# B2b — كان سابقًا العنوان + أول 300 حرف من الوصف معًا دومًا).
 #
-# مراجعة B2 R12: العائلات المُستبعدة (`excluded: true`، مثل sales_excluded)
+# مراجعة B2 R12: العائلات المُستبعدة (`excluded: true`، مثل out_of_scope)
 # كانت تُتخطّى بالكامل بـ`_build_family_patterns()` فتُحسَب أي وظيفة مبيعات
 # ضمن "غير مصنّف" رغم استبعادها عمدًا — الآن تُبنى أنماطها أيضًا وتُرجَع
 # كاسم عائلة فعلي (وليس None) حين تُطابَق، مع فصلها لاحقًا بمقياس
 # family_classified_pct_in_region (discovery_api.py) عبر EXCLUDED_FAMILY_NAMES.
+#
+# مراجعة B2b: خطوة تطبيع قبل المطابقة (على النص المُبحوث عنه وعلى كل كلمة
+# مفتاحية بالمعجم بنفس الدالة، حتى تبقى المقارنة متسقة الجهتين):
+#   - عربي: إعادة استخدام normalizer.normalize_text (تشكيل/همزات/تاء مربوطة
+#     — نفس منطق dedup_key بالضبط، مصدر حقيقة واحد لا تكرار منطق).
+#   - "&" → " and " قبل التطبيع (يوحّد "Food & Beverage"/"food and beverage").
+#   - Sr./Jr. → Senior/Junior، ورقم روماني لاحق (` II`/`-III`...) يُحذف.
+#   - علامات الترقيم/الشرطات المائلة تتحوّل لمسافات ضمن normalize_text نفسها.
 # ---------------------------------------------------------------------------
 
 # ملاحظة تشغيلية (مراجعة B2): هذان الكاشان يُملآن مرة واحدة فقط لكل عملية
@@ -141,6 +152,9 @@ def get_engine() -> Engine:
 # كلمات مفتاحية جديدة على core الحيّ؛ يلزم إعادة تشغيل حاوية core فعليًا
 # (`POST /admin/ops {"cmd":"up","args":[]}` بعد push كودي يُغيّر تجزئة طبقة
 # COPY app ./app لإجبار إعادة البناء، أو أي تعديل كودي حقيقي بهذا الملف).
+# مراجعة B2b: هذا بالضبط سبب وجود core/app/reclassify.py — يُشغَّل كعملية
+# بايثون طازجة منفصلة (`docker compose exec -T core python -m app.reclassify`)
+# فيبني الكاشين من الصفر بالمعجم الحالي، بدل انتظار إعادة تشغيل الحاوية.
 _families_cache: dict | None = None
 _family_patterns_cache: list[tuple[str, re.Pattern[str]]] | None = None
 
@@ -149,8 +163,26 @@ DESCRIPTION_MATCH_CHARS = 300
 # TAXONOMY_BUILD_MARK: يُحدّث هذا التعليق عمدًا مع كل push يرافق تعديلًا في
 # data/taxonomy_local.yaml (انظر الملاحظة أعلاه) — تغييره وحده يكفي لإجبار
 # طبقة Docker COPY app ./app على إعادة البناء دون أي تعديل منطقي فعلي هنا.
-# آخر تحديث: مراجعة B2 R12 — دمج مقتطف docs/reports/B2-review-2.md §5
-# (SCADA/project_controls/hse/chem_process/it_software/finance/sales_excluded).
+# آخر تحديث: مراجعة B2b — توسعة رابعة (out_of_scope بدل sales_excluded) +
+# خطوة تطبيع + تصنيف عنوان-أولًا-ثم-وصف.
+
+_AMP_RE = re.compile(r"&")
+_SR_JR_RE = re.compile(r"\b(sr|jr)\.?\b", re.IGNORECASE)
+_ROMAN_TAIL_RE = re.compile(r"[\s\-]+[ivx]{1,4}$", re.IGNORECASE)
+
+
+def _normalize_for_match(text: str | None) -> str:
+    """خطوة تطبيع قبل المطابقة (مراجعة B2b) — تُطبَّق على نص العنوان/الوصف
+    المُبحوث فيه وعلى كل كلمة مفتاحية بالمعجم بنفس الدالة (اتساق الجهتين):
+    رقم روماني لاحق يُحذف، "&"→" and "، Sr./Jr.→Senior/Junior، ثم
+    normalizer.normalize_text (تشكيل عربي/همزات/تاء مربوطة/ترقيم→مسافات/
+    أحرف صغيرة) — نفس دالة تطبيع dedup_key بالضبط، لا منطق مكرَّر."""
+    if not text:
+        return ""
+    t = _ROMAN_TAIL_RE.sub("", text)
+    t = _AMP_RE.sub(" and ", t)
+    t = _SR_JR_RE.sub(lambda m: "senior" if m.group(1).lower() == "sr" else "junior", t)
+    return normalize_text(t)
 
 
 def _load_families() -> dict[str, dict]:
@@ -180,23 +212,39 @@ def _build_family_patterns() -> list[tuple[str, re.Pattern[str]]]:
         keywords = list(spec.get("keywords_en") or []) + list(spec.get("keywords_ar") or [])
         if not keywords:
             continue
-        escaped = sorted((re.escape(kw) for kw in keywords), key=len, reverse=True)
+        # مراجعة B2b: كل كلمة مفتاحية تمرّ بنفس تطبيع النص المُبحوث فيه
+        # (_normalize_for_match) قبل بناء النمط، حتى تبقى المقارنة متسقة.
+        norm_keywords = sorted(
+            {nk for kw in keywords if (nk := _normalize_for_match(kw))}, key=len, reverse=True
+        )
+        if not norm_keywords:
+            continue
+        escaped = [re.escape(kw) for kw in norm_keywords]
         patterns.append((family, re.compile(r"\b(?:" + "|".join(escaped) + r")\b", re.IGNORECASE)))
     _family_patterns_cache = patterns
     return patterns
 
 
 def classify_family(title: str | None, description: str | None = None) -> str | None:
-    """يرجّع أول عائلة مهنية تُطابق (العنوان + أول 300 حرف من الوصف) عبر
-    معجم taxonomy_local.yaml، بحدود كلمة صريحة (مراجعة B2 R6). قد تكون
-    النتيجة اسم عائلة مُستبعدة (مثل sales_excluded — مراجعة B2 R12) —
-    المستدعي مسؤول عن استثنائها من مقاييس "التصنيف الفعلي" حين يلزم."""
-    combined = " ".join(filter(None, [title or "", (description or "")[:DESCRIPTION_MATCH_CHARS]]))
-    if not combined.strip():
-        return None
-    for family, pattern in _build_family_patterns():
-        if pattern.search(combined):
-            return family
+    """يرجّع أول عائلة مهنية تُطابق معجم taxonomy_local.yaml، بحدود كلمة
+    صريحة بعد تطبيع (مراجعة B2b) — العنوان أولًا، فإن لم يُطابق شيئًا (ملاذ
+    أخير فقط) يُجرَّب أول 300 حرف من الوصف وحده. قد تكون النتيجة اسم عائلة
+    مُستبعدة (مثل out_of_scope — مراجعة B2 R12) — المستدعي مسؤول عن
+    استثنائها من مقاييس "التصنيف الفعلي" حين يلزم."""
+    patterns = _build_family_patterns()
+
+    norm_title = _normalize_for_match(title)
+    if norm_title:
+        for family, pattern in patterns:
+            if pattern.search(norm_title):
+                return family
+
+    norm_description = _normalize_for_match((description or "")[:DESCRIPTION_MATCH_CHARS])
+    if norm_description:
+        for family, pattern in patterns:
+            if pattern.search(norm_description):
+                return family
+
     return None
 
 
