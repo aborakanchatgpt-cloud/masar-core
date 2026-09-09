@@ -10,10 +10,10 @@ customers_api.py (core/app/matching.py + core/app/planner.py للمنطق).
 
 الوحدات الأخرى (sending, inbox — B4) تُبنى بالتوازي على فروع/ملفات منفصلة
 (core/app/mail_api.py، core/app/inbox_api.py، core/app/mail*، core/app/collectors/
-اللاحقة) ولا تُلمَس من هنا؛ تُضمَّن أدناه بـimport محروس (try/except) حتى
+اللاحقة) ولا تُلمَس من هنا؛ تُضمَّن أدناه بـimport محروس (try/except) حتى
 يستطيع منفّذ B4 دفع ملفاته لاحقًا بلا الحاجة لتعديل main.py نفسه إطلاقًا —
-غياب الملفات الآن أمر متوقع وطبيعي (لا يعطّل main.py: كل مسار غير موجود
-يُتخطَّى بصمت بالسجلّ فقط).
+غياب الملفات الآن أمر متوقّع وطبيعي (لا يعطّل main.py: كل مسار غير موجود
+يُتخطّى بصمت بالسجلّ فقط).
 
 B1b: أُضيف جسر MCP (app/mcp_bridge.py) — يجعل جلسات Claude مستقلة عن n8n
 Cloud لعمليات القراءة/الكتابة بالمستودع وتشغيل أوامر المضيف.
@@ -56,7 +56,15 @@ app.include_router(customers_router)
 # بالكامل رغم أن نية العزل كانت واضحة). `except Exception` هنا تحمي /health
 # وكل نقاط B1/B2/B3 من أي عطل بملف B4 وحده مهما كان نوعه، مع تسجيل كامل
 # (traceback) بدل الصمت.
-for mod_name in ("app.mail_api", "app.inbox_api"):
+for mod_name in (
+    "app.mail_api",
+    "app.inbox_api",
+    "app.reports_api",
+    "app.feedback_api",
+    "app.guarantee_api",
+    "app.overview_api",
+    "app.link_api",
+):
     try:
         module = __import__(mod_name, fromlist=["router"])
         app.include_router(module.router)
@@ -76,7 +84,7 @@ class HealthResponse(BaseModel):
 
 @app.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
-    """نقطة فحص الصحة — تُستخدم من UptimeRobot ومن n8n (Core - Call) للتأكد أن الخدمة حية."""
+    """نقطة فحص الصحّة — تُستخدم من UptimeRobot ومن n8n (Core - Call) للتأكد أن الخدمة حية."""
     return HealthResponse(
         status="ok",
         service="masar-core",
