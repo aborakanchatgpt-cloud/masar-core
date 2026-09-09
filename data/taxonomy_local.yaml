@@ -10,21 +10,20 @@
 # بعد أن أظهرت المراجعة أن 95.3% من الوظائف داخل النطاق تبقى "غير
 # مصنّفة" لأن المعجم الأصلي هندسي/نفطي بحت بينما قاعدة الوظائف الفعلية
 # (خصوصًا السعودية/الخليجية) تغطي قطاعات أوسع بكثير. كل الكلمات المفتاحية
-# تُطابَق بحدود كلمة صريحة (\b...\b) على العنوان أولًا، ثم على الوصف
+# تُطابَق بحدود كلمة صريحة (\b...\b) على العنوان أولاً، ثم على الوصف
 # كملاذ أخير حين لا يُطابق العنوان وحده شيئًا (discovery.py:classify_family،
-# مراجعة B2b) — كلا النصّين يمرّان أولًا بخطوة تطبيع (تشكيل عربي/همزات/تاء
+# مراجعة B2b) — كلا النصّين يمرّان أولاً بخطوة تطبيع (تشكيل عربي/همزات/تاء
 # مربوطة، بادئات أقدمية إنجليزية Sr./Jr.، أرقام رومانية لاحقة، علامات ترقيم
 # وشرطات مائلة) قبل المطابقة، فتُطابَق الكلمة المفتاحية نفسها بصرف النظر عن
 # هذه الاختلافات السطحية. التصنيف يأخذ أول عائلة تُطابق حسب ترتيب هذا الملف.
 #
-# تحديث ثانٍ (بعد فحص GET /admin/unclassified-sample على بيانات حية):
-# وسّعت construction_pm/it_software/hse/finance_accounting/lab_chemistry/
+# تحديث ثانِ: وسّعت construction_pm/it_software/hse/finance_accounting/lab_chemistry/
 # maintenance_ops/program_admin_ops/quality بكلمات وُجدت فعليًا بكثرة بعيّنة
 # غير المصنّفة (مقاولات EPC/حفر متنوعة: Document Controller، Material
 # Expeditor، Cost Engineer، Data Center Technician إلخ...).
 #
 # مراجعة B2 R12 (docs/reports/B2-review-2.md): توسعة ثالثة — مقتطف §5 من
-# المراجعة الثانية، مبني على أعلى 30 مسمى غير مصنّف من عيّنة حية فعلية
+# المراجعة الثانية، مبني على أعلى 30 مسمى غير مصنف من عيّنة حية فعلية
 # (Field Sales Consultant، Project Management Engineer، Field Operator،
 # Asphalt Formulation Specialist، SCADA Technician، Maximo EAM Functional
 # Specialist، High Voltage Technician، Enterprise Account Executive،
@@ -33,13 +32,23 @@
 # فقط — دُمجت داخل قوائم العائلات القائمة، لا استبدال.
 #
 # مراجعة B2b (متابعة B2، PLAN.md §B2b): توسعة رابعة كبيرة — مبنية على أعلى
-# 200 مسمى غير مصنّف من GET /admin/unclassified-sample الحي (family_classified
+# 200 مسمى غير مصنف من GET /admin/unclassified-sample الحي (family_classified
 # كان 31.9% وقت البدء). أُعيدت تسمية `sales_excluded` إلى `out_of_scope`
 # (استُعمل عمومًا لأي دور خارج نطاق المنصّة صراحة — ليس مبيعات فقط) ووُسّعت
 # قائمته بكلمات مفردة عامة (\bsales\b، \btelesales\b) تلتقط عشرات الصيغ
 # دفعة واحدة بدل تعداد كل تركيبة "Sales X" على حدة. باقي العائلات وُسّعت
 # بعبارات محدّدة (لا كلمات مفردة عامة الخطر كـ"manager"/"engineer" وحدها)
 # لتفادي تصنيف خاطئ عابر للعائلات.
+#
+# مراجعة B2b (دفعة ثانية — بعد قياس التغطية الحية بعد أول reclassify وظهورها
+# 65.2%/56.3% — دون هدفي 80%/70%): توسعة خامسة مبنية على أعلى 350 مسمى
+# غير مصنف من عيّنة حية فعلية بعد التشغيلة الأولى. أُضيفت عائلة جديدة
+# legal_compliance (قانوني/امتثال، كانت مفقودة سابقًا)، وأُضيفت كلمات عامة
+# (bare) مدروسة الخطر لملاءمة طبيعة العيّنة الهندسية/الصناعية الغالبة:
+# \btechnician\b و\bforeman\b → maintenance_ops، \bplanner\b/\bcost controller\b/
+# \bcontract administrator\b → project_controls، \binspector\b/\bsurveyor\b →
+# construction_pm (موضوعة متأخرًا بالقائمة حتى لا تطغي على hse/quality الأدق تحديدًا
+# التي تُفحَص قبلها بترتيب هذا الملف)، \bexpeditor\b → supply_chain.
 
 families:
   chem_process:
@@ -47,13 +56,14 @@ families:
     keywords_ar: [مهندس عمليات, مهندس كيميائي, مهندس إنتاج كيميائي, مشغل وحدة, مهندس مصنع]
     keywords_en: [process engineer, chemical engineer, process technologist, plant engineer, unit operations,
       asphalt formulation specialist, combustion engineer, combustion solutions engineer,
-      geoscientist, geologist, petroleum engineer]
+      geoscientist, geologist, petroleum engineer, geochemist]
 
   quality:
     label_ar: "الجودة"
     keywords_ar: [مهندس جودة, ضمان الجودة, مراقبة الجودة, أخصائي جودة, نظام إدارة الجودة]
     keywords_en: [quality engineer, QA, QC, quality assurance, quality control, ISO 9001, quality specialist, quality and governance,
-      quality manager]
+      quality manager, quality inspector, quality lead, ndt, cmm inspector, incoming quality,
+      qms, performance test]
 
   hse:
     label_ar: "الصحة والسلامة والبيئة"
@@ -61,7 +71,8 @@ families:
     keywords_en: [HSE engineer, safety engineer, occupational health, process safety, EHS, health quality specialist, health safety and environment, environment and sustainability, field compliance coordinator, drilling safety,
       "health, safety and environment specialist",
       HSE manager, HSE analyst, HSE officer, industrial hygiene, industrial hygienist,
-      risk engineer, fire engineer, fire safety, environmental coordinator]
+      risk engineer, fire engineer, fire safety, environmental coordinator,
+      hse inspector, hse coordinator, firewatch, certified incident investigator]
 
   maintenance_ops:
     label_ar: "الصيانة والتشغيل"
@@ -73,7 +84,20 @@ families:
       commissioning engineer, commissioning specialist, field service engineer, electrical technician,
       rigging, rigger, valve engineer, sand blaster, mechanic, laborer, maintenance advisor,
       hydraulic technician, analyzer technician, SCADA, operator, commissioning,
-      instrumentation technician]
+      instrumentation technician,
+      technician, foreman, auto electrician, appliance technician, instrument technician,
+      instrument foreman, instrumental technician, industrial electrician,
+      industrial electronics technician, marine electrician, marine fitter, boat builder,
+      mechanical foreman, mechanical static engineer, mechanical supervisor,
+      mechanical/piping inspector, metering & measurement engineer, multi technician,
+      node foreman, node handler, o&m engineer, painter, painting manager,
+      pipe fabrication supervisor, plant manager, hydraulics engineer, hydrojetting,
+      insulation worker, insulator, facility engineer, facilities maintenance supervisor,
+      general technician, kitchen technician, cleaning technician, machining shop,
+      cnc coolant filling technician, cnc shop programming supervisor,
+      maintenance lead engineer, maintenance manager, maintenance supervisor,
+      maintenance team lead, operations engineer, operations associate,
+      operations assistant, deckhand, chargehand, electrical supervisor, hydraulics]
 
   coatings:
     label_ar: "الطلاءات والدهانات"
@@ -83,7 +107,8 @@ families:
   production:
     label_ar: "الإنتاج"
     keywords_ar: [مهندس إنتاج, مشرف إنتاج, خط إنتاج, تخطيط إنتاج]
-    keywords_en: [production engineer, production supervisor, manufacturing engineer, production team lead]
+    keywords_en: [production engineer, production supervisor, manufacturing engineer, production team lead,
+      industrial engineer, production planner, production superintendent, production shift manager]
 
   project_controls:
     label_ar: "ضبط المشاريع"
@@ -91,7 +116,12 @@ families:
     keywords_en: [project controls engineer, planning engineer, cost control, scheduling engineer,
       "planning and coordination specialist", "planning & coordination specialist",
       cost consultant, project control engineer, cost manager, tendering engineer, proposal engineer,
-      estimation engineer, estimating manager, estimating]
+      estimation engineer, estimating manager, estimating,
+      planner, planning & budget officer, planning and budget officer, planning & scheduling manager,
+      planning and scheduling manager, planning analyst, project control manager,
+      project controls manager, project controls and reporting, project management mep coordinator,
+      project planning lead, erp & projects cost controller, estimation consultant, project leader,
+      contract administrator, cost controller]
 
   lab_chemistry:
     label_ar: "المختبرات والكيمياء التحليلية"
@@ -108,14 +138,18 @@ families:
     label_ar: "سلسلة الإمداد"
     keywords_ar: [مهندس سلسلة إمداد, تخطيط مواد, مشتريات فنية, لوجستيات صناعية]
     keywords_en: [supply chain engineer, materials planning, procurement engineer, logistics,
-      procurement officer, procurement specialist, purchaser, buyer]
+      procurement officer, procurement specialist, purchaser, buyer,
+      expeditor, material coordinator, material handler, material mover, material specialist,
+      procurement & erp analyst, procurement expeditor, procurement manager, purchasing manager]
 
   admin:
     label_ar: "إداري/دعم (فرص عامة ذات صلة)"
     keywords_ar: [منسق إداري, منسق مشاريع, دعم فني إداري]
     keywords_en: [administrative coordinator, project coordinator, technical support coordinator,
       administrative assistant, business administration officer, administration officer,
-      executive secretary, engineering clerk, admin specialist, secretary]
+      executive secretary, engineering clerk, admin specialist, secretary,
+      admin, admin assistant, administrative clerk, ceo office manager, bid coordinator,
+      contracts coordinator, office administration, facility security receptionist]
 
   out_of_scope:
     label_ar: "خارج نطاق المنصّة (مستبعد صراحةً)"
@@ -123,7 +157,12 @@ families:
     keywords_en: [sales representative, sales executive, marketing specialist, business development,
       account executive, enterprise account executive, field sales consultant, business development specialist,
       account manager, account director, sales, telesales, pre-sales, presales,
-      merchandising, lifecycle marketing, growth manager]
+      merchandising, lifecycle marketing, growth manager,
+      b2b salesman, car salesman, bd senior manager, bd team leader,
+      account development representative, dealer relationship executive, category executive,
+      client solutions manager, engagement manager, key accounts manager, leasing specialist,
+      merchant success specialist, pay expansion executive, junior business developer,
+      junior category executive, insurance agent]
     excluded: true
 
   # --- مراجعة B2 R6: عائلات جديدة (تغطية خارج الهندسة) ---
@@ -133,7 +172,9 @@ families:
     keywords_ar: [مضيف, مضيفة, موظف استقبال فندقي, أخصائي ضيافة, مدير فندق, مشرف مطعم, أخصائي خدمة ضيوف, مشرف تدبير منزلي]
     keywords_en: [hotel manager, guest relations, front office agent, hospitality, concierge, food and beverage, restaurant supervisor, housekeeping supervisor, guest experience,
       waiter, waitress, bartender, spa attendant, spa therapist, massage therapist, floor manager,
-      restaurant, chef, housekeeping, room attendant]
+      restaurant, chef, housekeeping, room attendant,
+      butler, commis, cafeteria attendant, barista, hostess, guest service, kids club,
+      driving instructor, front office supervisor, groups reservation coordinator]
 
   customer_ops:
     label_ar: "خدمة العملاء ومراكز الاتصال"
@@ -145,13 +186,18 @@ families:
     keywords_ar: [محاسب, محلل مالي, مراجع حسابات, أخصائي مالية, مدير مالي, أمين صندوق, محاسب تكاليف, دورة الإيرادات]
     keywords_en: [accountant, financial analyst, auditor, finance manager, accounts payable, accounts receivable, bookkeeper, treasury analyst, financial controller, revenue cycle management, finance specialist, financial planning,
       risk manager, SAP FICO consultant, "SAP finance and controlling consultant",
-      risk officer, fraud risk analyst, anti money laundering, money laundering, accounting operations]
+      risk officer, fraud risk analyst, anti money laundering, money laundering, accounting operations,
+      finance executive, finance officer, financial coach, financial operations analyst,
+      financial program controller, fraud investigator, payroll analyst,
+      lead financial control analyst, "manager - finance", "manager, transportation finance",
+      "manager-internal audit", quantitative research]
 
   hr_recruiting:
     label_ar: "الموارد البشرية والتوظيف"
     keywords_ar: [أخصائي موارد بشرية, مسؤول توظيف, مدير موارد بشرية, أخصائي تعويضات ومزايا, منسق توظيف, أخصائي شؤون موظفين]
     keywords_en: [human resources, HR specialist, recruiter, talent acquisition, HR business partner, compensation and benefits, HR generalist, people operations,
-      HR analyst]
+      HR analyst, HR manager, people business partner, e-commerce talent curator,
+      corporate training, industrial skills trainer, prospective talent pool, "fresh graduate - hr"]
 
   it_software:
     label_ar: "تقنية المعلومات والبرمجيات"
@@ -163,7 +209,15 @@ families:
       cyber security, data science, data scientist, analytics manager, systems analyst,
       CRM support, SAP consultant, SAP IBP, technical account management, technical account manager,
       ML engineer, machine learning engineer, solution consultant, technical product manager,
-      IT application analyst]
+      IT application analyst,
+      "ai & system engineer", ai applications, application support engineer,
+      application support resident engineer, business intelligence, "cloud & infrastructure",
+      "devops, senior engineer", cybersecurity threat monitoring, purple teaming,
+      generative ai designer, mdm product specialist, machine learning,
+      information security officer, global cybersecurity, epicor functional consultant,
+      data control analyst, it project, it support & network administrator,
+      it support assistant, it administrative analyst, it audit manager,
+      interface engineer, interface specialist, product design]
 
   logistics_ops:
     label_ar: "اللوجستيات والمستودعات"
@@ -181,17 +235,39 @@ families:
       instrumentation supervisor, document control manager, site manager, welding inspector, welder,
       grounding engineer, earthing engineer, urban planning specialist, urban planner, contracts advisor,
       technical officer, technical officers, irrigation inspector, building inspector, verification inspector, lifting supervisor,
-      technical trainer, training instructor, automation engineer, control engineer]
+      technical trainer, training instructor, automation engineer, control engineer,
+      inspector, surveyor, design coordinator, design manager, concrete structure design manager,
+      control manager, billing inspector, billing engineer, data center planner, draftsman,
+      engineering supervisor, i&c engineer, irrigation engineer, "liaison man", pipeline engineer,
+      "piping & layout"]
 
   marketing_comms:
     label_ar: "الاتصال والإعلام"
     keywords_ar: [أخصائي اتصال, أخصائي إعلام, مراقبة إعلامية, أخصائي علاقات عامة, أخصائي محتوى]
     keywords_en: [communications specialist, media monitoring, public relations specialist, content specialist, social media specialist,
-      graphic designer, copywriter, product marketing manager, content producer, video content producer]
+      graphic designer, copywriter, product marketing manager, content producer, video content producer,
+      brand communications manager, crm specialist, "crm & automation", deputy head of marketing,
+      director of marketing, creative content lead, digital marketing manager,
+      multichannel marketing manager, performance marketing manager, media and content creation,
+      marketing & pr officer, marketing coordinator, corporate communications manager,
+      content compliance & government relations manager]
 
   program_admin_ops:
     label_ar: "إدارة البرامج والأعمال (عام)"
     keywords_ar: [محلل برامج, مسؤول أعمال, مدير برنامج, إدارة التغيير, مشاركة المجتمع]
     keywords_en: [program analyst, business officer, program manager, change management, community engagement, stakeholder engagement, academy performance, innovation consultant, technology consulting specialist, reporting lead, capital renewal, instructional design,
       general manager, external affairs, product manager, program director,
-      business analysis, business analyst, product planning]
+      business analysis, business analyst, product planning,
+      chief of staff, community & startups coordinator, public engagement lead,
+      associate instructional designer, innovation project associate, government relations officer,
+      protocol officer, portfolio manager, "pmo (project management office) leader"]
+
+  legal_compliance:
+    label_ar: "الشؤون القانونية والامتثال"
+    keywords_ar: [مستشار قانوني, أخصائي امتثال, حوكمة]
+    keywords_en: [legal assistant, legal specialist, legal coordinator, legal advisor,
+      contractual advisor, general counsel, head of compliance, head of legal,
+      compliance associate, compliance officer, compliance manager, governance officer,
+      prequalification officer, personal data protection, pdpl, grc analyst, grc manager,
+      grc engineer, corporate governance, legal affairs, legal consultant,
+      "manager, governance & operational risk"]
