@@ -9,10 +9,23 @@ Masar Core — التقرير اليومي (B5a، الدليل §3.13، تكلي
 صياغة مالية/تجارية، ولا أي حدّ/سقف/تقدير رقمي صريح (فقط أعداد "إنجاز" بلا
 مقام — مسموح: "قدّمنا لك اليوم 17 فرصة"؛ ممنوع: "17/22" أو "بلغت حدك اليومي").
 
+تصحيح B5c (NEEDS-CORE #1 بـdocs/reports/B5b-executor.md وn8n/README.md §3):
+كل عنصر بـ`today_applications` يحمل الآن `send_queue_id` (+`company_id`،
+`job_id`) — `send_queue_id` يُشتق بـJOIN على `send_queue.opportunity_id =
+applications.opportunity_id AND send_queue.status='sent'` (لا عمود جديد على
+applications، ولا لمس لـsender.py المملوك لمنفّذ B6 المتوازي — send_builder.py
+يمنع أصلًا أكثر من صفّ send_queue غير ملغى لكل opportunity_id، فالمطابقة
+حتمية). `null` إن كانت applications.opportunity_id فارغة (تطبيقات قديمة قبل
+B3، نادرة). وركفلو n8n (`masar_daily_report_relay.json`) مبني مسبقًا ليقرأ
+هذا الحقل تلقائيًا بلا أي تعديل هناك — راجع فلتر `withIds` بعقدة "بناء
+الرسائل". قائمة `excluded` تحمل `company_id`/`job_id` (متاحان دومًا من
+opportunities/jobs) و`send_queue_id: null` دومًا (الفرص المُستبعَدة لم تُبن
+لها صفوف send_queue إطلاقًا — لا معنى تقنيًا لأزرار 👎/🎉 عليها اليوم).
+
 `run_reports_round(date=None)` يُشغَّل من scheduler_main.py الساعة 19:00
 الرياض ويُدرج صفًّا واحدًا idempotent لكل عميل **نشط** (status='active')
 في `daily_reports` (ON CONFLICT (customer_id, report_date) DO NOTHING —
-تشغيل ثانٍ لنفس اليوم لا يُكرّر ولا يُبدّل صفًّا مُسلَّمًا أصلًا).
+تشغيل ثانِـ لنفس اليوم لا يُكرّر ولا يُبدّل صفًّا مُسلّمًا أصلًا).
 
 ملاحظة نطاق موثَّقة صراحة (B5a): قسم "استبعدنا لك" يعتمد فقط على أسباب
 استبعاد **محفوظة فعليًا بقاعدة البيانات** اليوم — تحديدًا
@@ -24,7 +37,7 @@ planner.py يستبعدان الوظيفة قبل إنشاء أي صفّ opportu
 core/app/planner.py:_select_for_customer، `if result.disqualified: continue`)
 — فجوة بنيوية موجودة أصلًا بـB3، خارج نطاق B5a تعديلها (planner.py/matching.py
 ملفّان WIP بانتظار مراجعة قبول منفصلة؛ التعديل فيهما بمعزل عن ذلك القبول
-خطر غير مبرَّر لهذا البند). مُوثَّق أيضًا بـdocs/reports/B5a-executor.md
+خطر غير مبرّر لهذا البند). مُوثَّق أيضًا بـdocs/reports/B5a-executor.md
 كبند NEEDS-OWNER/متابعة مستقبلية.
 """
 from __future__ import annotations
@@ -98,11 +111,19 @@ def _fetch_customer(conn: Connection, customer_id: int) -> dict | None:
 
 
 def _fetch_today_applications(conn: Connection, customer_id: int, day_start: datetime, day_end: datetime) -> list[dict]:
+    """send_queue_id عبر LEFT JOIN على send_queue.opportunity_id (لا عمود
+    جديد على applications — راجع تعليق الرأس، تصحيح B5c). شرط
+    `sq.status = 'sent'` بـON (لا WHERE) يبقيها LEFT JOIN حقيقيًا — تطبيق بلا
+    opportunity_id (نادر، تطبيقات قديمة قبل B3) يبقى بالنتيجة بـsend_queue_id
+    NULL بدل أن يُستبعَد بالكامل."""
     rows = conn.execute(
         text(
             """
-            SELECT j.company_name AS company, j.title, j.city, a.status
-            FROM applications a JOIN jobs j ON j.id = a.job_id
+            SELECT j.company_name AS company, j.title, j.city, a.status,
+                   a.job_id AS job_id, j.company_id AS company_id, sq.id AS send_queue_id
+            FROM applications a
+            JOIN jobs j ON j.id = a.job_id
+            LEFT JOIN send_queue sq ON sq.opportunity_id = a.opportunity_id AND sq.status = 'sent'
             WHERE a.customer_id = :cid AND a.sent_at >= :start AND a.sent_at < :end
             ORDER BY a.sent_at
             """
@@ -140,10 +161,14 @@ def _count_counted_applications(conn: Connection, customer_id: int, start: datet
 
 
 def _fetch_today_exclusions(conn: Connection, customer_id: int, report_date: date, limit: int = 15) -> list[dict]:
+    """company_id/job_id متاحان دومًا (من opportunities/jobs مباشرة، بلا
+    JOIN إضافي). send_queue_id يبقى None صراحة دومًا (تصحيح B5c، راجع تعليق
+    الرأس) — فرصة مُستبعَدة لم تُبنى لها صفّ send_queue قط."""
     rows = conn.execute(
         text(
             """
-            SELECT j.company_name AS company, j.title, j.city, o.reasons->>'skip_reason' AS reason_code
+            SELECT j.company_name AS company, j.title, j.city, o.reasons->>'skip_reason' AS reason_code,
+                   o.job_id AS job_id, j.company_id AS company_id
             FROM opportunities o JOIN jobs j ON j.id = o.job_id
             WHERE o.customer_id = :cid AND o.planned_for = :d AND o.status = 'skipped'
               AND o.reasons->>'skip_reason' = ANY(:codes)
@@ -157,6 +182,7 @@ def _fetch_today_exclusions(conn: Connection, customer_id: int, report_date: dat
     for r in rows:
         d = dict(r)
         d["reason_text"] = _FRIENDLY_EXCLUSION_REASONS.get(d["reason_code"], "لم تكن مناسبة تمامًا لملفك")
+        d["send_queue_id"] = None
         out.append(d)
     return out
 
@@ -324,7 +350,7 @@ def _upsert_report(conn: Connection, customer_id: int, report_date: date, payloa
 
 
 def run_reports_round(report_date: date | None = None, engine: Engine | None = None) -> dict:
-    """نقطة الدخول الرئيسية — صفّ واحد لكل عميل **نشط فقط** (status='active'،
+    """نقطة الدخول الرئيسية — صفًّ واحد لكل عميل **نشط فقط** (status='active'،
     الدليل: التقرير خدمة للمشترك الفعّال). عميل موقوف/منتهٍ لا يحصل على
     تقرير اليوم (لا خطأ — يُتخطّى بصمت، محسوب بـ`customers_skipped`).
     idempotent بالكامل (لا يرفع استثناءً لخطأ عميل واحد، بنفس فلسفة
