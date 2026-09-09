@@ -16,7 +16,7 @@ sqlalchemy.text()، لأن هذه أول وحدة تكتب بيانات فعلي
 
 مراجعة B2 R10 (docs/reports/B2-review-2.md): تكرار حقيقي بنسبة ~55% كان ينتج
 لأن بعض المصادر (خصوصًا Workable لوكالات التوظيف) تُرجع نفس الوظيفة (نفس
-apply_url) مرارًا ضمن استجابة واحدة، مرة لكل مدينة "مرشَّحة"، وصيغة
+apply_url) مرارًا ضمن استجابة واحدة، مرة لكل مدينة "مرشّحة"، وصيغة
 dedup_key السابقة (R5) كانت تُدرج المدينة بالمفتاح فتُنتج صفًا منفصلًا لكل
 مدينة. الإصلاح: `_group_raw_jobs_by_identity()` يُجمّع raw_jobs المجلوبة
 بنفس الجولة حسب هوية الإعلان (dedup_key الجديد المعتمد على apply_url وحده
@@ -73,7 +73,7 @@ PER_SOURCE_TIMEOUT = 30.0
 ROUND_BUDGET_SECONDS = 20 * 60
 
 # مراجعة B2 R3/R4: بعد جولتين متتاليتين بلا أي وظيفة خليجية واحدة (saudi_hits
-# = 0 كِلا الجولتين)، يُعطَّل المصدر تلقائيًا (مصادر region_filter='gcc' فقط).
+# = 0 كِلا الجولتين)، يُعطّل المصدر تلقائيًا (مصادر region_filter='gcc' فقط).
 GCC_ZERO_ROUNDS_DISABLE_THRESHOLD = 2
 
 # مراجعة B2 R12 (docs/reports/B2-review-2.md): عائلات مُستبعدة عمدًا من
@@ -81,7 +81,7 @@ GCC_ZERO_ROUNDS_DISABLE_THRESHOLD = 2
 # عن مقياس family_classified_pct_in_region (discovery_api.py) بدل الخلط
 # بينها وبين فجوة معجم حقيقية.
 # مراجعة B2b: أُعيدت تسمية sales_excluded → out_of_scope (استُعمل عمومًا لأي
-# دور خارج نطاق المنصّة صراحة، لا مبيعات فقط) — الاسم القديم مُبقًى هنا أيضًا
+# دور خارج نطاق المنصّة صراحة، لا مبيعات فقط) — الاسم القديم مُبقى
 # للتوافق مع أي صفّ لم يُعِد reclassify تصنيفه بعد.
 EXCLUDED_FAMILY_NAMES = {"out_of_scope", "sales_excluded"}
 
@@ -113,14 +113,72 @@ def _ensure_schema(engine: Engine) -> None:
         logger.exception("تعذّر التأكد من عمود jobs.locations — سيُعاد المحاولة بالاستدعاء التالي")
 
 
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 def get_engine() -> Engine:
+    """محرّك SQLAlchemy وحيد (singleton) لكل عملية (core أو core-scheduler —
+    كل حاوية عملية منفصلة، بمجمّع اتصالات منفصل خاص بها).
+
+    B6 (تصليب الحمل لـ1,500 عميل، docs/reports/B6-executor.md): الأحجام
+    الافتراضية كانت ثابتة بالكود (pool_size=5, max_overflow=5 بلا
+    pool_recycle ولا statement_timeout/lock_timeout) — أصبحت قابلة للضبط
+    عبر متغيّرات بيئة منفصلة لكل خدمة (docker-compose.yml يمرّر قيمًا مختلفة
+    لـcore وcore-scheduler)، مبنية على: 2 vCPU + Postgres
+    `max_connections=120` (مرفوع من الافتراضي 100 — نفس عنقود Postgres
+    يخدم أيضًا n8n بقاعدة بيانات منفصلة). الحساب المرجعي الموثّق بالتقرير:
+    core (API، طلبات قصيرة) 10+5=15 كحد أقصى + core-scheduler (SEND_WORKERS
+    حتى 20 خيطًا يفتح اتصاله الخاص بكل استعلام قصير عبر `engine.begin()`
+    منفصلة — راجع sender.py) 15+15=30 كحد أقصى = 45 من Core وحده، هامش
+    كبير تحت 120 حتى مع اتصالات n8n وجلسات `ops psql` اليدوية.
+
+    - `DB_POOL_SIZE`/`DB_MAX_OVERFLOW` (افتراضي 5/5 — نفس القيم القديمة إن
+      لم يُضبط شيء، لا تغيير سلوك بلا env صريح).
+    - `DB_POOL_RECYCLE_SECONDS` (افتراضي 1800): يمنع استخدام اتصال قديم قد
+      يكون Postgres أو موازن شبكة أغلقه بصمت (شبكة docker داخلية مستقرة
+      عادة، لكن هامش أمان رخيص لعملية طويلة العمر كـcore-scheduler).
+    - `DB_STATEMENT_TIMEOUT_MS` (افتراضي 0 = بلا حد — مُفعّل صراحة فقط
+      لعملية core-scheduler عبر compose، الدليل: "statement_timeout لجلسات
+      المجدوِل" — استعلامات الجامع/الإرسال/الوارد يجب ألا تُعلّق العملية
+      كلها للأبد على استعلام واحد عالق، بعكس API الذي يُفضّل له بلا حد
+      صارم كي لا يقطع طلب إداري بطيء لكن مشروع مثل `/admin/quality-sample`).
+    - `DB_LOCK_TIMEOUT_MS` (افتراضي 5000): افتراضي معقول لكل الجلسات — صفّ
+      مقفل (مثال: alembic أو معاملة أخرى) لا يُعلّق الاستعلام أكثر من 5
+      ثوانٍ قبل أن يفشل بخطأ واضح بدل الانتظار الصامت.
+    """
     global _engine_singleton
     if _engine_singleton is not None:
         return _engine_singleton
     url = os.environ["DATABASE_URL"]
     if url.startswith("postgresql://"):
         url = "postgresql+psycopg://" + url[len("postgresql://") :]
-    _engine_singleton = create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=5)
+
+    pool_size = _int_env("DB_POOL_SIZE", 5)
+    max_overflow = _int_env("DB_MAX_OVERFLOW", 5)
+    pool_recycle = _int_env("DB_POOL_RECYCLE_SECONDS", 1800)
+    statement_timeout_ms = _int_env("DB_STATEMENT_TIMEOUT_MS", 0)
+    lock_timeout_ms = _int_env("DB_LOCK_TIMEOUT_MS", 5000)
+
+    options_parts = [f"-c lock_timeout={lock_timeout_ms}"]
+    if statement_timeout_ms > 0:
+        options_parts.append(f"-c statement_timeout={statement_timeout_ms}")
+    connect_args = {"options": " ".join(options_parts)}
+
+    _engine_singleton = create_engine(
+        url,
+        pool_pre_ping=True,
+        pool_size=pool_size,
+        max_overflow=max_overflow,
+        pool_recycle=pool_recycle,
+        connect_args=connect_args,
+    )
     _ensure_schema(_engine_singleton)
     return _engine_singleton
 
@@ -129,12 +187,12 @@ def get_engine() -> Engine:
 # تصنيف العائلة المهنية — يقرأ data/taxonomy_local.yaml (مُركّب read-only)
 #
 # مراجعة B2 R6: مطابقة بحدود كلمة صريحة (لا سلسلة فرعية) عبر تعابير نمطية
-# مُجمَّعة مسبقًا لكل عائلة، على العنوان أولًا ثم الوصف كملاذ أخير (مراجعة
+# مُجمّعة مسبقًا لكل عائلة، على العنوان أولًا ثم الوصف كملاذ أخير (مراجعة
 # B2b — كان سابقًا العنوان + أول 300 حرف من الوصف معًا دومًا).
 #
 # مراجعة B2 R12: العائلات المُستبعدة (`excluded: true`، مثل out_of_scope)
-# كانت تُتخطّى بالكامل بـ`_build_family_patterns()` فتُحسَب أي وظيفة مبيعات
-# ضمن "غير مصنّف" رغم استبعادها عمدًا — الآن تُبنى أنماطها أيضًا وتُرجَع
+# كانت تُتخطّى بالكامل بـ`_build_family_patterns()` فتُحسب أي وظيفة مبيعات
+# ضمن "غير مصنّف" رغم استبعادها عمدًا — الآن تُبنى أنماطها أيضًا وتُرجع
 # كاسم عائلة فعلي (وليس None) حين تُطابَق، مع فصلها لاحقًا بمقياس
 # family_classified_pct_in_region (discovery_api.py) عبر EXCLUDED_FAMILY_NAMES.
 #
@@ -147,12 +205,12 @@ def get_engine() -> Engine:
 #   - علامات الترقيم/الشرطات المائلة تتحوّل لمسافات ضمن normalize_text نفسها.
 # ---------------------------------------------------------------------------
 
-# ملاحظة تشغيلية (مراجعة B2): هذان الكاشان يُملآن مرة واحدة فقط لكل عملية
+# ملاحظة تشغيلية (مراجعة B2): هذان الكاشان يُملآان مرة واحدة فقط لكل عملية
 # (process) حيّة — تعديل data/taxonomy_local.yaml وحده لا يكفي لتفعيل
-# كلمات مفتاحية جديدة على core الحيّ؛ يلزم إعادة تشغيل حاوية core فعليًا
+# كلمات مفتاحية جديدة على core الحيّ، يلزم إعادة تشغيل حاوية core فعليًا
 # (`POST /admin/ops {"cmd":"up","args":[]}` بعد push كودي يُغيّر تجزئة طبقة
 # COPY app ./app لإجبار إعادة البناء، أو أي تعديل كودي حقيقي بهذا الملف).
-# مراجعة B2b: هذا بالضبط سبب وجود core/app/reclassify.py — يُشغَّل كعملية
+# مراجعة B2b: هذا بالضبط سبب وجود core/app/reclassify.py — يُشغّل كعملية
 # بايثون طازجة منفصلة (`docker compose exec -T core python -m app.reclassify`)
 # فيبني الكاشين من الصفر بالمعجم الحالي، بدل انتظار إعادة تشغيل الحاوية.
 _families_cache: dict | None = None
@@ -164,7 +222,7 @@ DESCRIPTION_MATCH_CHARS = 300
 # data/taxonomy_local.yaml (انظر الملاحظة أعلاه) — تغييره وحده يكفي لإجبار
 # طبقة Docker COPY app ./app على إعادة البناء دون أي تعديل منطقي فعلي هنا.
 # آخر تحديث: مراجعة B2b — توسعة رابعة (out_of_scope بدل sales_excluded) +
-# خطوة تطبيع + تصنيف عنوان-أولًا-ثم-وصف.
+# خطوة تطبيع + تصنيف عنوان-أولاً-ثم-وصف.
 
 _AMP_RE = re.compile(r"&")
 _SR_JR_RE = re.compile(r"\b(sr|jr)\.?\b", re.IGNORECASE)
@@ -172,11 +230,11 @@ _ROMAN_TAIL_RE = re.compile(r"[\s\-]+[ivx]{1,4}$", re.IGNORECASE)
 
 
 def _normalize_for_match(text: str | None) -> str:
-    """خطوة تطبيع قبل المطابقة (مراجعة B2b) — تُطبَّق على نص العنوان/الوصف
+    """خطوة تطبيع قبل المطابقة (مراجعة B2b) — تُطبّق على نص العنوان/الوصف
     المُبحوث فيه وعلى كل كلمة مفتاحية بالمعجم بنفس الدالة (اتساق الجهتين):
     رقم روماني لاحق يُحذف، "&"→" and "، Sr./Jr.→Senior/Junior، ثم
     normalizer.normalize_text (تشكيل عربي/همزات/تاء مربوطة/ترقيم→مسافات/
-    أحرف صغيرة) — نفس دالة تطبيع dedup_key بالضبط، لا منطق مكرَّر."""
+    أحرف صغيرة) — نفس دالة تطبيع dedup_key بالضبط، لا منطق مكرّر."""
     if not text:
         return ""
     t = _ROMAN_TAIL_RE.sub("", text)
@@ -207,7 +265,7 @@ def _build_family_patterns() -> list[tuple[str, re.Pattern[str]]]:
     patterns: list[tuple[str, re.Pattern[str]]] = []
     for family, spec in _load_families().items():
         # مراجعة B2 R12: لم نعد نتخطّى العائلات المُستبعدة (excluded: true) —
-        # تُبنى أنماطها أيضًا وتُرجَع كاسم عائلة فعلي حين تُطابَق، بدل ترك
+        # تُبنى أنماطها أيضًا وتُرجع كاسم عائلة فعلي حين تُطابَق، بدل ترك
         # الوظيفة بلا أي تصنيف (family=None) فتختلط بفجوة معجم حقيقية.
         keywords = list(spec.get("keywords_en") or []) + list(spec.get("keywords_ar") or [])
         if not keywords:
@@ -228,7 +286,7 @@ def _build_family_patterns() -> list[tuple[str, re.Pattern[str]]]:
 def classify_family(title: str | None, description: str | None = None) -> str | None:
     """يرجّع أول عائلة مهنية تُطابق معجم taxonomy_local.yaml، بحدود كلمة
     صريحة بعد تطبيع (مراجعة B2b) — العنوان أولًا، فإن لم يُطابق شيئًا (ملاذ
-    أخير فقط) يُجرَّب أول 300 حرف من الوصف وحده. قد تكون النتيجة اسم عائلة
+    أخير فقط) يُجرّب أول 300 حرف من الوصف وحده. قد تكون النتيجة اسم عائلة
     مُستبعدة (مثل out_of_scope — مراجعة B2 R12) — المستدعي مسؤول عن
     استثنائها من مقاييس "التصنيف الفعلي" حين يلزم."""
     patterns = _build_family_patterns()
@@ -277,12 +335,12 @@ def _group_raw_jobs_by_identity(
     متوفر — مراجعة B2 R10) *قبل* أي إدراج بقاعدة البيانات. بعض المصادر
     (خصوصًا Workable لوكالات التوظيف كـEram Talent/Hudson Manpower) تُرجع
     نفس الوظيفة (نفس apply_url) مرارًا ضمن استجابة واحدة، مرة لكل مدينة
-    "مرشَّحة" — يجب أن تُصبح صفًا واحدًا بحقل `locations` يجمع كل المواقع
+    "مرشّحة" — يجب أن تُصبح صفًا واحدًا بحقل `locations` يجمع كل المواقع
     المذكورة، لا صفًا منفصلًا لكل مدينة. دالة نقية بلا اتصال قاعدة بيانات —
     قابلة للاختبار مباشرة (core/tests/test_discovery_grouping.py).
 
     يُرجع قائمة عناصر بترتيب أول ظهور، كل عنصر:
-        {dedup_key, raw_job (أول ظهور), title, location_text (أول ظهور),
+        {dedup_key, raw_job (أول ظهور)، title, location_text (أول ظهور)،
          apply_url, locations (قائمة كل نصوص الموقع الفريدة المذكورة)}
     """
     groups: dict[str, dict] = {}
@@ -561,7 +619,7 @@ def run_round() -> dict:
         gcc_hits_this_source = 0
 
         # مراجعة B2 R10: تجميع raw_jobs حسب هوية الإعلان *قبل* الإدراج —
-        # يمنع إدراج صف منفصل لكل مدينة "مرشَّحة" يذكرها المصدر لنفس
+        # يمنع إدراج صف منفصل لكل مدينة "مرشّحة" يذكرها المصدر لنفس
         # apply_url فعليًا (انظر توثيق _group_raw_jobs_by_identity أعلاه).
         grouped_entries = _group_raw_jobs_by_identity(raw_jobs, company_name, source_id)
 
@@ -589,8 +647,8 @@ def run_round() -> dict:
 
                     # مراجعة B2 R11: location_text البنيوي فقط يُستخدم حين
                     # متوفرًا — النص الإضافي (عنوان+وصف) لا يُمرّر إلا ليكون
-                    # ملاذًا أخيرًا حين location_text فارغ تمامًا (compute_region
-                    # نفسها تطبّق هذا الشرط داخليًا الآن).
+                    # ملاذًا أخيرًا حين location_text فارغًا تمامًا (compute_region
+                    # نفسها تُطبّق هذا الشرط داخليًا الآن).
                     country_code, out_of_region = compute_region(
                         location_text or None, f"{title}\n{description[:300]}"
                     )
