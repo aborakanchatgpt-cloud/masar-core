@@ -25,6 +25,23 @@ Masar Core — دفتر الضمان/التعويض (B5a البند 3، الدل
 ("انقطاع بسبب العميل يُمدّد بدل تعويض") بلا حاجة لجدول تاريخي جديد، لكنه
 لا يحسب `customer_caused_days` كعدد صريح بالتقرير (`shortfall` يبقى NULL
 طوال فترة الانقطاع، لا يُطرح تناسبيًا من هدف مؤجّل).
+
+تصحيح B5c (docs/reports/B5a-B2b-review.md، القسم 3.2، عيب [major]): عدّاد
+التمديد كان عمودًا واحدًا مشتركًا (`extension_days`) بين تمديد الانقطاع
+(`OUTAGE_EXTENSION_DAYS` — يتكرر يوميًا طالما البريد معطوب) وتمديد مهلة
+الأداء الإلزامية (`GRACE_EXTENSION_DAYS=2`، مرة واحدة لكل فترة) — فإن تراكم
+انقطاع بريد ≥2 يوم وحده (بلا أي مهلة أداء فعلية مُنحت)، ثم أُصلح البريد
+والعميل لا يزال قاصرًا، كان يُسقِط مهلة الأداء الإلزامية بالكامل ويقفز
+لتعويض فوري. الإصلاح: عمودان منفصلان بـ`guarantee_ledger` —
+`grace_extension_days` (مهلة الأداء فقط) و`outage_extension_days` (انقطاع
+البريد فقط) — ترحيل 0010. `extension_days` يبقى موجودًا **كمجموع الاثنين**
+(توافقًا خلفيًا لأي قارئ حالي)، لكن فحص "هل استُهلِكت المهلة الإلزامية؟"
+يقرأ `grace_extension_days` حصرًا الآن، لا المجموع. صفوف `guarantee_ledger`
+القديمة (قبل هذا الترحيل) تبدأ بـ`grace_extension_days=0` افتراضيًا (القيمة
+الافتراضية الآمنة الوحيدة الممكنة بلا سجلّ تاريخي يميّز مصدر كل يوم تمديد
+سابق — راجع الملاحظة أعلاه) وقد تحصل على مهلة أداء إضافية مرة واحدة كأثر
+انتقالي؛ الاتجاه الآمن الوحيد المقبول هنا: تأخير تعويض بيومين إضافيين لبضعة
+عملاء قدامى مرة واحدة، لا إسقاط مهلة مستحقة لعميل جديد أبدًا.
 """
 from __future__ import annotations
 
@@ -118,7 +135,8 @@ def _upsert_ledger(conn: Connection, *, customer_id: int, period_start: date, pe
             ON CONFLICT (customer_id, period_start) DO UPDATE SET
                 {update_set}, updated_at = now()
             RETURNING id, customer_id, period_start, period_end, target, counted_sent, bounced,
-                      shortfall, extension_days, refund_amount, status, created_at, updated_at
+                      shortfall, extension_days, grace_extension_days, outage_extension_days,
+                      refund_amount, status, created_at, updated_at
             """
         ),
         values,
@@ -148,8 +166,12 @@ def evaluate_period(customer_id: int, engine: Engine | None = None, now: datetim
         counted_sent, bounced = _count_period_applications(conn, customer_id, sub["starts_at"], sub["ends_at"])
 
         existing = _fetch_existing_ledger(conn, customer_id, period_start)
-        prior_extension_days = (existing or {}).get("extension_days") or 0
-        already_had_grace = bool(existing) and existing.get("status") == "extended" and prior_extension_days >= GRACE_EXTENSION_DAYS
+        # عمودان منفصلان (تصحيح B5c أعلى الملف) — لا نقرأ extension_days
+        # الكلي لفحص "هل استُهلِكت المهلة الإلزامية؟" أبدًا، فقط
+        # grace_extension_days تحديدًا (مصدره حصرًا تمديد المهلة العادية).
+        prior_grace_days = (existing or {}).get("grace_extension_days") or 0
+        prior_outage_days = (existing or {}).get("outage_extension_days") or 0
+        already_had_grace = prior_grace_days >= GRACE_EXTENSION_DAYS
 
         if counted_sent >= MONTHLY_TARGET:
             ledger = _upsert_ledger(
@@ -161,7 +183,9 @@ def evaluate_period(customer_id: int, engine: Engine | None = None, now: datetim
                 counted_sent=counted_sent,
                 bounced=bounced,
                 shortfall=0,
-                extension_days=prior_extension_days,
+                extension_days=prior_grace_days + prior_outage_days,
+                grace_extension_days=prior_grace_days,
+                outage_extension_days=prior_outage_days,
                 refund_amount=None,
                 status="computed",
             )
@@ -177,6 +201,10 @@ def evaluate_period(customer_id: int, engine: Engine | None = None, now: datetim
             # انقطاع بسبب بريد العميل نفسه — يُمدّد الفترة بدل التعويض
             # (الدليل §0 البند 5) — يتكرر يوميًا طالما الصندوق معطوبًا، بلا
             # وصول لمرحلة التعويض إطلاقًا (راجع ملاحظة النطاق أعلى الملف).
+            # يزيد outage_extension_days فقط — لا يمسّ grace_extension_days
+            # إطلاقًا، حتى لا يُحتسَب أي جزء من مهلة الأداء الإلزامية مُستهلَكًا
+            # بسبب انقطاع لم يكن مهلة أداء فعلية (تصحيح B5c أعلى الملف).
+            new_outage_days = prior_outage_days + OUTAGE_EXTENSION_DAYS
             new_ends_at = sub["ends_at"] + timedelta(days=OUTAGE_EXTENSION_DAYS)
             conn.execute(
                 text("UPDATE subscriptions SET ends_at = :ends, status = 'extended' WHERE id = :id"),
@@ -191,7 +219,9 @@ def evaluate_period(customer_id: int, engine: Engine | None = None, now: datetim
                 counted_sent=counted_sent,
                 bounced=bounced,
                 shortfall=None,
-                extension_days=prior_extension_days + OUTAGE_EXTENSION_DAYS,
+                extension_days=prior_grace_days + new_outage_days,
+                grace_extension_days=prior_grace_days,
+                outage_extension_days=new_outage_days,
                 refund_amount=None,
                 status="extended",
             )
@@ -199,6 +229,9 @@ def evaluate_period(customer_id: int, engine: Engine | None = None, now: datetim
 
         if not already_had_grace:
             # تمديد يومين تلقائي (لمرة واحدة لكل فترة) — الدليل §0 البند 5.
+            # يُمنح دومًا هنا (بصرف النظر عن أي انقطاع بريد سابق استهلك أيام
+            # outage_extension_days منفصلة) — هذا هو الإصلاح الفعلي لعيب B5c.
+            new_grace_days = prior_grace_days + GRACE_EXTENSION_DAYS
             new_ends_at = sub["ends_at"] + timedelta(days=GRACE_EXTENSION_DAYS)
             conn.execute(
                 text("UPDATE subscriptions SET ends_at = :ends, status = 'extended' WHERE id = :id"),
@@ -213,13 +246,15 @@ def evaluate_period(customer_id: int, engine: Engine | None = None, now: datetim
                 counted_sent=counted_sent,
                 bounced=bounced,
                 shortfall=None,
-                extension_days=prior_extension_days + GRACE_EXTENSION_DAYS,
+                extension_days=new_grace_days + prior_outage_days,
+                grace_extension_days=new_grace_days,
+                outage_extension_days=prior_outage_days,
                 refund_amount=None,
                 status="extended",
             )
             return {"ok": True, "customer_id": customer_id, "reason": "grace_period_granted", **ledger}
 
-        # التمديد استُهلِك أصلًا (extension_days >= 2 بحالة 'extended' سابقة)
+        # مهلة الأداء الإلزامية استُهلِكت فعليًا (grace_extension_days >= 2)
         # ولا يزال قاصرًا، والبريد سليم الآن — تعويض تناسبي (يحتاج اعتماد
         # المالك، لا تحويل تلقائي أبدًا).
         shortfall = MONTHLY_TARGET - counted_sent
@@ -237,7 +272,9 @@ def evaluate_period(customer_id: int, engine: Engine | None = None, now: datetim
             counted_sent=counted_sent,
             bounced=bounced,
             shortfall=shortfall,
-            extension_days=prior_extension_days,
+            extension_days=prior_grace_days + prior_outage_days,
+            grace_extension_days=prior_grace_days,
+            outage_extension_days=prior_outage_days,
             refund_amount=refund_amount,
             status="refund_pending",
         )
