@@ -1,7 +1,7 @@
 # مسار Core — البنية التحتية للمرحلتين 1 و2
 # الخدمات: postgres (قاعدة البيانات)، gotenberg (تحويل HTML إلى PDF)،
 # core (خدمة FastAPI)، core-scheduler (الجامع الدوري كل 30 دقيقة، المرحلة 2)،
-# caddy (HTTPS تلقائي عبر دومين)، n8n (أتمتة سير العمل، مستضاف ذاتيًا).
+# caddy (HTTPS تلقائيًا عبر دومين)، n8n (أتمتة سير العمل، مستضاف ذاتيًا).
 #
 # قبل التشغيل: انسخ .env.example إلى .env وعدّل القيم (خصوصًا كلمة مرور
 # Postgres والدومين المستخدم لـCaddy).
@@ -76,6 +76,7 @@ services:
       MAIL_SINK_API_URL: ${MAIL_SINK_API_URL:-http://mailpit:8025}
       DRY_RUN_TO: ${DRY_RUN_TO:-}
       MAIL_LIVE: ${MAIL_LIVE:-false}
+      MAIL_IGNORE_SEND_WINDOW: ${MAIL_IGNORE_SEND_WINDOW:-false}
       CV_DATA_DIR: /data/cv
     volumes:
       # مجلد "ops runner" (B1a): مشترك مع المضيف — core يكتب طلبات تنفيذ
@@ -94,10 +95,10 @@ services:
       # أيضًا لأن /admin/discovery/run-now و/admin/discovery/seed-sources
       # يُنفّذان داخل عملية core (FastAPI) بواسطة BackgroundTasks.
       - ./data:/app/data:ro
-      # ملفات السيرة الذاتية المولَّدة (B4، cv_builder.CV_DATA_DIR) — volume
+      # ملفات السيرة الذاتية المولّدة (B4، cv_builder.CV_DATA_DIR) — volume
       # مُسمّى مشترك مع core-scheduler (تصحيح Medium 2 بمراجعة B4 الأوفلاين):
       # queue-now يدوي من core وإرسال تلقائي من core-scheduler قد يفصل
-      # بينهما ساعات؛ بلا volume مشترك يُفقَد ملف PDF عند أي إعادة نشر
+      # بينهما ساعات؛ بلا volume مشترك يُفقد ملف PDF عند أي إعادة نشر
       # ويُرسَل البريد بلا مرفق سيرة ذاتية بصمت.
       - cv_data:/data/cv
     depends_on:
@@ -118,6 +119,16 @@ services:
       context: ./core
     command: ["python", "-m", "app.scheduler_main"]
     restart: unless-stopped
+    # تصحيح F3 (مراجعة حيّة docs/reports/B3B4-live-review.md، استنتاج متوسط 1):
+    # core-scheduler يُبنى من نفس core/Dockerfile مثل core فيرث HEALTHCHECK
+    # الموروث الذي يفحص http://localhost:8000/health — لكن هذه الخدمة عملية
+    # خلفية فقط (APScheduler.BlockingScheduler)، لا تفتح المنفذ 8000 إطلاقًا،
+    # فالفحص يفشل دومًا بالتصميم بصرف النظر عن سلامة العملية الفعلية (مؤكّد
+    # حيًا بسجلّات تكات ناجحة متواصلة بلا انقطاع رغم "unhealthy" بـdocker ps).
+    # تعطيل الفحص الموروث هنا بدل حذفه من Dockerfile يُبقي core (التي تحتاجه
+    # فعلاً) بلا تأثير.
+    healthcheck:
+      disable: true
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-masar}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-masar}
       GOTENBERG_URL: http://gotenberg:3000
@@ -130,6 +141,7 @@ services:
       MAIL_SINK_API_URL: ${MAIL_SINK_API_URL:-http://mailpit:8025}
       DRY_RUN_TO: ${DRY_RUN_TO:-}
       MAIL_LIVE: ${MAIL_LIVE:-false}
+      MAIL_IGNORE_SEND_WINDOW: ${MAIL_IGNORE_SEND_WINDOW:-false}
       CV_DATA_DIR: /data/cv
     volumes:
       # نفس ملاحظة data أعلاه — الجامع نفسه (core.app.discovery) يقرأ
@@ -252,6 +264,6 @@ volumes:
   caddy_data:
   caddy_config:
   n8n_data:
-  # سيرة ذاتية مولَّدة (B4) — مشتركة بين core وcore-scheduler (راجع تعليق
+  # سيرة ذاتية مولّدة (B4) — مشتركة بين core وcore-scheduler (راجع تعليق
   # Medium 2 عند خدمة core أعلاه).
   cv_data:
