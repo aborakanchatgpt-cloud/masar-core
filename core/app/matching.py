@@ -9,7 +9,7 @@ core/app/planner.py (يجلب الصفوف من jobs/customers/profiles ثم ي�
 
 **الاستبعاد القاطع** (check_disqualifiers): يُعيد قائمة أسباب — قائمة فارغة
 يعني الوظيفة مؤهّلة. الفحوصات المتعلقة بحالة قاعدة البيانات (تبريد الشركة
-60 يومًا، سقف 3 عملاء/أسبوع للشركة) تُمرَّر كقيم منطقية جاهزة من المستدعي
+60 يومًا، سقف 3 عملاء/أسبوع للشركة) تُمرّر كقيم منطقية جاهزة من المستدعي
 (cooldown_active/weekly_cap_reached) حتى تبقى هذه الوحدة نفسها بلا DB.
 
 **الدرجة** (compute_score): 0.35 مسمى + 0.30 مهارات + 0.15 أقدمية +
@@ -19,13 +19,13 @@ core/app/planner.py (يجلب الصفوف من jobs/customers/profiles ثم ي�
 **الطبقات**: A ≥0.75، B ≥0.55، C ≥0.40 (ضمن عائلات/مدن العميل المختارة)،
 C2 = نفس عتبة C لكن عبر تمريرة توسيع العائلة (widened_family=True — العميل
 لم يخترها لكنها استُخدمت لأن C/B/A لم تكفِ الهدف اليومي)، D لما دون 0.40
-(لا تُخطَّط ولا تُرسَل أبدًا).
+(لا تُخطّط ولا تُرسَل أبدًا).
 
-ملاحظة نطاق متعمّدة (تُوثَّق أيضًا بـdocs/reports/B3-executor.md): جدول
+ملاحظة نطاق متعمّدة (تُوثّق أيضًا بـdocs/reports/B3-executor.md): جدول
 `jobs` الحالي لا يحمل حقل "الشهادة/التخصص المطلوب" (degree_req) — لم يُستخرج
-بعد بـfield_extractor.py (لا يجوز لهذا الملف تعديل core/app/collectors/*).
-دالة الاستبعاد القاطع تقبل `job.degree_req` اختياريًا للتوافق المستقبلي، لكنها
-لا تُفعَّل عمليًا الآن (حقل غير مستخرج = لا استبعاد، بنفس فلسفة الدليل §3.5:
+بعد بـfield_extractor.py (لا يجوز لهذا الملف تعديل core/app/collectors/*). دالة
+الاستبعاد القاطع تقبل `job.degree_req` اختياريًا للتوافق المستقبلي، لكنها
+لا تُفعّل عمليًا الآن (حقل غير مستخرج = لا استبعاد، بنفس فلسفة الدليل §3.5:
 "الحقول غير المستخرجة تبقى NULL ولا تسبب استبعادًا").
 """
 from __future__ import annotations
@@ -33,6 +33,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import lru_cache
 
 from app.collectors.normalizer import normalize_text
 
@@ -62,7 +63,7 @@ TIER_C_THRESHOLD = 0.40
 
 # سنوات الخبرة: نسمح بهامش سنة واحدة فوق سنوات العميل الفعلية (تعليمات B3 —
 # الدليل الأصلي القسم 3.6 يذكر هامش سنتين؛ B3 تُشدّد الهامش لسنة واحدة عمدًا
-# — موثَّق بتقرير B3-executor.md).
+# — موثّق بتقرير B3-executor.md).
 YEARS_SLACK = 1
 
 # مستويات الأقدمية — نفس الأسماء الخمسة التي يُنتجها
@@ -87,8 +88,8 @@ SENIORITY_OVER_DISQUALIFY_DIFF = 2
 SENIORITY_UNDER_DISQUALIFY_DIFF = 3
 
 # مرادفات مختصرات شائعة بمسميات الوظائف (طبقة معجم خفيفة، بديل مؤقت لمعجم
-# ESCO الذي لم يُحمَّل بعد بالمستودع — data/esco/*.csv غير موجود حتى تاريخ
-# B3). كل مجموعة تُعامَل كمترادفات متبادلة عند توسيع التوكنات لحساب Jaccard.
+# ESCO الذي لم يُحمّل بعد بالمستودع — data/esco/*.csv غير موجود حتى تاريخ
+B3). كل مجموعة تُعامَل كمترادفات متبادلة عند توسيع التوكنات لحساب Jaccard.
 TITLE_SYNONYM_GROUPS: list[set[str]] = [
     {"qa", "quality", "assurance"},
     {"qc", "quality", "control"},
@@ -184,15 +185,33 @@ class MatchResult:
 # ---------------------------------------------------------------------------
 
 
+@lru_cache(maxsize=8192)
+def _tokenize_cached(text: str) -> frozenset[str]:
+    normalized = normalize_text(text)
+    if not normalized:
+        return frozenset()
+    tokens = set(_TOKEN_RE.findall(normalized))
+    return frozenset(expand_synonyms(tokens))
+
+
 def tokenize(text: str | None) -> set[str]:
     """يحوّل نصًا لمجموعة توكنات مطبّعة (يعيد استخدام normalize_text نفسها
     المستخدمة بالفعل بمحرّك الاكتشاف — توحيد عربي + أحرف صغيرة + إزالة
-    ترقيم)، ثم يُوسّعها بمرادفات TITLE_SYNONYM_GROUPS."""
-    normalized = normalize_text(text)
-    if not normalized:
+    ترقيم)، ثم يُوسّعها بمرادفات TITLE_SYNONYM_GROUPS.
+
+    B6 (تصليب الحمل، perf-only — matching.py يبقى نقيًا بلا DB): مُخبّأ
+    (`lru_cache`) خلف `_tokenize_cached` — planner.py يستدعي هذه الدالة
+    مرتين لكل زوج (مرشّح وظيفة × مسمى بملف عميل) داخل حلقة `_select_for_customer`
+    التي تعالج آلاف الأزواج لكل عميل بمعيار قبول B3 (1,500×3,000)؛ نفس نص
+    العنوان يتكرر آلاف المرّات (نفس مسمّيات الوظائف الشائعة، ونفس عناوين
+    ملف نفس العميل عبر كل مرشّح) فالتخبئة توفّر إعادة حساب normalize_text +
+    تجزئة regex + توسيع مرادفات بالكامل. يرجع نسخة `set()` جديدة قابلة
+    للتعديل من طرف المستدعي (نفس التوقيع القديم بالضبط) — الكائن المُخبّأ
+    نفسه (`frozenset`) غير قابل للتعديل عمدًا فلا يتسرّب أي تعديل بين
+    استدعاءات مختلفة تتشارك نفس مدخل الكاش."""
+    if text is None:
         return set()
-    tokens = set(_TOKEN_RE.findall(normalized))
-    return expand_synonyms(tokens)
+    return set(_tokenize_cached(text))
 
 
 def expand_synonyms(tokens: set[str]) -> set[str]:
@@ -218,7 +237,7 @@ def normalized_city_set(cities: list[str]) -> set[str]:
 
 
 def city_allowed(job_city: str | None, customer_cities: list[str]) -> bool:
-    """موقع الوظيفة غير معروف (None) دائمًا مسموح (يُخصَم بالدرجة فقط —
+    """موقع الوظيفة غير المعروف (None) دائمًا مسموح (يُخصَم بالدرجة فقط —
     §3.7: 0.3 موقع غير محدد). موقع معروف يجب أن يكون ضمن مدن العميل
     المختارة تحديدًا — لا توسيع جغرافي إطلاقًا (تكليف B3: التوسيع الوحيد
     المدعوم هو توسيع العائلة C2، لا المدينة)."""
@@ -235,7 +254,7 @@ def city_allowed(job_city: str | None, customer_cities: list[str]) -> bool:
 
 
 def derive_profile_seniority(profile: CustomerProfile) -> int:
-    """يرجّع رتبة الأقدمية المُشتقّة للملف الشخصي (SENIORITY_RANK). يُفضَّل
+    """يرجّع رتبة الأقدمية المُشتقّة للملف الشخصي (SENIORITY_RANK). يُفضّل
     profile.seniority الصريح (إن وُجد ويطابق أحد المفاتيح المعروفة)، وإلا
     يُشتق من سنوات الخبرة بعتبات معقولة مطابقة لتدرّج الدليل §3.5."""
     if profile.seniority and profile.seniority in SENIORITY_RANK:
