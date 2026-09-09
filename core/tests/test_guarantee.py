@@ -2,7 +2,7 @@
 استبعاد المرتد من المُحتسَب، تمديد يومين تلقائي عند العجز، تعويض تناسبي بعد
 استهلاك التمديد، رصيد/باقات (credits) بلا اشتراك = 'na'، وانقطاع بريد العميل
 يُمدّد الفترة بدل التعويض (لا يصل التقييم لمرحلة التعويض إطلاقًا طالما
-البريد معطوب).
+Aلبريد معطوب).
 
 يحتاج قاعدة بيانات Postgres حقيقية — يُتخطّى تلقائيًا (skip) إن تعذّر الاتصال.
 """
@@ -180,7 +180,7 @@ def test_bounced_applications_excluded_from_counted_sent(engine, cleanup):
     result = guarantee.evaluate_period(customer_id, engine=engine, now=now)
     assert result["counted_sent"] == guarantee.MONTHLY_TARGET - 10
     assert result["bounced"] == 10
-    assert result["status"] == "extended"  # عجز → تمديد أولًا، لا تعويض فورًا
+    assert result["status"] == "extended"  # عجز → تمديد أولاً، لا تعويض فورًا
 
 
 # ---------------------------------------------------------------------------
@@ -239,7 +239,7 @@ def test_still_short_after_grace_computes_proportional_refund(engine, cleanup):
     assert first["status"] == "extended"
 
     # التقييم الثاني (بعد أن انتهت فترة التمديد فعليًا) — لا تقديمات جديدة،
-    # لا يزال قاصرًا بنفس العدّ، والتمديد استُهلِك أصلًا → تعويض.
+    # لا يزال قاصرًا بنفس العدّ، والتمديد استُهلِك أصلاً → تعويض.
     second = guarantee.evaluate_period(customer_id, engine=engine, now=now + timedelta(days=3))
     assert second["status"] == "refund_pending"
     assert second["shortfall"] == guarantee.MONTHLY_TARGET - counted
@@ -290,7 +290,7 @@ def test_customer_without_subscription_is_na(engine, cleanup):
 
 # ---------------------------------------------------------------------------
 # 7. انقطاع بسبب بريد العميل (mail_links.status != 'ok') → تمديد بدل تعويض،
-#    حتى لو كان التمديد العادي (2 يوم) قد استُهلِك أصلًا من قبل.
+#    حتى لو كان التمديد العادي (2 يوم) قد استُهلِك أصلاً من قبل.
 # ---------------------------------------------------------------------------
 
 
@@ -324,3 +324,76 @@ def test_customer_caused_mail_outage_extends_instead_of_refund(engine, cleanup):
 
     assert result["status"] == "extended"
     assert result["reason"] == "mail_link_broken"
+
+
+# ---------------------------------------------------------------------------
+# 8. تصحيح B5c (docs/reports/B5a-B2b-review.md، القسم 3.2، عيب [major]):
+#    انقطاع بريد يتراكم ≥2 يوم (outage_extension_days) لا يجوز أن يُسقِط
+#    مهلة الأداء الإلزامية (grace_extension_days) — العميل يجب أن يحصل على
+#    مهلة الأداء الفعلية أولاً بعد إصلاح البريد، قبل أي refund_pending.
+# ---------------------------------------------------------------------------
+
+
+def test_mail_outage_extension_does_not_consume_mandatory_grace_period(engine, cleanup):
+    created_customers, created_jobs = cleanup
+    tag = uuid.uuid4().hex[:10]
+    price = 90.0
+    customer_id = _make_customer(engine, price_sar=price, tag=tag)
+    created_customers.append(customer_id)
+    job_id, company_id = _make_job_and_company(engine, tag)
+    created_jobs.append((job_id, company_id))
+
+    now = datetime.now(timezone.utc)
+    starts = now - timedelta(days=35)
+    ends = now - timedelta(hours=1)
+    counted = 300
+    _make_subscription(engine, customer_id, starts_at=starts, ends_at=ends)
+    _insert_applications(engine, customer_id, job_id, sent_count=counted, bounced_count=0, within=starts + timedelta(days=1))
+
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO mail_links (customer_id, address, secret_enc, status, last_error, created_at) "
+                "VALUES (:cid, :addr, 'enc', 'failed', 'auth failed', now())"
+            ),
+            {"cid": customer_id, "addr": f"broken-{tag}@masar.invalid"},
+        )
+
+    # يومان تقييم متتاليان والبريد معطوب طوال الوقت — outage_extension_days
+    # يبلغ 2 (>= GRACE_EXTENSION_DAYS) لكن grace_extension_days يبقى 0 —
+    # هذا بالضبط سيناريو الفشل الذي وثّقته المراجعة (§3.2): لو بقي الكود
+    # يقرأ extension_days الكلي فقط، التقييم التالي بعد إصلاح البريد كان
+    # سيقفز مباشرة لـrefund_pending بلا أي مهلة أداء فعلية.
+    first = guarantee.evaluate_period(customer_id, engine=engine, now=now)
+    assert first["status"] == "extended"
+    assert first["reason"] == "mail_link_broken"
+    assert first["outage_extension_days"] == guarantee.OUTAGE_EXTENSION_DAYS
+    assert first["grace_extension_days"] == 0
+
+    second = guarantee.evaluate_period(customer_id, engine=engine, now=now + timedelta(days=2))
+    assert second["status"] == "extended"
+    assert second["reason"] == "mail_link_broken"
+    assert second["outage_extension_days"] == 2 * guarantee.OUTAGE_EXTENSION_DAYS
+    assert second["grace_extension_days"] == 0
+
+    # البريد يُصلَح الآن — العميل لا يزال قاصرًا بنفس العدّ.
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE mail_links SET status = 'ok' WHERE customer_id = :cid"), {"cid": customer_id})
+
+    # التقييم التالي (بعد إصلاح البريد): يجب أن يحصل أولاً على مهلة الأداء
+    # الفعلية (extended/grace_period_granted) — **ليس** refund_pending رغم
+    # أن outage_extension_days المتراكم (2) كان سيجتاز فحص "extension_days
+    # الكلي >= GRACE_EXTENSION_DAYS" بالكود القديم.
+    third = guarantee.evaluate_period(customer_id, engine=engine, now=now + timedelta(days=20))
+    assert third["status"] == "extended"
+    assert third["reason"] == "grace_period_granted"
+    assert third["grace_extension_days"] == guarantee.GRACE_EXTENSION_DAYS
+    assert third["outage_extension_days"] == 2 * guarantee.OUTAGE_EXTENSION_DAYS
+
+    # التقييم الرابع (بعد استهلاك مهلة الأداء الفعلية أيضًا) — لا يزال
+    # قاصرًا، البريد سليم → تعويض تناسبي أخيرًا.
+    fourth = guarantee.evaluate_period(customer_id, engine=engine, now=now + timedelta(days=25))
+    assert fourth["status"] == "refund_pending"
+    assert fourth["shortfall"] == guarantee.MONTHLY_TARGET - counted
+    expected_refund = round((guarantee.MONTHLY_TARGET - counted) * price / guarantee.MONTHLY_TARGET, 2)
+    assert float(fourth["refund_amount"]) == expected_refund
