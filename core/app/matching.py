@@ -43,7 +43,9 @@ from app.collectors.normalizer import normalize_text
 # مراجعة B2 R12 (مكرّرة هنا عمدًا كنسخة محلية — نفس الاسم بـdiscovery.py
 # وdiscovery_api.py — حتى تبقى matching.py مستقلة بلا استيراد من discovery.py):
 # عائلات مُستبعدة عمدًا من المطابقة إطلاقًا، حتى بتمريرة التوسيع.
-EXCLUDED_FAMILY_NAMES = {"sales_excluded"}
+# مراجعة B2b: taxonomy_local.yaml أعاد تسمية sales_excluded → out_of_scope؛
+# الاسمان معًا هنا للتوافق الرجعي مع أي صفّ قديم لم يُعِد reclassify تصنيفه.
+EXCLUDED_FAMILY_NAMES = {"out_of_scope", "sales_excluded"}
 
 WEIGHTS: dict[str, float] = {
     "title": 0.35,
