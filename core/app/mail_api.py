@@ -30,7 +30,7 @@ logger = logging.getLogger("masar.mail_api")
 
 # main.py يستورد `router` وحده (app.include_router(module.router)) — لذا
 # نجمع هنا راوترين بادئتين مختلفتين (/mail-link و/admin/mail) داخل راوتر
-# واحد بلا بادئة إضافية خاصة به، عبر include_router بلا prefix زائد.
+واحد بلا بادئة إضافية خاصة به، عبر include_router بلا prefix زائد.
 router = APIRouter(dependencies=[Depends(require_admin_token)])
 mail_link_router = APIRouter(prefix="/mail-link", tags=["mail"])
 admin_router = APIRouter(prefix="/admin/mail", tags=["mail-admin"])
@@ -74,11 +74,11 @@ class MailLinkCreateRequest(BaseModel):
     imap_host: str = "imap.gmail.com"
     imap_port: int = 993
     # تصحيح F1 (مراجعة حيّة docs/reports/B3B4-live-review.md، استنتاج عالٍ 1):
-    # تجاوز إداري صريح لاختبار SMTP/IMAP الحيّ — مرفوض كليًا (400) إن لم يكن
+    # تجاوز إداري صريح لاختبار SMTP/IMAP الحيّ — مرفوض كلياً (400) إن لم يكن
     # DRY_RUN فعّالًا (sender.is_dry_run()، أي MAIL_LIVE=true بالبيئة). لا
-    # يُستخدَم أبدًا بمسار الإنتاج الحقيقي: الهدف تمكين اختبار المسار الكامل
+    # يُستخدَم أبداً بمسار الإنتاج الحقيقي: الهدف تمكين اختبار المسار الكامل
     # (send_builder → sender → mailpit) ببيئة لا توفّر IMAP حقيقيًا (mailpit)
-    # ولا حساب Gmail اختباري، بلا التحايل على فحص fail-closed الحقيقي أبدًا
+    # ولا حساب Gmail اختباري، بلا التحايل على فحص fail-closed الحقيقي أبداً
     # حين الإرسال الحي مفعّل فعلاً.
     skip_verify: bool = False
 
@@ -90,10 +90,10 @@ async def create_mail_link(body: MailLinkCreateRequest) -> dict:
     ما يسمح للمستخدم بإعادة المحاولة عبر نفس النقطة بلا تكرار صفوف).
 
     استثناء وحيد: `skip_verify=true` **و** DRY_RUN فعّال معًا (F1) — يتخطّى
-    اختبار SMTP/IMAP الحيّ كليًا ويسجّل status='ok' مباشرة مع
+    اختبار SMTP/IMAP الحيّ كلياً ويسجّل status='ok' مباشرة مع
     verified_via='skipped-dry-run' (علامة صريحة تمنع الالتباس لاحقًا مع
     تحقّق حقيقي ناجح). `skip_verify=true` بمعزل عن DRY_RUN (أي MAIL_LIVE=true)
-    يُرفَض بـ400 فورًا — لا مسار يتجاوز التحقق الحيّ بوضع الإنتاج الحقيقي."""
+    يُرفَض بـ400 فورًا — لا مسار يتجاوز التحقق الحي بوضع الإنتاج الحقيقي."""
     if body.skip_verify and not sender.is_dry_run():
         raise HTTPException(
             status_code=400,
@@ -161,6 +161,20 @@ async def create_mail_link(body: MailLinkCreateRequest) -> dict:
             },
         ).first()
 
+        # B5c: customers.email_service أصبح NULLable (ترحيل 0010 — onboarding
+        # عبر تيليجرام ينشئ العميل قبل ربط بريد فعلي). عند نجاح الربط هنا
+        # نملؤه بالعنوان الموثّق فعليًا — COALESCE يحمي أي قيمة موجودة أصلًا
+        # (عملاء أُنشئوا بمسار قديم يحدّد email_service وقت الإنشاء) من
+        # الاستبدال بلا داعٍ.
+        if status == "ok":
+            conn.execute(
+                text(
+                    "UPDATE customers SET email_service = COALESCE(email_service, :addr), updated_at = now() "
+                    "WHERE id = :cid"
+                ),
+                {"addr": body.address, "cid": body.customer_id},
+            )
+
     return {"ok": error is None, "mail_link_id": row[0], "status": status, "error": error, "verified_via": verified_via}
 
 
@@ -174,7 +188,7 @@ async def delete_mail_link(customer_id: int) -> dict:
 
 @mail_link_router.get("/{customer_id}")
 async def get_mail_link(customer_id: int) -> dict:
-    """يُرجع حالة الربط فقط — لا secret_enc إطلاقاً بأي استجابة."""
+    """يُرجع حالة الربط فقط — لا secret_enc إطلاقًا بأي استجابة."""
     engine = get_engine()
     with engine.connect() as conn:
         row = conn.execute(
@@ -269,10 +283,16 @@ class LoadTestRequest(BaseModel):
 async def load_test(body: LoadTestRequest) -> dict:
     """يبني صفوف send_queue اصطناعية (synthetic=true) لقياس معدّل التصريف
     (drain rate) دون المرور بأي منطق تخطيط/مطابقة حقيقي ودون أي أثر جانبي
-    حقيقي (applications/company_cooldowns/ledger مُستبعدة صراحًة لصفوف
+    حقيقي (applications/company_cooldowns/ledger مُستبعَدة صراحًة لصفوف
     synthetic بمنطق sender._mark_success). عملاء الاختبار حقيقيون بقاعدة
-    البيانات (قيد FK يتطلب ذلك) لكن بحالة 'paused' (مُستبعدون تلقائياً من
-    أي معالجة حقيقية بـplanner.py/send_builder.py التي تفلتر status='active')."""
+    البيانات (قيد FK يتطلب ذلك) لكن بحالة 'paused' (مُستبعدون تلقائيًا من
+    أي معالجة حقيقية بـplanner.py/send_builder.py التي تفلتر status='active').
+
+    B5c: uq_customers_email_service_not_null (ترحيل 0010) فهرس فريد **جزئي**
+    (WHERE email_service IS NOT NULL) بدل قيد UNIQUE عادي — Postgres يتطلّب
+    تكرار نفس الشرط بجملة ON CONFLICT لمطابقة استدلال الفهرس الجزئي، لذا
+    `ON CONFLICT (email_service) WHERE email_service IS NOT NULL` أدناه (لا
+    فرق عملي هنا: email_service يُمرّر دومًا غير NULL بهذه الدالة)."""
     batch_tag = uuid.uuid4().hex[:8]
     engine = get_engine()
 
@@ -284,7 +304,8 @@ async def load_test(body: LoadTestRequest) -> dict:
                     """
                     INSERT INTO customers (name, email_service, status, cities, families, target_daily)
                     VALUES (:name, :email, 'paused', '[]', '[]', :target)
-                    ON CONFLICT (email_service) DO UPDATE SET name = EXCLUDED.name
+                    ON CONFLICT (email_service) WHERE email_service IS NOT NULL
+                        DO UPDATE SET name = EXCLUDED.name
                     RETURNING id
                     """
                 ),
@@ -297,8 +318,8 @@ async def load_test(body: LoadTestRequest) -> dict:
             customer_ids.append(row[0])
 
         # سيرة اصطناعية واحدة يُعاد استخدامها لكل صف (بلا Gotenberg —
-        # ملف PDF placeholder بسيط، الهدف قياس معدّل تصريف الطابور لا بناء
-        # سير فعلية لكل صف اختبار).
+        # ملف PDF placeholder بسيط، الهدف قياس معدّل تصريف الطابور لا بناء سير
+        # فعلية لكل صف اختبار).
         placeholder_dir = os.environ.get("CV_DATA_DIR", "/data/cv") + "/_loadtest"
         os.makedirs(placeholder_dir, exist_ok=True)
         placeholder_pdf = os.path.join(placeholder_dir, "placeholder.pdf")
