@@ -62,6 +62,59 @@ chmod 1777 "$OPS_DIR" "$Q" "$R" "$S" "$F" 2>/dev/null || true
 mkdir -p "$(dirname "$LOCK_FILE")" 2>/dev/null || true
 mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 
+# --- (٨) ضامن ما قبل الـ commit: انكسر الإنتاج مرتين لأن سطر تعليق فقد
+# علامة "# " من أوله فتحوّل إلى كود بايثون غير صالح، ووصل ذلك مباشرة إلى
+# main عبر أمر "commit" دون أي فحص. نكتب هنا سكربتَي فحص بايثون صغيرين
+# (يُستدعيان من داخل أمر commit أدناه، قبل git add مباشرة، لكل ملف .py
+# و.yaml/.yml مُرحَّل) بدل تضمين كود بايثون داخل سلسلة bash -c ذات
+# الاقتباس الأحادي (تعارض في علامات الاقتباس). فحص .py عبر ast.parse فقط
+# (بدون كتابة .pyc)، وفحص YAML عبر PyYAML إن كانت مثبّتة على المضيف فقط
+# (نتجاهل الفحص بصمت إن لم تكن مثبّتة).
+cat >"$OPS_DIR/.masar_py_syntax_check.py" <<'PYEOF'
+import ast
+import sys
+
+path = sys.argv[1]
+try:
+    with open(path, encoding="utf-8") as fh:
+        src = fh.read()
+except OSError as e:
+    print(str(e))
+    sys.exit(1)
+
+try:
+    ast.parse(src, filename=path)
+except SyntaxError as e:
+    print("%s (line %s)" % (e.msg, e.lineno))
+    sys.exit(1)
+except Exception as e:
+    print(str(e))
+    sys.exit(1)
+
+sys.exit(0)
+PYEOF
+
+cat >"$OPS_DIR/.masar_yaml_check.py" <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+try:
+    import yaml
+except ImportError:
+    # PyYAML غير مثبّتة على المضيف — نتجاهل الفحص بصمت (لا رفض).
+    sys.exit(0)
+
+try:
+    with open(path, encoding="utf-8") as fh:
+        yaml.safe_load(fh)
+except Exception as e:
+    print(str(e))
+    sys.exit(1)
+
+sys.exit(0)
+PYEOF
+chmod 0644 "$OPS_DIR/.masar_py_syntax_check.py" "$OPS_DIR/.masar_yaml_check.py" 2>/dev/null || true
+
 cd "$APP_DIR" || exit 0
 
 # --- (1) قفل عام: لا يعمل أكثر من نسخة واحدة من هذا السكربت في نفس اللحظة ---
@@ -513,10 +566,83 @@ PYEOF
 
               cd "$APP_DIR" || exit 4
 
+              existed_before=()
+              for rel in "${rel_paths[@]}"; do
+                if [ -e "$APP_DIR/$rel" ]; then
+                  existed_before+=("$rel")
+                fi
+              done
+
               for rel in "${rel_paths[@]}"; do
                 mkdir -p "$APP_DIR/$(dirname "$rel")"
                 cp "$STAGE/$rel" "$APP_DIR/$rel"
               done
+
+              # --- (٨) ضامن قبل git add: نرفض أي ملف غير صالح نحويًا قبل
+              # أن يصل commit + push، بدل اكتشافه بعد وصوله إلى الإنتاج
+              # (حدث مرتين بسبب سطر تعليق فقد "# " من أوله). عند أول فشل
+              # نطبع سبب الرفض، ونُعيد الملفات المُلمَسة إلى حالتها قبل
+              # النسخ (checkout لما كان موجودًا، وحذف ما كان جديدًا كليًا)،
+              # ثم exit 5 — فلا يتم أي git add ولا commit إطلاقًا.
+              reject_msg=""
+              for rel in "${rel_paths[@]}"; do
+                case "$rel" in
+                  *.py)
+                    check_out=$(python3 "$OPS_DIR/.masar_py_syntax_check.py" "$APP_DIR/$rel" 2>&1)
+                    if [ $? -ne 0 ]; then
+                      reject_msg="rejected: syntax error in $rel: $check_out"
+                      break
+                    fi
+                    ;;
+                esac
+              done
+
+              if [ -z "$reject_msg" ]; then
+                for rel in "${rel_paths[@]}"; do
+                  if [ "$rel" = "docker-compose.yml" ]; then
+                    check_out=$(docker compose -f "$APP_DIR/docker-compose.yml" config -q 2>&1)
+                    if [ $? -ne 0 ]; then
+                      reject_msg="rejected: invalid docker-compose.yml: $check_out"
+                    fi
+                    break
+                  fi
+                done
+              fi
+
+              if [ -z "$reject_msg" ] && python3 -c "import yaml" >/dev/null 2>&1; then
+                for rel in "${rel_paths[@]}"; do
+                  case "$rel" in
+                    data/*.yaml|data/*.yml)
+                      check_out=$(python3 "$OPS_DIR/.masar_yaml_check.py" "$APP_DIR/$rel" 2>&1)
+                      if [ $? -ne 0 ]; then
+                        reject_msg="rejected: invalid yaml in $rel: $check_out"
+                        break
+                      fi
+                      ;;
+                  esac
+                done
+              fi
+
+              if [ -n "$reject_msg" ]; then
+                echo "$reject_msg"
+                for rel in "${rel_paths[@]}"; do
+                  git checkout -- "$rel" 2>/dev/null
+                done
+                for rel in "${rel_paths[@]}"; do
+                  was_old=0
+                  for old in "${existed_before[@]}"; do
+                    if [ "$old" = "$rel" ]; then
+                      was_old=1
+                      break
+                    fi
+                  done
+                  if [ "$was_old" -eq 0 ]; then
+                    git clean -f -- "$rel" 2>/dev/null
+                  fi
+                done
+                exit 5
+              fi
+
               for rel in "${rel_paths[@]}"; do
                 git add -A -- "$rel"
               done
