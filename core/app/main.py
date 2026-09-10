@@ -6,17 +6,31 @@ discovery_api.py (نقاط /admin/sources, /admin/stats, /admin/discovery/*,
 /admin/quality-sample) — انظر core/app/discovery.py للمنطق الكامل.
 
 B3 (المرحلة 3): وحدة العملاء/الملف الشخصي/المحفظة/المطابقة/الخطة عبر
-customers_api.py (core/app/matching.py + core/app/planner.py للمنطق).
+customers_api.py (core/app/matching.py + core/app/planner.py للمنطق الكامل).
 
 الوحدات الأخرى (sending, inbox — B4) تُبنى بالتوازي على فروع/ملفات منفصلة
 (core/app/mail_api.py، core/app/inbox_api.py، core/app/mail*، core/app/collectors/
-اللاحقة) ولا تُلمَس من هنا؛ تُضمَّن أدناه بـimport محروس (try/except) حتى
+اللاحقة) ولا تُلمَس من هنا؛ تُضمّن أدناه بـimport محروس (try/except) حتى
 يستطيع منفّذ B4 دفع ملفاته لاحقًا بلا الحاجة لتعديل main.py نفسه إطلاقًا —
 غياب الملفات الآن أمر متوقّع وطبيعي (لا يعطّل main.py: كل مسار غير موجود
 يُتخطّى بصمت بالسجلّ فقط).
 
 B1b: أُضيف جسر MCP (app/mcp_bridge.py) — يجعل جلسات Claude مستقلة عن n8n
 Cloud لعمليات القراءة/الكتابة بالمستودع وتشغيل أوامر المضيف.
+
+B8: إزالة n8n نهائيًا من تفاعل تيليجرام بالكامل (تيّاران دُمجا هنا):
+    - الشقّ الوارد: app/telegram_api.py (راوتر POST /telegram/webhook/{token})
+      يستبدل بالكامل تدفّقات n8n القديمة لبوت العملاء "مسار" وبوت الأدمن
+      الخاص (app/telegram_onboarding.py وapp/telegram_admin.py على
+      التوالي، فوق app/telegram_client.py). مُدرج ضمن حلقة الاستيراد
+      المحروسة أدناه (نفس بقية وحدات B4+) لأنه يعتمد على app.reports_api/
+      overview_api/guarantee_api/link_api/feedback_api التي قد لا تكون
+      موجودة بعد بأي فرع مبكر — غيابه الآن ImportError متوقع، يُسجّل
+      معلوماتيًا فقط.
+    - الشقّ الصادر: app/telegram_notify_admin.py.notify_admin — تنبيه أحمد
+      فورًا عبر تيليجرام مباشرة عند فشل تحميل أي راوتر بخطأ غير متوقّع عند
+      الإقلاع (بديل مباشر لجسر core-notify-admin بـn8n، راجع تعليق الحلقة
+      أدناه — سيناريو "B4 hotfix" الموثّق).
 """
 import logging
 import os
@@ -30,6 +44,7 @@ from app.customers_api import router as customers_router
 from app.discovery_api import router as discovery_router
 from app.mcp_bridge import router as mcp_router
 from app.ops import router as ops_router
+from app.telegram_notify_admin import notify_admin
 
 logger = logging.getLogger("masar.main")
 
@@ -66,6 +81,7 @@ for mod_name in (
     "app.link_api",
     "app.send_stats_api",
     "app.catalog",
+    "app.telegram_api",
 ):
     try:
         module = __import__(mod_name, fromlist=["router"])
@@ -75,6 +91,14 @@ for mod_name in (
         logger.info("راوتر %s غير موجود بعد (متوقّع قبل اكتمال B4) — تخطّي", mod_name)
     except Exception:  # noqa: BLE001 — أي عطل آخر (SyntaxError إلخ) يجب ألا يُسقط main.py
         logger.exception("تعذّر تحميل راوتر %s بخطأ غير متوقع (غير ImportError) — تخطّي وإبقاء بقية الخدمة حية", mod_name)
+        # B8 (إزالة n8n): تنبيه أحمد فورًا عبر تيليجرام مباشرة — بديل مباشر
+        # لما كان يُفترض أن يمرّ عبر جسر core-notify-admin (n8n)، ونفس
+        # سيناريو "B4 hotfix" الموثّق أعلى هذا الملف حرفيًا (SyntaxError
+        # بوحدة B4 كاد يُسقط main.py بالكامل قبل تعديل except إلى Exception).
+        # notify_admin دالة best-effort لا ترفع استثناءً أبدًا مهما فشل
+        # الإرسال نفسه (توكن غير معرّف، شبكة إلخ) — لا خطر إضافي على إقلاع
+        # الخدمة حتى لو تيليجرام نفسه غير متاح الآن.
+        notify_admin(f"🚨 فشل تحميل راوتر {mod_name} بخطأ غير متوقع عند إقلاع masar-core — راجع السجلّ فورًا.")
 
 
 class HealthResponse(BaseModel):
