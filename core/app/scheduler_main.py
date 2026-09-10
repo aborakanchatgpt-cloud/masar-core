@@ -82,7 +82,11 @@ def run_sender_tick_job() -> None:
 
 
 def run_inbox_round_job() -> None:
-    """B4: قراءة الوارد — بلا قيد نافذة (الارتدادات/ردود الشركات تصل بأي وقت)."""
+    """B4: قراءة الوارد — بلا قيد نافذة (الارتدادات/ردود الشركات تصل بأي وقت).
+    B6: `run_inbox_round()` بلا partition_index صريح يحسب القسم الحالي
+    تلقائيًا من الوقت (`inbox.current_partition`) — يجب أن يبقى `INBOX_TICK_SECONDS`
+    بـinbox.py (900 ثانية) مطابقًا لفاصل IntervalTrigger أدناه (15 دقيقة)
+    حتى تدور الأقسام تباعًا بلا تخطٍّ."""
     try:
         result = inbox.run_inbox_round()
         logger.info("نتيجة جولة الوارد: %s", result)

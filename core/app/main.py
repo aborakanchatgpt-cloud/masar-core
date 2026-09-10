@@ -64,6 +64,8 @@ for mod_name in (
     "app.guarantee_api",
     "app.overview_api",
     "app.link_api",
+    "app.send_stats_api",
+    "app.catalog",
 ):
     try:
         module = __import__(mod_name, fromlist=["router"])

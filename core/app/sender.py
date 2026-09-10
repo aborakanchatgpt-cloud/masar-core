@@ -27,6 +27,9 @@ from __future__ import annotations
 import logging
 import os
 import smtplib
+import threading
+import time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
@@ -42,13 +45,166 @@ from app.discovery import get_engine
 logger = logging.getLogger("masar.sender")
 
 CLAIM_BATCH_LIMIT_DEFAULT = 200
-SEND_WORKERS = 20
+
+
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _float_env(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# B6 (تصليب الحمل، docs/reports/B6-executor.md): كل ثوابت التزامن/الوتيرة
+# التالية أصبحت قابلة للضبط عبر متغيّرات بيئة (القيم الافتراضية = نفس القيم
+# الثابتة القديمة، بلا تغيير سلوك بلا env صريح) — تُضبَط فعليًا فقط لاختبار
+# التحميل المحلي (scripts/load_test_send.py) وربما لاحقًا على الخادم إن
+# احتاج ضبطًا دقيقًا لحجم أكبر من 1,500 عميل.
+SEND_WORKERS = _int_env("SEND_WORKERS", 20)
 LOCK_DURATION_MINUTES = 5
 SMTP_TIMEOUT_SECONDS = 15
 # تراجع بسيط بين المحاولات: محاولة 1 فشلت → أعد بعد 1 دقيقة؛ محاولة 2 فشلت
-# → أعد بعد 5 دقائق؛ محاولة 3 فشلت → فشل نهائي (MAX_ATTEMPTS) + استرداد رصيد.
+# → أعد بعد 5 دقائق؛ محاولة 3 فشلت → فشل نهائي (MAX_ATTEMPTS، "dead-letter":
+# الصفّ يبقى بحالة 'failed' نهائيًا، يظهر بعدّاد "failures by class" على
+# /admin/send/stats، ولا يُعاد التقاطه أبدًا من _claim_due_batch لاحقًا).
 BACKOFF_MINUTES = {1: 1, 2: 5}
-MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = _int_env("SEND_MAX_ATTEMPTS", 3)
+
+# حدّ إرسال Gmail: ≤ 1 رسالة/6 ثوانٍ لكل صندوق (الدليل: تسخين 6/12/16/22 +
+# نافذة إرسال بطيئة أصلًا 8-15 دقيقة/رسالة لكل عميل بوضع الإنتاج الطبيعي —
+# لكن *استرداد* Backlog متراكم [عميل عاد بعد انقطاع، أو اختبار تحميل] قد
+# يُطالِب بعدة صفوف لنفس العميل بنفس الدفعة؛ هذا الحارس يمنع إرسالين لنفس
+# صندوق البريد أقرب من MAILBOX_MIN_INTERVAL_SECONDS مهما كانت حالة الطابور).
+MAILBOX_MIN_INTERVAL_SECONDS = _float_env("SEND_MAILBOX_MIN_INTERVAL_SECONDS", 6.0)
+
+# سقف عام (كل الصناديق معًا) رسائل/ثانية — يحمي Postgres/SMTP sink (mailpit
+# أو محلي) من انفجار تزامن ThreadPoolExecutor (حتى SEND_WORKERS خيطًا) عند
+# استرداد طابور متراكم ضخم (اختبار التحميل: 25,500 صفّ). القيمة الافتراضية
+# سخية عمدًا (أعلى بكثير من معدّل الإنتاج الطبيعي ~0.03 رسالة/ثانية لكل
+# عميل×1500) — الهدف حماية الموارد المشتركة (2 vCPU) لا تقييد وتيرة العميل
+# الفعلية (تلك محكومة أصلًا بـpacing.py/send_builder.py وقت البناء).
+GLOBAL_RATE_PER_SECOND = _float_env("SEND_GLOBAL_RATE_PER_SECOND", 20.0)
+GLOBAL_RATE_BURST = _float_env("SEND_GLOBAL_RATE_BURST", GLOBAL_RATE_PER_SECOND * 2)
+
+
+# ---------------------------------------------------------------------------
+# B6 — مقاييس زمن التشغيل (in-process، تُصفَّر عند إعادة تشغيل العملية) +
+# محدِّدا الوتيرة (per-mailbox + عام). كل هذا داخل عملية واحدة فقط (لا يُشارَك
+# بين core وcore-scheduler ولا بين خيوط عمليات مختلفة) — كافٍ لأن الإرسال
+# الفعلي كله يحدث داخل core-scheduler وحدها (send_tick يُستدعى من هناك، أو
+# يدويًا من /admin/mail/send-now على core نفسها للاختبار فقط).
+# ---------------------------------------------------------------------------
+
+_metrics_lock = threading.Lock()
+_metrics: dict = {
+    "sent_total": 0,
+    "failed_total": 0,
+    "mailbox_rate_limit_hits": 0,
+    "failures_by_class": defaultdict(int),
+}
+
+_mailbox_lock = threading.Lock()
+_mailbox_last_sent_monotonic: dict[int, float] = {}
+
+_global_rate_lock = threading.Lock()
+_global_rate_tokens = GLOBAL_RATE_BURST
+_global_rate_last_check = time.monotonic()
+
+
+def _classify_error(error_text: str) -> str:
+    """تصنيف تقريبي بسيط لرسالة خطأ SMTP لعدّاد "failures by class" —
+    مطابقة كلمات مفتاحية شائعة على اسم الاستثناء/الرسالة، لا تحليل عميق."""
+    low = (error_text or "").lower()
+    if "authenticationerror" in low or "auth" in low or "535" in low:
+        return "auth"
+    if "timeout" in low or "timed out" in low:
+        return "timeout"
+    if "recipientsrefused" in low or "recipient" in low:
+        return "recipient_refused"
+    if "connection" in low or "refused" in low or "reset" in low:
+        return "connection"
+    if "لا يوجد صندوق بريد صالح" in error_text or "mail_link" in low:
+        return "no_mailbox"
+    return "other"
+
+
+def get_runtime_metrics() -> dict:
+    """لقطة عدّادات هذه العملية منذ آخر إقلاع — تُستهلَك من
+    core/app/send_stats_api.py (`GET /admin/send/stats`)."""
+    with _metrics_lock:
+        return {
+            "sent_total": _metrics["sent_total"],
+            "failed_total": _metrics["failed_total"],
+            "mailbox_rate_limit_hits": _metrics["mailbox_rate_limit_hits"],
+            "failures_by_class": dict(_metrics["failures_by_class"]),
+        }
+
+
+def _record_sent() -> None:
+    with _metrics_lock:
+        _metrics["sent_total"] += 1
+
+
+def _record_failed(error_text: str) -> None:
+    with _metrics_lock:
+        _metrics["failed_total"] += 1
+        _metrics["failures_by_class"][_classify_error(error_text)] += 1
+
+
+def _throttle_mailbox(customer_id: int) -> bool:
+    """يمنع إرسالين لنفس صندوق البريد (customer_id) أقرب من
+    MAILBOX_MIN_INTERVAL_SECONDS — يحجز الفتحة الزمنية تفاؤليًا تحت القفل
+    (لا سباق بين خيطين يطالَبان بصفّين لنفس العميل بنفس الدفعة)، ثم ينام
+    خارج القفل. يرجع True إن حدث انتظار فعلي (لعدّاد mailbox_rate_limit_hits)."""
+    if MAILBOX_MIN_INTERVAL_SECONDS <= 0:
+        return False
+    with _mailbox_lock:
+        now = time.monotonic()
+        last_reserved = _mailbox_last_sent_monotonic.get(customer_id)
+        # الفتحة المحجوزة لهذا الإرسال = آخر فتحة محجوزة لنفس العميل (إن كانت
+        # بالمستقبل) وإلا الآن — يحجزها فورًا تحت القفل (لا سباق بين خيطين).
+        reserved_slot = last_reserved if (last_reserved is not None and last_reserved > now) else now
+        wait = max(0.0, reserved_slot - now)
+        _mailbox_last_sent_monotonic[customer_id] = reserved_slot + MAILBOX_MIN_INTERVAL_SECONDS
+    if wait > 0:
+        time.sleep(wait)
+        with _metrics_lock:
+            _metrics["mailbox_rate_limit_hits"] += 1
+        return True
+    return False
+
+
+def _throttle_global() -> None:
+    """محدِّد وتيرة عام (token bucket) عبر كل الصناديق معًا — GLOBAL_RATE_PER_SECOND
+    رمز/ثانية بسقف احتياطي (burst) GLOBAL_RATE_BURST."""
+    if GLOBAL_RATE_PER_SECOND <= 0:
+        return
+    global _global_rate_tokens, _global_rate_last_check
+    while True:
+        with _global_rate_lock:
+            now = time.monotonic()
+            elapsed = now - _global_rate_last_check
+            _global_rate_last_check = now
+            _global_rate_tokens = min(
+                GLOBAL_RATE_BURST, _global_rate_tokens + elapsed * GLOBAL_RATE_PER_SECOND
+            )
+            if _global_rate_tokens >= 1.0:
+                _global_rate_tokens -= 1.0
+                return
+            sleep_for = (1.0 - _global_rate_tokens) / GLOBAL_RATE_PER_SECOND
+        time.sleep(min(sleep_for, 0.5))
 
 
 def is_dry_run() -> bool:
@@ -269,7 +425,8 @@ def _mark_already_sent(conn, row: dict, message_id: str) -> None:
     conn.execute(
         text(
             """
-            UPDATE send_queue SET status = 'sent', message_id = :mid, locked_until = NULL, error = NULL
+            UPDATE send_queue SET status = 'sent', message_id = :mid, locked_until = NULL, error = NULL,
+                completed_at = now()
             WHERE id = :id
             """
         ),
@@ -283,10 +440,14 @@ def _mark_already_sent(conn, row: dict, message_id: str) -> None:
 
 
 def _mark_success(conn, row: dict, message_id: str) -> None:
+    # B6: completed_at (ترحيل 0011) يُغذّي مقاييس "أُرسل/دقيقة" و"عمر أقدم
+    # صفّ" على /admin/send/stats — يشمل صفوف synthetic (اختبار التحميل) التي
+    # لا تصل أبدًا لجدول applications (راجع `if row.get("synthetic"): return` أدناه).
     conn.execute(
         text(
             """
-            UPDATE send_queue SET status = 'sent', message_id = :mid, locked_until = NULL, error = NULL
+            UPDATE send_queue SET status = 'sent', message_id = :mid, locked_until = NULL, error = NULL,
+                completed_at = now()
             WHERE id = :id
             """
         ),
@@ -342,7 +503,8 @@ def _mark_failure(conn, row: dict, error_text: str) -> None:
         conn.execute(
             text(
                 """
-                UPDATE send_queue SET status = 'failed', attempts = :attempts, error = :err, locked_until = NULL
+                UPDATE send_queue SET status = 'failed', attempts = :attempts, error = :err, locked_until = NULL,
+                    completed_at = now()
                 WHERE id = :id
                 """
             ),
@@ -418,8 +580,10 @@ def _process_row(engine: Engine, row: dict) -> bool:
 
     transport = resolve_transport(row["customer_id"], mail_link)
     if transport is None:
+        error_text = "لا يوجد صندوق بريد صالح لهذا العميل (mail_link غير موجود/غير موثّق)"
         with engine.begin() as conn:
-            _mark_failure(conn, row, "لا يوجد صندوق بريد صالح لهذا العميل (mail_link غير موجود/غير موثّق)")
+            _mark_failure(conn, row, error_text)
+        _record_failed(error_text)
         return False
 
     try:
@@ -429,6 +593,7 @@ def _process_row(engine: Engine, row: dict) -> bool:
     except ValueError as exc:
         with engine.begin() as conn:
             _mark_failure(conn, row, str(exc))
+        _record_failed(str(exc))
         return False
 
     # CC العميل دومًا (الدليل: "CC للعميل على كل تقديم") — بصرف النظر عن
@@ -448,17 +613,66 @@ def _process_row(engine: Engine, row: dict) -> bool:
     if "Message-ID" not in msg:
         msg["Message-ID"] = message_id
 
+    # B6 — بند 4 (تصليب الحمل): سقف عام (كل الصناديق) ثم سقف لكل صندوق
+    # (≤1 رسالة/MAILBOX_MIN_INTERVAL_SECONDS ثوانٍ) — بهذا الترتيب تحديدًا،
+    # قبل اتصال SMTP الفعلي مباشرة (لا قبل بناء الرسالة، حتى لا يُهدَر وقت
+    # انتظار على صفّ سيفشل أصلًا بفحوصات transport/recipient أعلاه).
+    _throttle_global()
+    _throttle_mailbox(row["customer_id"])
+
     try:
         _smtp_send(transport, msg, recipients)
     except Exception as exc:  # noqa: BLE001 — أي خطأ SMTP يُعامَل كفشل قابل لإعادة المحاولة
         logger.warning("فشل إرسال send_queue #%s: %s", row["id"], exc)
         with engine.begin() as conn:
             _mark_failure(conn, row, str(exc))
+        _record_failed(str(exc))
         return False
 
     with engine.begin() as conn:
         _mark_success(conn, row, message_id)
+    _record_sent()
     return True
+
+
+def get_queue_stats(engine: Engine | None = None) -> dict:
+    """B6 — إحصاءات طابور الإرسال من قاعدة البيانات (لا تعتمد على عدّادات
+    in-process فتبقى صحيحة عبر إعادة تشغيل العملية أو عدة عمليات): عمق
+    الطابور بكل حالة، عمر أقدم صفّ مستحق لم يُعالَج بعد، وعدد المُرسَل
+    بآخر 60/300 ثانية (باستخدام send_queue.completed_at، ترحيل 0011 —
+    يشمل صفوف synthetic اختبار التحميل)."""
+    engine = engine or get_engine()
+    with engine.connect() as conn:
+        by_status = conn.execute(
+            text("SELECT status, count(*) FROM send_queue GROUP BY status")
+        ).all()
+        oldest_due = conn.execute(
+            text(
+                "SELECT min(send_after) FROM send_queue WHERE status = 'queued' AND send_after <= now()"
+            )
+        ).scalar()
+        sent_last_60s = conn.execute(
+            text(
+                "SELECT count(*) FROM send_queue WHERE status = 'sent' AND completed_at >= now() - interval '60 seconds'"
+            )
+        ).scalar()
+        sent_last_5min = conn.execute(
+            text(
+                "SELECT count(*) FROM send_queue WHERE status = 'sent' AND completed_at >= now() - interval '5 minutes'"
+            )
+        ).scalar()
+
+    now = datetime.now(timezone.utc)
+    oldest_due_age_seconds = None
+    if oldest_due is not None:
+        oldest_due_age_seconds = round((now - oldest_due).total_seconds(), 1)
+
+    return {
+        "by_status": {r[0]: r[1] for r in by_status},
+        "oldest_due_age_seconds": oldest_due_age_seconds,
+        "sent_last_60s": int(sent_last_60s or 0),
+        "sent_per_min_last_5min": round((sent_last_5min or 0) / 5.0, 2),
+    }
 
 
 def send_tick(*, limit: int = CLAIM_BATCH_LIMIT_DEFAULT, ignore_window: bool = False, engine: Engine | None = None) -> dict:
