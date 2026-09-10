@@ -89,7 +89,7 @@ SENIORITY_UNDER_DISQUALIFY_DIFF = 3
 
 # مرادفات مختصرات شائعة بمسميات الوظائف (طبقة معجم خفيفة، بديل مؤقت لمعجم
 # ESCO الذي لم يُحمّل بعد بالمستودع — data/esco/*.csv غير موجود حتى تاريخ
-B3). كل مجموعة تُعامَل كمترادفات متبادلة عند توسيع التوكنات لحساب Jaccard.
+# B3). كل مجموعة تُعامَل كمترادفات متبادلة عند توسيع التوكنات لحساب Jaccard.
 TITLE_SYNONYM_GROUPS: list[set[str]] = [
     {"qa", "quality", "assurance"},
     {"qc", "quality", "control"},
