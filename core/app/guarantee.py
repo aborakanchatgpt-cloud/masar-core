@@ -52,6 +52,7 @@ from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
 from app.discovery import get_engine
+from app.telegram_notify_admin import notify_admin
 
 logger = logging.getLogger("masar.guarantee")
 
@@ -313,6 +314,22 @@ def run_guarantee_round(engine: Engine | None = None, now: datetime | None = Non
             evaluated += 1
             status = result.get("status", "unknown")
             by_status[status] = by_status.get(status, 0) + 1
+            if status == "refund_pending":
+                # B8 (إزالة n8n): تنبيه أحمد مباشرة عبر تيليجرام — تعويض
+                # ضمان معلّق يحتاج اعتماده اليدوي دومًا (لا تحويل تلقائي
+                # أبدًا، راجع توثيق أعلى الملف). subscriptions.status يصبح
+                # 'closed' فورًا بنفس الفرع (راجع أعلاه) فهذا الشرط يتحقق
+                # مرة واحدة بالضبط لكل فترة (لا تنبيه مكرر بتشغيلات لاحقة —
+                # run_guarantee_round لا يعيد التقاط اشتراك closed أصلًا).
+                # notify_admin دالة best-effort لا ترفع استثناءً أبدًا (راجع
+                # توثيقها بـtelegram_notify_admin.py) — لا خطر إضافي هنا.
+                notify_admin(
+                    "💰 تعويض ضمان معلّق يحتاج اعتمادك:\n\n"
+                    f"العميل: {result.get('customer_id')}\n"
+                    f"العجز: {result.get('shortfall')} تقديمًا\n"
+                    f"المبلغ المقترح: {result.get('refund_amount')} ريال\n\n"
+                    f"اعتمد عبر POST /admin/guarantee/{result.get('id')}/settle بعد التحويل اليدوي."
+                )
         except Exception:  # noqa: BLE001 — عزل خطأ عميل واحد عن بقية الدورة
             logger.exception("فشل تقييم فترة الضمان للعميل %s", customer_id)
             errors += 1

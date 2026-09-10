@@ -35,22 +35,13 @@ async def pending_reports(
     after_id: int = Query(default=0, ge=0),
 ) -> dict:
     """مُصَفّحة بمؤشّر (cursor) بسيط على id (ix_daily_reports_status +
-    ترتيب id يخدم صفحة تالية بلا OFFSET مكلف عند نمو الجدول)."""
-    engine = get_engine()
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT id, customer_id, report_date, payload, status, channel, created_at, delivered_at
-                FROM daily_reports
-                WHERE status = 'queued' AND id > :after_id
-                ORDER BY id
-                LIMIT :limit
-                """
-            ),
-            {"after_id": after_id, "limit": limit},
-        ).mappings().all()
-    items = [dict(r) for r in rows]
+    ترتيب id يخدم صفحة تالية بلا OFFSET مكلف عند نمو الجدول).
+
+    B8 (إزالة n8n): المنطق الفعلي انتقل لـreports.fetch_pending_reports —
+    دالة بايثون خالصة يستدعيها أيضًا core/app/reports_relay.py مباشرة (بلا
+    طلب HTTP داخلي) بعد إزالة n8n بالكامل؛ هذه النقطة تبقى غلافًا رقيقًا
+    فقط لأي مستدعٍ خارجي (لوحة أدمن مستقبلية مثلًا)."""
+    items = reports.fetch_pending_reports(get_engine(), limit=limit, after_id=after_id)
     next_after_id = items[-1]["id"] if len(items) == limit else None
     return {"items": items, "count": len(items), "next_after_id": next_after_id}
 
@@ -61,21 +52,12 @@ class ReportDeliveredRequest(BaseModel):
 
 @admin_router.post("/{report_id}/delivered")
 async def mark_delivered(report_id: int, body: ReportDeliveredRequest) -> dict:
-    engine = get_engine()
-    with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                """
-                UPDATE daily_reports SET status = 'delivered', delivered_at = now(), channel = :channel
-                WHERE id = :id
-                RETURNING id, status
-                """
-            ),
-            {"id": report_id, "channel": body.channel},
-        ).first()
-    if not row:
+    """B8 (إزالة n8n): نفس ملاحظة pending_reports أعلاه — المنطق الفعلي
+    انتقل لـreports.mark_report_delivered."""
+    result = reports.mark_report_delivered(get_engine(), report_id, body.channel)
+    if not result:
         raise HTTPException(status_code=404, detail="تقرير غير موجود")
-    return {"ok": True, "id": report_id, "status": row[1]}
+    return {"ok": True, **result}
 
 
 class RunReportsRequest(BaseModel):

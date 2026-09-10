@@ -391,3 +391,63 @@ def run_reports_round(report_date: date | None = None, engine: Engine | None = N
     }
     logger.info("جولة التقارير اليومية انتهت: %s", result)
     return result
+
+
+# ---------------------------------------------------------------------------
+# B8 (إزالة n8n بالكامل — الدليل: قرار أحمد النهائي): كانت
+# n8n/workflows/masar_daily_report_relay.json تستدعي GET /admin/reports/pending
+# وPOST /admin/reports/{id}/delivered بـreports_api.py عبر HTTP خارجي. بعد
+# الإزالة، core/app/reports_relay.py يُشغَّل **داخل نفس عملية core-scheduler**
+# فلا حاجة لأي طلب HTTP داخلي — الدالتان أدناه هما نفس منطق نقطتي reports_api.py
+# حرفيًا، مستخرَجتان كدوال بايثون خالصة يستدعيها reports_relay.py مباشرة
+# (ويستدعيهما reports_api.py نفسه أيضًا الآن كغلاف رقيق — لا ازدواج منطق SQL
+# بين نقطة HTTP والاستدعاء الداخلي المباشر).
+# ---------------------------------------------------------------------------
+
+
+def fetch_pending_reports(engine: Engine, *, limit: int = 200, after_id: int = 0) -> list[dict]:
+    """صفوف status='queued' مُصَفّحة بمؤشّر (cursor) على id — نفس استعلام
+    GET /admin/reports/pending حرفيًا."""
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT id, customer_id, report_date, payload, status, channel, created_at, delivered_at
+                FROM daily_reports
+                WHERE status = 'queued' AND id > :after_id
+                ORDER BY id
+                LIMIT :limit
+                """
+            ),
+            {"after_id": after_id, "limit": limit},
+        ).mappings().all()
+    return [dict(r) for r in rows]
+
+
+def mark_report_delivered(engine: Engine, report_id: int, channel: str) -> dict | None:
+    """نفس استعلام POST /admin/reports/{id}/delivered حرفيًا — يرجع None إن
+    لم يوجد report_id (404 على مستوى المُستدعي عبر HTTP، أو تسجيل خطأ فقط
+    على مستوى الاستدعاء الداخلي من reports_relay.py)."""
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                UPDATE daily_reports SET status = 'delivered', delivered_at = now(), channel = :channel
+                WHERE id = :id
+                RETURNING id, status
+                """
+            ),
+            {"id": report_id, "channel": channel},
+        ).first()
+    return {"id": report_id, "status": row[1]} if row else None
+
+
+def fetch_customer_chat_id(engine: Engine, customer_id: int) -> int | None:
+    """telegram_chat_id لعميل واحد — يُستخدَم من reports_relay.py لتحديد
+    وجهة إرسال كل تقرير معلّق (raise لا يحدث هنا؛ عميل بلا chat_id أو غير
+    موجود أصلًا يرجعان None سواء، ومسؤولية التمييز/التسجيل على المُستدعي)."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT telegram_chat_id FROM customers WHERE id = :id"), {"id": customer_id}
+        ).first()
+    return row[0] if row and row[0] is not None else None

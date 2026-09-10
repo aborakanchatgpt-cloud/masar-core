@@ -24,6 +24,19 @@ B4 (الإرسال والوارد — منفّذ آخر، إدراج محروس 
       النافذة والتباعد الزمني (jitter) داخلي بالكامل بـsender.send_tick.
     - inbox_round: كل 15 دقيقة، قراءة الوارد لكل صندوق بريد نشط
       (inbox.py) — بلا قيد نافذة (الارتدادات/الردود تصل في أي وقت).
+
+B8 (إزالة n8n بالكامل من تفاعل تيليجرام — قرار أحمد النهائي، راجع توثيق كل
+ملف على حدة لتفاصيل النقل من ركفلو n8n المقابل):
+    - daily_report_relay: تسليم daily_reports المعلّقة عبر تيليجرام مباشرة
+      (reports_relay.py) — بديل n8n/workflows/masar_daily_report_relay.json،
+      نفس جدولته حرفيًا (19:00-21:30 الرياض كل 5 دقائق) لكن **داخل نفس
+      العملية** الآن (لا طلب HTTP خارجي لـn8n).
+    - retention_round: تذكير تجديد/إشعار انتهاء اشتراك (retention.py) —
+      بديل n8n/workflows/job-bot-customer-retention-auto__B2PYcIMOQN7i5VXA.json،
+      نفس توقيته (9 صباحًا الرياض).
+    - skill_gap_round: نصيحة الجمعة الأسبوعية (skill_gap.py) — بديل
+      n8n/workflows/job-bot-weekly-skill-gap-analysis-friday__VcTFiyUdB7FQDsmw.json،
+      نفس توقيته (جمعة 2 ظهرًا الرياض).
 """
 from __future__ import annotations
 
@@ -33,7 +46,19 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from app import discovery, guarantee, inbox, pacing, planner, reports, send_builder, sender
+from app import (
+    discovery,
+    guarantee,
+    inbox,
+    pacing,
+    planner,
+    reports,
+    reports_relay,
+    retention,
+    send_builder,
+    sender,
+    skill_gap,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("masar-scheduler")
@@ -114,6 +139,37 @@ def run_guarantee_round_job() -> None:
         logger.exception("جولة تقييم الضمان فشلت بخطأ غير متوقع — ستُحاول مجددًا غدًا")
 
 
+def run_daily_report_relay_job() -> None:
+    """B8: تسليم daily_reports المعلّقة عبر تيليجرام مباشرة (reports_relay.py)
+    — بديل ركفلو n8n/workflows/masar_daily_report_relay.json (كان يجلب
+    /admin/reports/pending عبر HTTP كل 5 دقائق بين 19:00-21:30 الرياض)."""
+    try:
+        result = reports_relay.run_relay_round()
+        logger.info("نتيجة جولة تسليم التقارير عبر تيليجرام: %s", result)
+    except Exception:  # noqa: BLE001
+        logger.exception("جولة تسليم التقارير عبر تيليجرام فشلت بخطأ غير متوقع — ستُحاول مجددًا بالتكة القادمة")
+
+
+def run_retention_round_job() -> None:
+    """B8: تذكير تجديد/إشعار انتهاء اشتراك (retention.py) — بديل ركفلو
+    n8n/workflows/job-bot-customer-retention-auto__B2PYcIMOQN7i5VXA.json."""
+    try:
+        result = retention.run_retention_round()
+        logger.info("نتيجة جولة الاحتفاظ بالعملاء: %s", result)
+    except Exception:  # noqa: BLE001
+        logger.exception("جولة الاحتفاظ بالعملاء فشلت بخطأ غير متوقع — ستُحاول مجددًا غدًا")
+
+
+def run_skill_gap_round_job() -> None:
+    """B8: نصيحة الجمعة الأسبوعية (skill_gap.py) — بديل ركفلو
+    n8n/workflows/job-bot-weekly-skill-gap-analysis-friday__VcTFiyUdB7FQDsmw.json."""
+    try:
+        result = skill_gap.run_skill_gap_round()
+        logger.info("نتيجة جولة تحليل الفجوة المعرفية الأسبوعية: %s", result)
+    except Exception:  # noqa: BLE001
+        logger.exception("جولة تحليل الفجوة المعرفية فشلت بخطأ غير متوقع — ستُحاول مجددًا الجمعة القادمة")
+
+
 def main() -> None:
     try:
         seed_result = discovery.seed_sources()
@@ -184,11 +240,56 @@ def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    # B8: تسليم التقارير اليومية عبر تيليجرام — نفس جدولة n8n السابقة حرفيًا
+    # (masar_daily_report_relay.json: "*/5 19,20 * * *" ثم
+    # "0,5,10,...,30 21 * * *" بتوقيت الرياض) = 16:00-17:55 UTC كل 5 دقائق
+    # ثم 18:00-18:30 UTC كل 5 دقائق. جولتان منفصلتان (بدل تعبير cron واحد)
+    # لأن CronTrigger لا يقبل نطاق ساعة مختلط بنطاق دقيقة مختلف داخل تعبير
+    # واحد بسهولة؛ التكرار كل 5 دقائق يجعل أي تعارض توقيت لحظي مع
+    # daily_reports (كلاهما hour=16 minute=0) غير ضار (لا تقارير جاهزة
+    # بعد بالتكة الأولى → لا شيء يُرسَل → تُلتقَط بالتكة التالية تلقائيًا،
+    # التصميم idempotent بالكامل عبر status='queued').
+    scheduler.add_job(
+        run_daily_report_relay_job,
+        trigger=CronTrigger(hour="16-17", minute="*/5"),
+        id="daily_report_relay_main",
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        run_daily_report_relay_job,
+        trigger=CronTrigger(hour=18, minute="0-30/5"),
+        id="daily_report_relay_tail",
+        max_instances=1,
+        coalesce=True,
+    )
+    # B8: الاحتفاظ بالعملاء (تذكير تجديد/إشعار انتهاء) — نفس توقيت n8n
+    # السابق حرفيًا (job-bot-customer-retention-auto: "9 صباحًا الرياض" =
+    # 06:00 UTC).
+    scheduler.add_job(
+        run_retention_round_job,
+        trigger=CronTrigger(hour=6, minute=0),
+        id="retention_round",
+        max_instances=1,
+        coalesce=True,
+    )
+    # B8: نصيحة الجمعة الأسبوعية (تحليل الفجوة المعرفية) — نفس توقيت n8n
+    # السابق حرفيًا (job-bot-weekly-skill-gap-analysis-friday: "كل جمعة
+    # الساعة 2 ظهرًا الرياض" = جمعة 11:00 UTC).
+    scheduler.add_job(
+        run_skill_gap_round_job,
+        trigger=CronTrigger(day_of_week="fri", hour=11, minute=0),
+        id="skill_gap_round",
+        max_instances=1,
+        coalesce=True,
+    )
     logger.info(
         "Masar Core Scheduler بدأ التشغيل — جولة جامع فورًا ثم كل 30 دقيقة؛ "
         "جولة تخطيط 03:00-12:00 UTC (06:00-15:00 الرياض) كل ساعة؛ "
         "B4: بناء طابور كل 10 دقائق، إرسال كل دقيقة، وارد كل 15 دقيقة؛ "
-        "B5a: تقرير يومي 16:00 UTC، تقييم ضمان 21:30 UTC."
+        "B5a: تقرير يومي 16:00 UTC، تقييم ضمان 21:30 UTC؛ "
+        "B8 (بديل n8n): تسليم تقارير تيليجرام 16:00-18:30 UTC كل 5 دقائق، "
+        "احتفاظ بالعملاء 06:00 UTC، نصيحة الجمعة 11:00 UTC (يوم الجمعة)."
     )
     run_collector_round()
     scheduler.start()
