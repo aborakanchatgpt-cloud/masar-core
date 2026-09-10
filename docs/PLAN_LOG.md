@@ -1,0 +1,146 @@
+# PLAN_LOG.md — السجل التاريخي الكامل (نُقل من PLAN.md عند تنفيذ B2-close)
+
+> **لماذا هذا الملف؟** `PLAN.md` تجاوز حد `repo_write` (25,000 حرف — بلغ نحو 43,000) بتراكم سجلّ التشغيلات وفقرات المراجعة التاريخية المفصّلة داخل كل بند. هذه الجلسة (`docs/reports/B2-close-executor.md`) نقلت تلك الفقرات إلى هنا **حرفيًا دون حذف أي معلومة**، وأبقت `PLAN.md` نفسه يحمل فقط: البروتوكول + الحالة الحالية المختصرة لكل بند + مؤشرات لهذا الملف وتقارير `docs/reports/*`. لا تُعِد نقل شيء من هنا إلى `PLAN.md` — إن احتجت التفاصيل الكاملة لبند قديم، اقرأها هنا مباشرة.
+>
+> **الترتيب:** القسم 1 أدناه هو سجل التشغيلات الكامل (كان القسم 3 الأصلي بـ`PLAN.md`)، ثم القسم 2 يحوي الفقرات التاريخية المفصّلة لكل بند (B2/B2b/B3/B4/B5) كما كانت مكتوبة حرفيًا داخل القسم 2 الأصلي بـ`PLAN.md` قبل اختصارها هناك، ثم القسم 3 يحوي القسم 1 الأصلي بالكامل ("الحالة الآن") وبندي B0/B1 الأصليين بنصّهما الكامل (كانا مختصَرين أكثر بالنسخة الجديدة من `PLAN.md`).
+
+---
+
+## 1. سجل التشغيلات الكامل (كان القسم 3 الأصلي بـPLAN.md)
+
+- 2026-09-05 — REVIEWER (Fable, Cowork) — المرحلة 1 — DONE — `/health` و`/admin/ping` عبر n8n ناجحان؛ cron مثبّت؛ backups مفعّلة.
+- 2026-09-06 21:13Z — REVIEWER (Fable, Cowork) — بروتوكول — المهام المجدولة الجديدة لا تبدأ (PENDING دائم)؛ عُطّلت مؤقتًا.
+- 2026-09-06 22:19Z — EXECUTOR (Sonnet subagent) + REVIEWER — B0 — DONE — n8n ذاتي: compose + Caddy + db-init + backup. الدليل: probe 200 + HTML n8n.
+- 2026-09-06 22:11Z — EXECUTOR (Sonnet subagent) — B1a — DONE — ops runner بالطابور: `/admin/ops logs caddy 80` → exit 0 وسجلات فعلية.
+- 2026-09-07 05:05Z — EXECUTOR (Sonnet subagent) — B1b — DONE (ينتظر أحمد) — MCP bridge + deploy-key + commit من المضيف.
+- 2026-09-06 17:30Z — REVIEWER (Fable, Cowork) — بروتوكول — تسريع الحلقة: منفّذ كل ساعة، مراجع كل ساعتين؛ هدف زمني 18 سبتمبر.
+- 2026-09-07 05:40Z — EXECUTOR (Sonnet subagent) — B1 — first commit via Masar MCP bridge — OK (job 53442b4a72b34846 exit_code 0).
+- 2026-09-07 19:15Z — REVIEWER (مراجعة مستقلة #2، Fable) — B2 — REJECT (يبقى WIP) — تكرار ≈ 55%، تلوّث ≈ 17.1%، family_classified 35.9%/80%. التقرير: `docs/reports/B2-review-2.md`.
+- 2026-09-08 — REVIEWER (Fable، مراجعة أوفلاين) — B4 — REJECT — فجوات بنية تحتية (MAIL_FERNET_KEY، mailpit)، صفر اختبارات. التقرير: `docs/reports/B4-offline-review.md`.
+- 2026-09-08 — EXECUTOR (Sonnet subagent) — B4 (تصحيحات المراجعة الأوفلاين) — WIP — `pytest` 108→194. التقرير: `docs/reports/B4-executor-fixes.md`. لم يُنشر بعد.
+- 2026-09-08 — REVIEWER (مراجعة حيّة مستقلة) — B3/B4 — ACCEPT-WITH-FIXES (B4) / فحص سلامة جزئي ناجح (B3) — `docs/reports/B3B4-live-review.md`. بلوكر: mail-link SMTP/IMAP حقيقي بلا mailpit IMAP.
+- 2026-09-09 — EXECUTOR (Sonnet subagent، sandbox، بلا SSH) — B4 (F1/F2/F3) — نُفِّذت ونُشرت حيًّا وتحقّقت — `docs/reports/B4-live-fixes.md`. `pytest` 194→214. `/health` 200.
+- 2026-09-09 — EXECUTOR (Sonnet subagent، sandbox، بلا SSH) — B5a — نُفِّذت ونُشرت حيًّا وتحقّقت، بانتظار مراجعة — `docs/reports/B5a-executor.md`. `pytest` 214→242 (0 فشل)؛ 20 commits؛ `/health` 200، `alembic_version=0008_b5_reports`، `/admin/overview` 200. لم يُلمَس B2b ولا ملفات B3 WIP.
+- 2026-09-09 — EXECUTOR (Sonnet subagent، sandbox، بلا SSH) — B2b — نُفِّذت ونُشرت حيًّا وتحقّقت، بانتظار مراجعة — `docs/reports/B2b-executor.md`. `family_classified_pct_in_region` 32.04%→85.30% (الهدف ≥80% ✓)، `family_real_pct_in_region` 31.82%→75.13% (الهدف ≥70% ✓) عبر `ops psql` مباشرة على نفس jobs_in_region=1367. 8 مصادر جديدة موثّقة مُفعّلة حيًا. `pytest` 231/231. 10 commits. لم تُلمَس ملفات B5a (reports.py/guarantee.py/customers_api.py/sender.py/send_builder.py/main.py/scheduler_main.py/migration 0008).
+- 2026-09-09 — EXECUTOR (Sonnet subagent، sandbox، بلا SSH، بلا وصول n8n) — B5b — نُفِّذت ونُشرت حيًّا وتحقّقت، بانتظار مراجعة قبول — `docs/reports/B5b-executor.md`. 5 وركفلوهات n8n JSON + سكربت استيراد idempotent + README دليل مالك، 7 commits. استيراد حيّ عبر `ops{cmd:"script",args:["n8n_import"]}`: 5/5 نجاح، 0 فشل (مؤكَّد بـ`n8n list:workflow`). تحقّق محلي إضافي بتثبيت `n8n` v2.35.7 واختبار `import:workflow` على sqlite معزولة. لا تفعيل بعد (يحتاج اعتمادات المالك). لم تُلمَس بقية `n8n/workflows/*.json` القديمة ولا `n8n-import.sh` الموجود مسبقًا.
+- 2026-09-09 — EXECUTOR (Sonnet subagent، sandbox، بلا SSH) — B5c — نُفِّذت ونُشرت حيًّا وتحقّقت، بانتظار مراجعة قبول — `docs/reports/B5c-executor.md`. `pytest` 259→272 (0 فشل). guarantee.py grace/outage منفصلان، reports.py send_queue_id، 3 نقاط customers_api جديدة، email_service NULLable. لم تُلمَس ملفات B6 (sender.py/pacing.py/inbox.py/planner.py/send_builder.py/scheduler_main.py/migration 0011).
+- 2026-09-09 — EXECUTOR (Sonnet subagent، بيئة استنساخ محلي معزول، بلا SSH، بلا دفع) — B2-close — نُفِّذت محليًا فقط (بلا نشر — الخادم كان معلَنًا معطّلًا مؤقتًا بالتكليف)، بانتظار مراجعة قبول ونشر لاحق — `docs/reports/B2-close-executor.md`. تحقّق أن R10/R11/R14 كانت مُصلَحة فعليًا بالكود مسبقًا (commits `57cd1e2`…`ba05688`، بعد حكم REJECT لكن قبل تحديث نص PLAN.md)؛ أُصلح R13 فعليًا (أولوية أقوى إشارة أقدمية بدل أول تطابق بالقائمة)؛ امتداد `sitemap_jsonld.py` لفهم `sitemap.xml`/`sitemapindex` حقيقي؛ `scripts/verify_sources.py` جديد؛ 4 مصادر RSS سعودية/خليجية جديدة موثّقة (Samir Group، Chalhoub Group، Supersub، Qureos Inc) من أصل 14 مرشحًا مفحوصًا. `pytest` 272→293 (0 فشل). `alembic upgrade head`→`downgrade base`→`upgrade head` نظيف (لا ترحيل جديد — لا تعديل مخطّط). تقسيم `PLAN.md`/`docs/PLAN_LOG.md` هذا نفسه جزء من نفس التشغيلة.
+
+---
+
+## 2. الفقرات التاريخية المفصّلة لكل بند (كانت مضمّنة داخل القسم 2 الأصلي بـPLAN.md)
+
+### B2 — نص المراجعة الثانية وقائمة التصحيحات كاملة (كما كانت مكتوبة قبل إغلاق B2-close)
+
+**حكم المراجعة الثانية (2026-09-07، `docs/reports/B2-review-2.md`): REJECT — لا يُعلّم DONE بعد.** الأدلة الحيّة: تكرار حقيقي ≈ 55% (بهوية `apply_url`، أعلى من 42.8% المُعلن) بسبب تعدّد مواقع لنفس الإعلان داخل نفس الجلبة؛ تلوّث ≈ 17% من `jobs_in_region`/`jobs_sa` بوظائف خارج الخليج فعليًا (خلل رجوع لنص الوصف بلا شرط بـ`extract_country_code`)؛ `family_classified_pct_in_region` لا يزال 35.9% (الهدف ≥80%)؛ `sources_active`=55 (الهدف ≥60 شكليًا، لكن مقبول حسب معيار النتيجة: ≥200 وظيفة فريدة/يوم داخل النطاق متحقّق بفارق كبير). البنية والامتثال سليمان.
+
+**تصحيحات مطلوبة قبل إعادة الطرح للمراجعة (R10-R15 كاملة بالتقرير، أهمها):**
+1. [حرج] إصلاح `dedup_key` في `core/app/discovery.py:run_round()` بحيث يعتمد `apply_url` وحده (بلا `location_text`) لمصادر ATS التي تضمن رابطًا واحدًا لكل وظيفة (greenhouse/lever/ashby/smartrecruiters/workable) — لمعالجة تكرار نفس الإعلان بعدة مواقع (تفصيل R10).
+2. [حرج] تعديل `extract_country_code()` بـ`core/app/collectors/field_extractor.py` ليتوقف عن الرجوع لنص العنوان/الوصف حين يكون `location_text` معبّأًا ويذكر دولة/مدينة محدّدة (تفصيل R11).
+3. [عالٍ] دمج توسعة `taxonomy_local.yaml` (مقتطف YAML جاهز بالتقرير) وتعديل `classify_family()` ليفرّق بين "غير مصنف حقيقي" و"مستبعد عمدًا" (تفصيل R12).
+4. [متوسط] إصلاح بقايا خلل الأقدمية (انحدار R2 جزئي، 6 صفوف) بإعطاء الأولوية لأقوى إشارة أقدمية موجودة بدل أول تطابق (تفصيل R13).
+5. [متوسط] إعادة تعريف `dup_ratio_24h_in_region` بصيغة `apply_url`-محورية بعد إصلاح البند 1 (SQL كامل بالتقرير، تفصيل R14).
+
+**تحديث تنفيذ B2b (2026-09-09، لا يُغيّر حكم REJECT أعلاه — البنود 1، 2، 4، 5 لم تُلمَس):** البند 3 (توسعة `taxonomy_local.yaml` + تمييز "غير مصنّف" عن "مستبعد عمدًا") **نُفِّذ ونُشر حيًّا** ضمن B2b — راجع قسم B2b أدناه للتفاصيل والأدلة الرقميّة الكاملة (`family_classified_pct_in_region` 35.9%→85.3%، `family_real_pct_in_region`→75.13%). لا يزال B2 نفسه REJECT حتى تُعالج البنود 1/2/4/5 (dedup_key بـapply_url، تصحيح extract_country_code، بقايا خلل الأقدمية، dup_ratio_24h_in_region الجديدة) — لم تكن ضمن نطاق B2b (الذي يغطي فقط التصنيف والمصادر حسب تعريفه في القسم 2 أدناه).
+
+**(ملاحظة فهرسة تقارير: `B2-executor.md`/`B2-executor-round2.md`/`B2-review.md` تقارير B2 المبكرة، استبدلها `B2-review-2.md`.)**
+
+**تحديث B2-close (2026-09-09، `docs/reports/B2-close-executor.md`):** فحص الكود الفعلي المستنسَخ محليًا أظهر أن البنود 1/2/5 (R10/R11/R14) كانت **مُصلَحة بالفعل** بسلسلة commits (`57cd1e2`…`ba05688`) جرت بعد حكم REJECT أعلاه لكن قبل تحديث نص هذا الملف (B2b عالجت R12/البند 3 فقط ولم تُحدِّث حالة البقية). البند 4 (R13) كان لا يزال معطوبًا فعليًا — أُصلح بهذه الجلسة. راجع القسم "B2" المختصر بالقسم 2 من `PLAN.md` الحالي، والتقرير الكامل `docs/reports/B2-close-executor.md`، لحالة كل بند فرديًا بالتفصيل.
+
+### B2b — نص التنفيذ الكامل (كما كان مكتوبًا قبل إغلاق B2-close)
+
+**تنفيذ 2026-09-09 (`docs/reports/B2b-executor.md`):** الهدف الرقمي **تحقّق حيًّا**: `family_classified_pct_in_region` 32.04%→**85.30%** (الهدف ≥80% ✓)، `family_real_pct_in_region` 31.82%→**75.13%** (الهدف ≥70% ✓)، على نفس مجموعة jobs_in_region=1367 (قياس قبل/بعد على نفس الصفوف عبر ops psql مباشرة). أهم التغييرات:
+1. خطوة تطبيع جديدة (`discovery._normalize_for_match()`: تشكيل/همزات/تاء مربوطة عربي، Sr./Jr.، أرقام رومانية لاحقة، "&"→"and") تُطبّق على العنوان/الوصف والكلمات المفتاحية معًا؛ `classify_family()` أصبح عنوان-أولاً-ثم-وصف-كملاذ-أخير.
+2. إعادة تسمية `sales_excluded`→`out_of_scope` (يبقى `sales_excluded` مقبولاً للتوافق الرجعي)؛ `out_of_scope` يُحسب "مصنّفًا" ضمن `family_classified_pct_in_region` ويُستثنى فقط من `family_real_pct_in_region` — وأُعيد تعريف الصيغتين في `discovery_api.py:stats` ليقسما على `jobs_in_region` الكامل لا (الكل − المستبعد) كما كانت الصيغة القديمة.
+3. `data/taxonomy_local.yaml` وُسّع بدفعتين مقاسَة حيًا لكل منهما (الأولى وصلت 65.18%/56.33% فقط دون الهدف؛ الثانية أضافت عائلة `legal_compliance` وكلمات عامة محسوبة الموضع بترتيب الملف مثل `technician`/`foreman`→`maintenance_ops`، `planner`→`project_controls`، `inspector`/`surveyor`→`construction_pm` — وصلت 85.30%/75.13%).
+4. `core/app/reclassify.py` (جديد، عبر `deploy/ops/scripts/reclassify.sh` → `python -m app.reclassify`): يعيد حساب `family` لكل صفوف jobs داخل النطاق دفعة دفعة idempotent — يحل مشكلة كاش المعجم على مستوى العملية (تعديل taxonomy_local.yaml وحده لا يُصحّح صفوفًا مُدرجة مسبقًا).
+5. 8 مصادر خليجية جديدة موثّقة (`SOUM`، `ADIA`، `Decima International`، `Checkout.com`، `BioCatch`، `Squadio`، `Ethos Interactive`، `FlyAkeed`) أُضيفت لـ`data/sources_seed.csv` بأدلة تحقّق فعلي (probe + WebFetch) — كلها enabled=true وحيّة الآن.
+6. اختبارات جديدة: `test_classify_family.py` (14) + `test_reclassify.py` (3، DB-backed) — pytest محليًا 231/231.
+
+**لم يُنجز (متروك لدورة تالية أو للمراجع):** جامع `sitemap_jsonld`/RSS لمصادر سعودية مغلقة (البند 2 الأصلي أدناه — كل المصادر الـ8 الجديدة من نوع ATS)؛ دقّة كل عائلة على حدة لم تُراجع فرديًا (المقياس المُتحقّق تغطية إجمالية فقط)؛ صفّا Decima International/Checkout.com/BioCatch مكرّران حرفيًا بـ`sources_seed.csv` من دفعة B2 سابقة (upsert idempotent فلا ضرر وظيفيًا، يستحق تنظيفًا لاحقًا).
+
+**(ملاحظة B2-close، 2026-09-09):** بند "جامع sitemap_jsonld/RSS لمصادر سعودية مغلقة" أعلاه عُولج بجلسة B2-close — راجع `docs/reports/B2-close-executor.md`. باقي البنود (دقّة كل عائلة فرديًا، تنظيف تكرار Decima/Checkout.com/BioCatch) لا تزال TODO كما هي.
+
+### B3 — نص المراجعة الحيّة الجزئية (كما كان مكتوبًا)
+
+حسب الدليل §3.3، §3.6، §3.7، §3.12: جداول `customers/profiles/products/orders/ledger/subscriptions/opportunities/applications/feedback`، الاستبعاد القاطع، الدرجة، الطبقات A/B/C/C2/D، دفتر الرصيد بمعاملة واحدة مع الإدراج، وواجهات `/customers`, `/wallet`, `/plan/{customer}/today`. **معيار الحمل:** خطة يومية لـ 1,500 ملف × 3,000 وظيفة تكتمل في < 5 دقائق (قِسها بسكربت `scripts/bench_planner.py` ببيانات اصطناعية).
+
+**مراجعة حيّة جزئية (2026-09-08، `docs/reports/B3B4-live-review.md`):** فحص السلامة الحي فقط ضمن نطاق مراجعة B3/B4 (وجود بيانات مطابقة/تخطيط عبر `psql`، استجابة نقطة التخطيط) — **نجح**. لم يُختبر بعد معيار القبول الرقمي الكامل (حمل `scripts/bench_planner.py` لـ1,500×3,000)، ولم تجرِ مراجعة كاملة مقابل كل معايير القسم أعلاه (تنفيذ B3 موثّق سابقًا في `docs/reports/B3-executor.md` دون مراجعة رسمية مقابلة). لا يُعلّم DONE حتى تُجرى تلك المراجعة الكاملة.
+
+### B4 — نص جولات المراجعة الثلاث كاملة (كما كان مكتوبًا)
+
+حسب الدليل §3.9–§3.11 و§4.1: mail-link (SMTP/IMAP test + تشفير Fernet بمفتاح من `.env`)، `send_queue` بـ `SKIP LOCKED`، Sender بعمال متوازين (هدف 25,000 إيميل/يوم = 50/دقيقة في نافذة 8.5 ساعة، مع فواصل لكل عميل)، المولّد التركيبي، 4 قوالب CV، Inbox reader (1,500 صندوق/ساعة بـ 20 عاملًا). التسخين لكل صندوق جديد. **الاختبار على صندوق أحمد التجريبي فقط** (`DRY_RUN_TO` في `.env`) حتى يعتمد المراجع الجودة.
+
+**مراجعة أوفلاين (2026-09-08، `docs/reports/B4-offline-review.md`): REJECT** — فجوتا بنية تحتية حاسمتان (لا `MAIL_FERNET_KEY` يصل للحاوية، لا خدمة `mailpit`) + صفر اختبارات B4 رغم توثيق داخلي يدّعي وجودها. **تصحيحات المنفّذ (2026-09-08، `docs/reports/B4-executor-fixes.md`، commit تالٍ لهذا السطر) طُبّقت محليًا وكل بوابات الجودة (compileall/imports/pytest/migrations/compose config) خضراء**، لكن لم تُنشر بعد على `masar-core-1` الحي ولم يعتمدها المراجع — يبقى B4 **WIP لا DONE** حتى: (1) نشر فعلي (commit عبر جسر MCP/n8n) + `docker compose up -d --build` يلتقط `mailpit`/`cv_data`/متغيّرات البريد الجديدة، (2) `alembic upgrade head` يطبّق `0006_b4_fixes` على قاعدة الإنتاج، (3) مراجع حيّ يتحقق من فحوصات §"فحوصات لا تزال تحتاج خادمًا حيًا" بتقرير المراجعة الأوفلاين (mail-link حقيقي، `mailpit` يستقبل رسالة كاملة بمرفق PDF، معدّل تصريف تحت حمل، سلوك F1 عبر دورات autodeploy حقيقية متتالية).
+
+**مراجعة حيّة (2026-09-08، `docs/reports/B3B4-live-review.md`): ACCEPT-WITH-FIXES** — النشر الحي تحقّق (v0.3.0، `0006_b4_fixes` مطبّقة، `mailpit` صحّي)؛ تدفّق sink كامل عبر `/admin/mail/load-test` + `/admin/mail/send-now` نجح (≥10 رسائل بمرفق PDF في mailpit) مع idempotency مؤكّدة. وُجد بلوكر NEEDS-OWNER: `create_mail_link` يجري تحقّق SMTP/IMAP حقيقيًا بمعزل تام عن DRY_RUN/MAIL_SINK_SMTP، وmailpit لا يوفّر IMAP — يستحيل الوصول لـ`mail_links.status='ok'` وبالتالي اختبار المسار الحقيقي الكامل دون حساب Gmail حقيقي؛ يبقى B4 **WIP لا DONE** حتى يُحل هذا.
+
+**تصحيحات المنفّذ لفحوصات المراجعة الحيّة (2026-09-09، `docs/reports/B4-live-fixes.md`):** الفحوصات الثلاثة (F1 عالٍ، F2 متوسط، F3 منخفض) نُفِّذت ونُشرت حيًّا وتحقّقت. **F1:** `POST /mail-link` يقبل `skip_verify: bool` جديدًا — يتخطّى اختبار SMTP/IMAP الحي ويضبط `status='ok'` مباشرة (عمود جديد `mail_links.verified_via='skipped-dry-run'`، migration `0007`) **فقط** حين DRY_RUN فعّال (`sender.is_dry_run()`)؛ مرفوض بـ400 خارج DRY_RUN. **F2:** فحص نافذة الإرسال بـ`sender.send_tick` أصبح غير مشروط بوجود `MAIL_SINK_SMTP`، بنفس منطق `pacing.is_in_window`؛ تجاوز تطويري `MAIL_IGNORE_SEND_WINDOW` مع DRY_RUN فقط. **F3:** `core-scheduler` يحمل الآن `healthcheck: disable: true` صراحة. الدليل: `pytest` محليًا 194→214 (0 فشل)؛ نشر حي عبر 7 commits متتالية — `GET /health` 200، `core-scheduler` بلا unhealthy. يبقى B4 **WIP لا DONE** حتى مراجعة قبول تالية.
+
+### B5 (B5a/B5b/B5c) — نص التنفيذ الكامل لكل جزء (كما كان مكتوبًا)
+
+تقرير 19:00، أزرار 👎/🎉، "استبعدنا لك"، onboarding بـn8n (الدليل §7)، الضمان/التعويض، لوحة الأدمن، مهام Claude الدائمة (الدليل §8)، حذف القديمة بعد تفوّق 3 أيام.
+
+- **B5a — WIP (نُفِّذ ونُشر حيًّا، بانتظار مراجعة)**: التقرير اليومي، 👎/🎉 + استبعاد شركة، الضمان/التعويض، لوحة الأدمن، ربط البريد الذاتي. التقرير: `docs/reports/B5a-executor.md`.
+- **B5b — WIP (نُفِّذ ونُشر حيًّا 2026-09-09، بانتظار مراجعة قبول)**: بوتا تيليجرام (عميل "مسار" + أدمن) عبر n8n — 5 وركفلوهات JSON قابلة للاستيراد (بلا وصول واجهة/API n8n): `masar_daily_report_relay` (جدولة 19:00–21:30، تسليم التقرير اليومي + أزرار 👎/🎉)، `masar_feedback_callback` (استقبال ضغطات الأزرار → `/customers/{id}/feedback`)، `masar_onboarding` (تسجيل عميل جديد → إنشاء عميل + رابط `/link/{token}`)، `masar_admin_bot`+`_part2` (لوحة تحكّم محمية بمتغيّر `MASAR_OWNER_CHAT_ID`، مقسّمة لملفين لتجاوز حد الدفع). + `deploy/ops/scripts/n8n_import.sh` (استيراد idempotent، بلا تفعيل تلقائي) + `n8n/README.md` (قائمة NEEDS-OWNER + مسار اختبار + فجوات NEEDS-CORE). **الاستيراد الفعلي نُفِّذ حيًّا** عبر `ops{cmd:"script",args:["n8n_import"]}`: 5 وركفلوهات مستوردة، 0 فشل (مؤكَّد بـ`n8n list:workflow`). التحقّق: تثبيت `n8n` محليًا واختبار الاستيراد على sqlite معزولة (idempotency مؤكَّدة) + تحقّق بنيوي صارم لكل الاتصالات/العقد. التقرير: `docs/reports/B5b-executor.md`. **بلا تفعيل فعلي بعد** (يحتاج المالك: 3 اعتمادات Telegram/Header Auth + متغيّر `MASAR_OWNER_CHAT_ID` + تفعيل يدوي بترتيب محدد، تفاصيل بـ`n8n/README.md`). NEEDS-CORE الأهم (`send_queue_id`) عولج فعليًا بـB5c (`reports.py`).
+- **B5c — WIP (نُفِّذ ونُشر حيًّا 2026-09-09، بانتظار مراجعة قبول)**: فجوات ما بعد مراجعة B5a/B2b — فصل `grace_extension_days`/`outage_extension_days` بـ`guarantee.py` (انقطاع بريد لا يُسقط مهلة الأداء الإلزامية)، `send_queue_id`/`company_id`/`job_id` بـ`today_applications` (يفعّل أزرار 👎/🎉 بB5b بلا تعديل n8n)، `GET /customers/by-telegram/{chat_id}` + `POST /customers/{id}/status` (تدقيق) + `POST /customers/{id}/cv` (رفع PDF)، `customers.email_service` أصبح NULLable. التقرير: `docs/reports/B5c-executor.md`. `pytest` 259→272. باقي B5 (حذف النظام القديم بعد 3 أيام تفوّق) لم يُبدأ.
+
+---
+
+## 3. القسم 1 الأصلي ("الحالة الآن") وبندا B0/B1 الأصليان بنصّهما الكامل
+
+قبل تقسيم B2-close (2026-09-09)، كان القسم 1 والبندان B0/B1 بـ`PLAN.md` يحملان النص التالي حرفيًا (النسخة الجديدة بـ`PLAN.md` تحمل صيغة مختصرة مُحدَّثة بدلًا منه — هذا النص محفوظ هنا كاملاً):
+
+### القسم 1 الأصلي — الحالة الآن (يحدّثها المراجع)
+
+- ✅ المرحلة 0 (إصلاحات النظام القديم) و**المرحلة 1 (البنية)** مكتملتان ومُختبرتان: خادم Hetzner `masar-core-1` (IP `62.238.117.20`، CX23، Ubuntu 24.04، backups مفعّلة)، الرابط `https://62.238.117.20.sslip.io` (HTTPS صالح عبر Caddy+sslip.io)، Postgres + Gotenberg + Core + core-scheduler تعمل، الترحيل `0001` مطبّق، cron: autodeploy كل دقيقتين + backup 03:00.
+- ✅ n8n: اعتماد `Masar Core Admin Token` (Header Auth، id `JptuLYJ1gcUGVAz8`)، وركفلو `Core - Call` مربوط ومنشور، اختبار `/admin/ping` → `{"ok":true}`.
+- ⚠️ المستودع `aborakanchatgpt-cloud/masar-core` **عام مؤقتًا** (لأن الخادم يسحب بلا توكن). يُعاد خاصًا بعد بند B1.
+- ⚠️ **n8n Cloud تجريبي ينتهي ~10 سبتمبر 2026** (~905/1000 تنفيذ مستهلكة — اقتصد في تنفيذ الوركفلوهات: لا تكرر نداءات فحص بلا حاجة). البند B0 يحسم النقل.
+- ✅ وركفلو `GitHub - Commit File` (`K65rLAVzarrtH4SV`) مربوط باعتماد GitHub ومنشور ومُختبر (commit `0590a8c`). الحلقة الذاتية مفعّلة: المنفّذ كل ساعة، المراجع كل ساعتين.
+- ⚠️ **المهام المجدولة الجديدة لا تبدأ** (7/7 تشغيلات بقيت PENDING بلا أي نداء أداة؛ مهام النظام القديم تعمل). قرار المراجع 6 سبتمبر: التنفيذ يُدار من جلسة Cowork التفاعلية (Fable يراجع، Sonnet وكيل فرعي ينفذ) حتى يُحل الخلل؛ مهمتا Executor/Reviewer المجدولتان معطّلتان مؤقتًا.
+- ⚠️ **n8n Cloud شبه منتهٍِ** (تجربة 1000 تنفيذ؛ بقي القليل). أوقفنا الوركفلو `CjlFHF1JG3GzYLbz` (مراقب كل 15 دقيقة) ومهمتي Discovery وPipeline Watchdog القديمتين مؤقتًا لحماية الرصيد. **الجسر البديل:** Masar MCP bridge داخل Core (`/mcp/<token>`) — انظر القسم 4.
+- ✅ **B0 منجز:** n8n ذاتي يعمل على `https://n8n.62.238.117.20.sslip.io` (HTTP 200 + TLS صالح، probe 22:19Z). أحمد أنشأ حساب المالك (7 سبتمبر). باقي: استيراد الوركفلوهات/الاعتمادات (دليل `docs/N8N_SELF_HOST.md`).
+- ✅ **B1a منجز:** ops runner عبر ملفات (`/admin/ops` + `deploy/ops/run_queue.sh` ينفذه cron المضيف كل دقيقتين): ps/logs/restart/up/migrate/backup-now/psql(قراءة)/sys/git/deploy-key/git-remote-ssh/commit… بدون docker.sock.
+- ✅ **B1b منجز:** MCP bridge (`core/app/mcp_bridge.py`) بأدوات repo_read/repo_list/repo_write/ops/job/wait/core_call. أُضيف مفتاح النشر (Deploy Key) في GitHub بصلاحية قراءة/كتابة (read/write)، ونُفّذ `git-remote-ssh` وأعاد `ok` بتاريخ 2026-09-07 05:32Z؛ والموصّل المخصص "Masar Core" نشط الآن في Claude. باقي: جعل المستودع خاصًا بعد تأكيد أول commit عبر الجسر (B1).
+- ⚠️ **B2 (الاكتشاف الحقيقي) لا يزال WIP بعد مراجعتين.** المراجعة الثانية (2026-09-07، `docs/reports/B2-review-2.md`) وجدت عيبين جديدين عاليي الأثر لم يُكتشفا سابقًا فوق فشل معياري القبول الرقميين: (1) تكرار حقيقي ~55% (وليس 42.8% كما أُعلن) بسبب تعدّد مواقع لنفس `apply_url` داخل نفس الجلبة (Eram Talent/Hudson Manpower)؛ (2) تلوّث ~17% من `jobs_in_region`/`jobs_sa` بوظائف موقعها الحقيقي خارج الخليج (رجوع `extract_country_code()` لنص الوصف بلا شرط). `family_classified_pct_in_region` لا يزال 35.9% (الهدف ≥80%). الحكم: **REJECT** — يبقى B2 = WIP مع قائمة تصحيحات R10-R15 (انظر التقرير).
+- 🎯 **الهدف الزمني:** جاهزية استقبال أول عميل حقيقي بحلول **18 سبتمبر 2026** (B0–B7). كل دور يذكر في سطر سجله إن كان الجدول على المسار أم متأخرًا ولماذا.
+
+### B0 الأصلي — DONE (2026-09-06 22:19Z) — نقل n8n إلى الخادم
+
+1. أضف خدمة `n8n` إلى `docker-compose.yml` (صورة `docker.n8n.io/n8nio/n8n:latest`، volume `n8n_data:/home/node/.n8n`، شبكة `masar_public`، متغيرات: `N8N_HOST=n8n.${MASAR_DOMAIN}`, `WEBHOOK_URL=https://n8n.${MASAR_DOMAIN}/`, `N8N_PROTOCOL=https`, `GENERIC_TIMEZONE=Asia/Riyadh`, `N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}`, `DB_TYPE=postgresdb` + إعدادات Postgres لقاعدة منفصلة `n8n` تُنشأ بترحيل/سكربت init)، وأضف في `Caddyfile` مضيفًا ثانيًا `n8n.{$MASAR_DOMAIN}` → `reverse_proxy n8n:5678`. أضف `N8N_ENCRYPTION_KEY` إلى `.env.example` ولّده في `bootstrap.sh` إن غاب.
+2. معيار القبول: `https://n8n.62.238.117.20.sslip.io` يفتح صفحة إعداد المالك (Owner setup). **لا تنشئ الحساب** — أحمد ينشئه.
+3. أبلغ أحمد بالخطوات: إنشاء حساب المالك، تصدير الوركفلوهات من Cloud (Settings → Download/Export) واستيرادها، إعادة إدخال اعتمادات Telegram/Gmail/Header Auth، ثم **اختبار اتصال موصّل n8n في تطبيق Claude بالنسخة الذاتية** (Settings → n8n MCP/API في n8n الذاتي). إن لم يتصل الموصّل: القرار المسجّل هو إبقاء أصغر خطة Cloud كجسر فقط ونقل البوتات الثقيلة ذاتيًا — أبلغ أحمد ولا تطفئ Cloud.
+
+### B1 الأصلي — WIP — نقاط الإدارة والعودة إلى مستودع خاص
+
+**ما تبقّى فقط (بعد أن يضيف أحمد مفتاح النشر والموصّل):** (1) `ops git-remote-ssh` والتحقق أن `git fetch` يعمل؛ (2) اختبار `repo_write` عبر الموصّل → commit+push من الخادم → إعادة نشر تلقائية (`ops/.deploy_needed`)؛ (3) جعل المستودع خاصًا ثم commit تجريبي للتأكد أن السحب ما زال يعمل؛ (4) تحديث القسم 4 هنا. البنود 1–3 الأصلية أدناه نُفِّذت بتصميم أفضل (بلا docker.sock).
+
+1. في Core أضف `/admin/ops` (POST، محمي بالتوكن) بأوامر من قائمة مسموحة فقط: `health`, `migrate`, `restart`, `logs` (آخر 200 سطر لخدمة محددة), `run-collector`, `seed-esco`, `backup-now`, `deploy-now`. التنفيذ عبر `subprocess` لسكربتات في `deploy/ops/*.sh` (كل أمر سكربت مستقل، لا تمرير نصوص حرة). الحاوية تحتاج وصولًا لسوكت Docker للأوامر restart/logs: أضف `/var/run/docker.sock:/var/run/docker.sock` لخدمة core فقط مع تحذير في التعليقات.
+2. أضف `/admin/deploy-key` (POST): يولّد مفتاح ed25519 في `/opt/masar-core/.deploy_key` (مرة واحدة) ويعيد المفتاح العام؛ و`/admin/git-remote-ssh` يبدّل remote إلى `git@github.com:aborakanchatgpt-cloud/masar-core.git` مع `core.sshCommand` يشير للمفتاح.
+3. معيار القبول: عبر `Core - Call`: `{"path":"/admin/ops","method":"POST","body":{"cmd":"health"}}` يعيد حالة الحاويات؛ `/admin/deploy-key` يعيد مفتاحًا عامًا. ثم أبلغ أحمد: أضف المفتاح كـ Deploy Key (قراءة) في GitHub ثم اجعل المستودع خاصًا؛ بعد تأكيده نفّذ `git-remote-ssh` وتحقق أن autodeploy ما زال يسحب (commit تجريبي).
+
+---
+
+## 4. B6 وB7 وجلسة INTEGRATOR (2026-09-09) — نُقل هنا عند دمج الشجرة (اختصار `PLAN.md`)
+
+### B6 — نص التنفيذ الكامل (كما وصفه المنفّذ، `docs/reports/B6-executor.md`)
+
+نطاقه: `sender.py`, `pacing.py`, `inbox.py`, `planner.py`, `send_builder.py` (بلا لمس)، `matching.py` (أداء فقط عبر `tokenize()`/`lru_cache`، سبق دمجه على `origin/main` قبل هذه الجلسة)، `scheduler_main.py`, `discovery.py` (`get_engine` فقط، سبق دمجه أيضًا)، migration `0011_b6_load`، `scripts/load_test_send.py`, `deploy/ops/scripts/load_test*.sh`, `docker-compose.yml`. لم يُلمَس: `guarantee.py`, `reports*.py`, `customers_api.py`, `feedback_api.py`, `link_api.py`, migration `0010` (مملوكة لمنفّذ B5c). ستة فهارس جديدة (migration 0011): `ix_send_queue_claim_partial`، `ix_send_queue_sent_completed_at`، `ix_applications_sent_at_company_key_customer`، `ix_company_cooldowns_last_sent_at`، `ix_opportunities_customer_planned_score`، `ix_mail_links_status_next_check` — أدلة `EXPLAIN` قبل/بعد على قاعدة اختبار محلية مبذورة بحجم واقعي (1,500 عميل/25,500 send_queue/15,000 applications/22,500 opportunities) موثّقة كاملة بالتقرير (تحسّن جوهري لاستعلام مطالبة send_queue الأهم: من Bitmap+Sort صريح إلى Index Scan مباشر بلا Sort).
+
+**ملاحظة دمج (جلسة INTEGRATOR، 2026-09-09):** نسخة B6 المحلية (`/home/claude/masar-core-b6`) كانت قد تفرّعت *قبل* أن يُدمَج commit B5c/hotfix على `origin/main` (كانت `HEAD` متأخرة 10 commits عن `origin/main` وقت الدمج). لذلك كانت نسخها المحلية من `discovery.py`/`matching.py`/`mail_api.py`/`customers_api.py`/`guarantee.py`/`reports.py` (وملفات 0010/0011 نفسها) في الواقع **نسخًا أقدم** من تلك المدموجة فعليًا على `origin/main` (فروق تشكيل حروف عربية فقط بالتعليقات + إسقاط تحديث `customers.email_service`/B5c بـ`mail_api.py`) — لو طُبِّقت كما هي لكانت **رجّعت** إصلاحات B5c/hotfix المدموجة مسبقًا. جلسة INTEGRATOR استبعدتها صراحة واعتمدت فقط الملفات التي فحصها `git diff origin/main` وأثبتت أنها عمل B6 حقيقي جديد: `inbox.py` (تقسيم 15 قسمًا بالتكات + `current_partition()` + متابعة UID تزايدية `last_uid` بدل بحث UNSEEN + تراجع أُسّي للأخطاء `error_count`/`next_check_at`)، `sender.py` (حدود/وتيرة الإرسال)، `main.py` (+`app.send_stats_api`)، `scheduler_main.py` (توثيق تزامن التقسيم فقط، بلا تغيير منطق)، `docker-compose.yml` (حدود ذاكرة صريحة لكل خدمة يجمع 4GB الخادم + Postgres `shared_buffers=256MB`/`work_mem=8MB`/`max_connections=120` + متغيّرات `DB_POOL_*`/`SEND_*`/`INBOX_PARTITION_COUNT`)، `send_stats_api.py` (جديد)، اختبارات `test_inbox_partition.py`/`test_sender_rate_limits.py` (جديدة)، أدوات اختبار حمل جديدة. migration `0011_b6_load` نفسها كانت مطابقة حرفيًا لنسخة `origin/main` (فرق تشكيل حروف تعليق فقط) فاعتُمدت نسخة `origin/main` كما هي.
+
+### B7 — نص التنفيذ الكامل (كما كتبه منفّذ B7 بـ`PLAN.md` الأصلي، النسخة الطويلة قبل الدمج)
+
+**تنفيذ 2026-09-09 (محلي بالكامل، بدون دفع فعلي):**
+1. `core/app/catalog.py` + ترحيل `0012_b7_catalog` — **لا يُنشئ جداول `products`/`orders` من جديد** (موجودة فعليًا منذ `0004_b3_customers` وتُستخدَم اليوم من `POST /subscriptions` بـ`customers_api.py`، الذي بقي بلا لمس). التوسعة فقط: `products.price_sar` أصبح NULLable وأُفرغت الأسعار الخمسة المزروعة بـ0004 (90/60/165/240/15 ريال — لم تكن معتمَدة من أحمد، كانت أرقامًا تجريبية) إلى `NULL` تفعيلًا لقاعدة B7 غير القابلة للتفاوض ("الأسعار مؤقتة يحدّدها أحمد لاحقًا")؛ `products.applications_included` عمود جديد (مبذور من `credits`)؛ `orders` اكتسب `starts_at/ends_at/credits_granted/note` + `amount_sar` أصبح NULLable + `status` وُسِّع ليقبل `active`/`fulfilled` فوق `pending`/`paid`/`cancelled` القديمة (بلا حذف أي قيمة قديمة). نقاط جديدة: `GET /catalog` (منتجات نشطة، السعر `null` = "يُحدَّد لاحقًا")، `POST /admin/orders` (يُفعّل فترة اشتراك على `subscriptions`/يمنح رصيد محفظة عبر نفس آلية `wallet_credit`/يسجّل طلب سيرة مستقلة `pending`، بمعاملة واحدة)، `GET /admin/orders?customer_id=`. وُصِل بـ`main.py` بسطر واحد (`"app.catalog"` بقائمة الاستيراد المحروس القائمة). ثابت `PRICE_TBD` بمكان واحد (`core/app/catalog.py`).
+2. `docs/TERMS_AR.md` — شروط الخدمة بنبرة "الدعوة الصادقة" (لا ذكر أتمتة/AI، لا صياغة مالية إلا الحد الأدنى لذكر الضمان بصدق، رصيد مسبق بلا انتهاء صلاحية، خصوصية كلمة مرور البريد المشفّرة، كيفية إيقاف الخدمة).
+3. `docs/RUNBOOK.md` — عمليات أحمد اليومية: قراءة `/admin/overview`، تسوية `/admin/guarantee/pending`→`/settle`، أونبوردنغ عميل كامل، تعافي الأعطال (Core معطّلة، autodeploy/flock عالق، جلسات Postgres عالقة، الموصّل معطّل)، قائمة تحقق إيقاف DRY_RUN، النسخ الاحتياطي/الاستعادة، قاعدة 3 أيام قبل إطفاء النظام القديم.
+4. `docs/LAUNCH_CHECKLIST.md` — خطة أول 10 عملاء: تجهيزيات، قائمة تحقق لكل عميل، مراقبة يومية أسبوع 1، KPIs، قرار Go/No-Go لإيقاف DRY_RUN.
+5. اختبارات: `core/tests/test_catalog.py` (13، DB-backed، نفس نمط `test_customers_api.py`). بوابات الجودة محليًا كلها خضراء (كما فحصها منفّذ B7 وحده، قبل الدمج): `compileall`، `import app.main`/`app.scheduler_main`، `pytest` **272→285** (0 فشل)، `alembic upgrade head`→`downgrade -1`→`upgrade head` نظيف على `masar_test`.
+
+**لم يُنجز/خارج النطاق هذه الجلسة (منفّذ B7):** لا قناة دفع فعلية؛ لا نشر حيّ؛ لم تُلمَس ملفات B6 ولا `customers_api.py`.
+
+### جلسة INTEGRATOR (2026-09-09) — قرار الدمج الكامل وترتيب التحقق
+
+انظر `PLAN.md` §1/§3 للملخّص المختصر. القرار الكامل: hotfix (أعلى أولوية) → B6 (باستبعاد النسخ القديمة الموصوفة أعلاه) → B7 (migration 0012 مُسلسَلة بعد 0011؛ `main.py` يستورد `app.send_stats_api` **و** `app.catalog` معًا — نسخة B7 الأصلية كانت لتستبدل سطر send_stats_api لأنها تفرّعت قبل B6، فأُعيد سطر B6 يدويًا) → B2-close (لا تعارض حقيقي: `mail_api.py`/`matching.py` بنسخة B2-close مطابقان حرفيًا لنسخة الـhotfix). التحقق الكامل (compileall/imports/alembic up→down→up/pytest/run_queue.sh/compose): راجع تقرير الجلسة المُرسَل للمستخدم.
