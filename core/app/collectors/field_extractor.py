@@ -121,17 +121,35 @@ def extract_seniority(text: str, title: str | None = None) -> str | None:
     """يرجع أقرب مستوى أقدمية مطابق بحدود كلمة صريحة، أو None إن لم يُذكر
     صراحة (يُفترض mid). إن مُرِّر `title` منفصلًا، يُفحَص أولًا وحده قبل النص
     الكامل — إشارة العنوان أوثق من نص وصف طويل قد يحوي كلمات عامة مضلِّلة
-    (مراجعة B2 R2)."""
+    (مراجعة B2 R2).
+
+    مراجعة B2 R13 (docs/reports/B2-review-2.md): حين لا يطابق العنوان أي
+    مستوى (فالعنوان صريح لكن غير مغطّى بالمعجم، مثال: "Vice President,
+    Internal Audit")، كان الرجوع للنص الكامل يُعيد أول تطابق بترتيب القائمة
+    (intern أولاً) — فإن حوى الوصف كلمة "internship" ضمن نص توضيحي/EEO عام
+    ("this is a full-time role, not an internship") بينما يحوي أيضًا إشارة
+    أقوى صريحة لمستوى أعلى (senior/manager/lead) بنفس النص، كان "intern"
+    يفوز زورًا لمجرد ترتيبه الأول بالقائمة. الإصلاح: بفرع النص الكامل فقط،
+    اجمع كل المستويات المطابقة؛ إن كان "intern" الوحيد المطابق أعده كما هو
+    (إعلان تدريب فعلي)، وإلا رجّح أقوى إشارة أخرى موجودة (بترتيب القائمة
+    الأصلي بعد استبعاد intern) — لا يفوز "intern" أبدًا حين تتعايش معه أي
+    إشارة أخرى بنفس النص. فرع العنوان أعلاه غير متأثر (نادرًا ما يحوي العنوان
+    القصير أكثر من مستوى واحد فعليًا، ولا حالة R13 تمسّه)."""
     if title:
         for level, pattern in _SENIORITY_PATTERNS:
             if pattern.search(title):
                 return level
     if not text:
         return None
-    for level, pattern in _SENIORITY_PATTERNS:
-        if pattern.search(text):
+    matched = {level for level, pattern in _SENIORITY_PATTERNS if pattern.search(text)}
+    if not matched:
+        return None
+    if matched == {"intern"}:
+        return "intern"
+    for level, _pattern in _SENIORITY_PATTERNS:
+        if level != "intern" and level in matched:
             return level
-    return None
+    return "intern"
 
 
 # ---------------------------------------------------------------------------
