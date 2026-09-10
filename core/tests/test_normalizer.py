@@ -19,6 +19,9 @@
     R11: compute_region/extract_country_code لا يلجآن لنص إضافي (extra_text)
         إلا حين location_text فارغًا تمامًا — ذكر عرَضي لدولة خليجية بالوصف
         لا يجوز أن يتجاوز موقعًا خامًا واضحًا غير خليجي.
+    R13 (تنفيذ B2-close): فرع النص الكامل بـextract_seniority() لم يعد يعطي
+        "intern" الأولوية لمجرد ترتيبه الأول بالقائمة الداخلية حين تتعايش
+        معه إشارة أقوى صريحة (senior/manager/lead/entry) بنفس النص.
 
 يُشغّل محليًا بـpytest قبل كل commit (الدليل التنفيذي، القسم "الاختبار قبل
 DONE"). لا يحتاج قاعدة بيانات ولا شبكة — دوال نقية فقط.
@@ -346,3 +349,62 @@ def test_compute_region_recognizes_gcc_location_directly() -> None:
     code, out_of_region = compute_region("Riyadh, sa", None)
     assert code == "SA"
     assert out_of_region is False
+
+
+# ---------------------------------------------------------------------------
+# مراجعة B2 الثانية R13 — الأولوية لأقوى إشارة أقدمية موجودة بالنص الكامل،
+# لا لأول إشارة بترتيب القائمة (الترتيب الداخلي intern أولاً كان يجعل ذكر
+# "internship" ضمن نص توضيحي/EEO عام يفوز زورًا على إشارة صريحة أقوى
+# لمستوى أعلى بنفس النص، حين لا يطابق العنوان نفسه أي مستوى مباشرة).
+# ---------------------------------------------------------------------------
+
+
+def test_extract_seniority_full_text_prefers_stronger_signal_over_incidental_intern_mention() -> None:
+    """R13 — الحالة المُبلَّغة تحديدًا بالمراجعة: عنوان "Vice President,
+    Internal Audit" لا يطابق أي مستوى بذاته (لا "VP" ولا "audit" بالمعجم)،
+    فيُفحَص النص الكامل — الذي يحوي "Head of Finance" (إشارة manager صريحة)
+    وأيضًا كلمة "internship" ضمن جملة توضيحية عامة ("ليست وظيفة تدريب").
+    النتيجة الصحيحة: manager (الإشارة الأقوى)، وليس intern لمجرد ترتيبه
+    الأول بالقائمة الداخلية."""
+    title = "Vice President, Internal Audit"
+    description = (
+        "We are looking for an experienced Vice President to lead our Internal "
+        "Audit function. This is a full-time position, not an internship. "
+        "Reporting to the Head of Finance."
+    )
+    combined = f"{title}\n{description}"
+    result = extract_seniority(combined, title=title)
+    assert result == "manager", f"متوقع manager (أقوى إشارة)، حصلنا على {result!r}"
+    assert result != "intern"
+
+
+def test_extract_seniority_full_text_prefers_senior_over_incidental_intern_mention() -> None:
+    """نفس نمط R13 لكن بإشارة senior بدل manager — يجب ألا يفوز intern طالما
+    توجد إشارة أخرى صريحة بنفس النص، أيًا كانت (senior/manager/lead/entry)."""
+    title = "Solutions Architect"  # لا يطابق أي مستوى بذاته
+    description = (
+        "Senior Solutions Architect role — not an internship, this is a "
+        "permanent full-time position for an experienced professional."
+    )
+    combined = f"{title}\n{description}"
+    result = extract_seniority(combined, title=title)
+    assert result == "senior"
+    assert result != "intern"
+
+
+def test_extract_seniority_full_text_still_returns_intern_when_it_is_the_only_signal() -> None:
+    """حين "intern" هو التطابق الوحيد فعليًا (لا إشارة أقوى متزامنة)، يبقى
+    السلوك كما هو — إعلان تدريب حقيقي لا يجب أن يفقد تصنيفه."""
+    title = "Graduate"  # لا يطابق أي مستوى بذاته مباشرة
+    description = "Internship opportunity for fresh graduates — no prior experience required."
+    combined = f"{title}\n{description}"
+    result = extract_seniority(combined, title=title)
+    assert result == "intern"
+
+
+def test_extract_seniority_title_match_unaffected_by_r13_fix() -> None:
+    """فرع مطابقة العنوان (title) يبقى بلا تغيير — "International Tax
+    Director" يطابق "director" (حزمة manager) مباشرة عبر العنوان، فلا يصل
+    إطلاقًا لفرع النص الكامل الذي يمسّه إصلاح R13."""
+    title = "International Tax Director"
+    assert extract_seniority(title, title=title) == "manager"
