@@ -1,6 +1,6 @@
 """اختبارات core/app/telegram_client.py (B8) — عميل Telegram Bot API الخفيف.
 
-كل استدعاء شبكي يُموَّه بمراقبة/استبدال httpx.AsyncClient (لا اتصال حقيقي
+كل استدعاء شبكي يُموّه بمراقبة/استبدال httpx.AsyncClient (لا اتصال حقيقي
 أبدًا) — نتحقق من: بناء الرابط الصحيح، تمرير reply_markup الصحيح
 (inline_keyboard مقابل reply_keyboard بـrequest_contact)، رفع
 TelegramAPIError عند ok:false أو فشل شبكة/JSON تالف، وتفكيك Update الخام
@@ -20,6 +20,7 @@ from app.telegram_client import (
     TelegramAPIError,
     TelegramClient,
     extract_chat_event,
+    split_message_text,
 )
 
 
@@ -57,9 +58,9 @@ class _FakeResponse:
     def raise_for_status(self) -> None:
         if not self._raise_error:
             return
-        # نبني httpx.Response/HTTPStatusError حقيقيَّين (نفس مسار الكود
+        # نبني httpx.Response/HTTPStatusError حقيقيّين (نفس مسار الكود
         # الفعلي بمكتبة httpx، لا استثناء مُصطنَع يدويًا) — هذا يضمن أن
-        # str(exc) يتضمّن الرابط الكامل (بما فيه التوكن إن مُرِّر بـ
+        # str(exc) يتضمّن الرابط الكامل (بما فيه التوكن إن مُرّر بـ
         # raise_error_url) تمامًا كما يحدث فعليًا، ما يجعل اختبار عدم
         # التسريب أدناه (test_download_file_bytes_...) واقعيًا لا مصطنَعًا.
         request = httpx.Request("GET", self._raise_error_url or "https://api.telegram.org/x")
@@ -147,6 +148,65 @@ def test_send_message_raises_on_invalid_json_response():
     client = TelegramClient(token="T")
     with pytest.raises(TelegramAPIError):
         _run(client.send_message(1, "hi"))
+
+
+# ---------------------------------------------------------------------------
+# B9/A3: split_message_text + تقسيم send_message التلقائي للنصوص الطويلة
+# ---------------------------------------------------------------------------
+
+
+def test_split_message_text_returns_single_chunk_when_short():
+    assert split_message_text("سطر قصير") == ["سطر قصير"]
+
+
+def test_split_message_text_splits_at_paragraph_boundary():
+    part_a = "أ" * 2000
+    part_b = "ب" * 2000
+    text = f"{part_a}\n\n{part_b}"
+    chunks = split_message_text(text, limit=3500)
+    assert len(chunks) == 2
+    assert chunks[0] == part_a
+    assert chunks[1] == part_b
+
+
+def test_split_message_text_hard_splits_single_block_with_no_newlines():
+    text = "س" * 9000
+    chunks = split_message_text(text, limit=3500)
+    assert len(chunks) == 3
+    assert "".join(chunks) == text
+    assert all(len(c) <= 3500 for c in chunks)
+
+
+def test_split_message_text_never_drops_content():
+    # نص طويل عشوائي التركيب (أسطر متفاوتة الطول + فقرات) — التحقق الجوهري:
+    # لا فقدان حرف واحد بصرف النظر عن نقاط القسمة.
+    lines = [f"سطر رقم {i} " + ("x" * (i % 50)) for i in range(300)]
+    text = "\n".join(lines)
+    chunks = split_message_text(text, limit=500)
+    assert len(chunks) > 1
+    assert "\n".join(chunks) == text or "".join(chunks).replace("\n", "") == text.replace("\n", "")
+
+
+def test_send_message_splits_long_text_into_multiple_calls(monkeypatch):
+    monkeypatch.setattr(telegram_client, "SAFE_SPLIT_LIMIT", 50)
+    client = TelegramClient(token="T")
+    long_text = "\n\n".join(f"فقرة {i} " + ("x" * 40) for i in range(4))
+    _run(client.send_message(1, long_text))
+    assert len(_FakeAsyncClient.calls) > 1
+    sent_texts = [c["json"]["text"] for c in _FakeAsyncClient.calls]
+    assert "".join(sent_texts).replace("\n\n", "") != ""  # لم تُرسَل رسالة فارغة بالخطأ
+
+
+def test_send_message_attaches_buttons_only_to_last_chunk(monkeypatch):
+    monkeypatch.setattr(telegram_client, "SAFE_SPLIT_LIMIT", 50)
+    client = TelegramClient(token="T")
+    buttons = [[{"text": "رجوع", "callback_data": "back"}]]
+    long_text = "\n\n".join(f"فقرة {i} " + ("x" * 40) for i in range(3))
+    _run(client.send_message(1, long_text, buttons=buttons))
+    assert len(_FakeAsyncClient.calls) > 1
+    for call in _FakeAsyncClient.calls[:-1]:
+        assert "reply_markup" not in call["json"]
+    assert _FakeAsyncClient.calls[-1]["json"]["reply_markup"] == {"inline_keyboard": buttons}
 
 
 # ---------------------------------------------------------------------------
@@ -261,7 +321,7 @@ def test_download_file_bytes_http_status_error_message_excludes_token_and_includ
 def test_download_file_bytes_http_status_error_does_not_leak_token_via_exc_info_logging(caplog):
     """يُحاكي حرفيًا نمط telegram_onboarding.py._step_cv (`except
     TelegramAPIError: logger.warning(..., exc_info=True)`) — التوكن يجب ألا
-    يظهر حتى بالـtraceback الكامل المُسجَّل، لا فقط بنص رسالة الاستثناء."""
+    يظهر حتى بالـtraceback الكامل المُسجّل، لا فقط بنص رسالة الاستثناء."""
     token = "987654321:ANOTHER-SECRET-TOKEN-VALUE"
     file_path = "documents/cv_customer_7.pdf"
     url = f"https://api.telegram.org/file/bot{token}/{file_path}"
@@ -360,7 +420,7 @@ def test_extract_chat_event_returns_none_for_unsupported_update():
 
 # ---------------------------------------------------------------------------
 # send_message_sync — نسخة متزامنة (B8: توحيد عميل Bot API — تُستخدم من
-# app.telegram_notify، تيار الصادر داخل core-scheduler). تُموَّه هنا
+# app.telegram_notify، تيار الصادر داخل core-scheduler). تُموّه هنا
 # httpx.post مباشرة (لا AsyncClient) لأنها الدالة الوحيدة المتزامنة بالملف.
 # ---------------------------------------------------------------------------
 
