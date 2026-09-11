@@ -48,6 +48,16 @@ logger = logging.getLogger("masar.telegram_client")
 DEFAULT_TIMEOUT_SECONDS = 15.0
 API_BASE_URL = "https://api.telegram.org"
 
+# B9/A3: الحد الرسمي لطول نص sendMessage بواجهة Telegram Bot API هو 4096
+# حرفًا — أي رسالة أطول كانت تُرفَض بالكامل (ok:false) فترفع TelegramAPIError
+# ولا يصل أي شيء للمستلم إطلاقًا. أوضح مثال اكتُشف به هذا (مراجعة الجاهزية
+# قبل التجربة الحيّة، 2026-09-11): زر "📨 تقرير عميل" بالبوت الإداري، الذي
+# قد ينتج نصًّا يتجاوز الحد بسهولة لعميل نشط بيوم مزدحم. SAFE_SPLIT_LIMIT
+# أقل من الحد الرسمي بهامش أمان (لا نعتمد على 4096 بالضبط، تحسّبًا لعدّ
+# Telegram الأحرف بطريقة UTF-16 لبعض الرموز التعبيرية النادرة).
+TELEGRAM_MESSAGE_LIMIT = 4096
+SAFE_SPLIT_LIMIT = 3500
+
 # أكواد حالة HTTP يُستحسَن إعادة المحاولة عندها (تحدّد المعدّل/فشل مؤقت من
 # طرف تيليجرام) — تُستخدَم فقط من send_message_sync (max_attempts>1)؛
 # TelegramClient._call غير المتزامنة أعلاه تُبقي محاولة واحدة فقط عمدًا
@@ -58,6 +68,44 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 class TelegramAPIError(RuntimeError):
     """فشل استدعاء Telegram Bot API — إما خطأ شبكة/HTTP، أو ok:false بجسم الرد."""
+
+
+def split_message_text(text: str, limit: int | None = None) -> list[str]:
+    """B9/A3: يقسّم نصًّا طويلًا إلى قِطع كل منها ≤ `limit` حرفًا — يُستخدَم من
+    `TelegramClient.send_message`/`send_message_sync` أدناه قبل أي استدعاء
+    فعلي لـsendMessage، حتى لا يُرفَض نص طويل بالكامل (راجع SAFE_SPLIT_LIMIT
+    أعلاه لتفاصيل المشكلة).
+
+    `limit` افتراضيًا None فيُقرَأ SAFE_SPLIT_LIMIT من متغيّر الوحدة (module
+    global) *عند كل استدعاء* لا مرّة واحدة وقت تعريف الدالة (تجنّبًا لفخّ
+    Python الشهير: قيمة افتراضية لبارامتر تُحسَب مرّة واحدة فقط عند
+    `def` — لو كانت `limit: int = SAFE_SPLIT_LIMIT` مباشرة، لَما أمكن أي
+    اختبار/تهيئة تغيير SAFE_SPLIT_LIMIT لاحقًا وتوقّع أثره هنا).
+
+    يحاول القسمة عند حدود منطقية بالترتيب: فقرة فارغة (`\\n\\n`) ثم سطر
+    (`\\n`) — فقط إن وقعت نقطة القسمة بالنصف الثاني من النافذة الحالية
+    (>= limit/2)، تجنّبًا لقِطع مجهرية لو وقع أول سطر فارغ قريبًا جدًا من
+    البداية. لا يوجد فاصل مناسب (نص كتلة واحدة طويلة جدًا بلا أسطر إطلاقًا،
+    نادر عمليًا لرسائل Masar) → قسّ حرفي صارم عند `limit` كحل احتياطي آمن
+    (لا فقدان بيانات، فقط قد يقسّم كلمة بمنتصفها)."""
+    if limit is None:
+        limit = SAFE_SPLIT_LIMIT
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while len(remaining) > limit:
+        window = remaining[:limit]
+        split_at = window.rfind("\n\n")
+        if split_at < limit // 2:
+            alt = window.rfind("\n")
+            split_at = alt if alt >= limit // 2 else limit
+        chunks.append(remaining[:split_at].rstrip("\n"))
+        remaining = remaining[split_at:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    return chunks
 
 
 @dataclass
@@ -113,15 +161,25 @@ class TelegramClient:
         أزرار {"text": ..., "callback_data": ...} — تُبنى كـinline_keyboard
         مباشرة (معظم المحادثة الجديدة قائمة على أزرار inline؛ استثناء
         وحيد هو طلب رقم الجوال عبر send_contact_request أدناه، الذي يحتاج
-        reply_keyboard حقيقية — Telegram لا يدعم "شارك رقمك" كزر inline)."""
-        payload: dict[str, Any] = {
-            "chat_id": chat_id,
-            "text": text,
-            "disable_web_page_preview": disable_web_page_preview,
-        }
-        if buttons:
-            payload["reply_markup"] = {"inline_keyboard": buttons}
-        return await self._call("sendMessage", payload)
+        reply_keyboard حقيقية — Telegram لا يدعم "شارك رقمك" كزر inline).
+
+        B9/A3: نص أطول من SAFE_SPLIT_LIMIT يُقسَّم تلقائيًا (split_message_text)
+        إلى عدة رسائل متتالية — `buttons` (إن وُجدت) تُرفَق بآخر قِطعة فقط
+        (منطقيًا: الأزرار عادة إجراء متعلّق بنهاية الرسالة/القائمة). النتيجة
+        المُرجَعة هي نتيجة *آخر* استدعاء sendMessage فقط (نفس التوقيع القديم
+        بلا تغيير عند رسالة واحدة قصيرة — الحالة الشائعة كثيرًا)."""
+        parts = split_message_text(text)
+        result: dict[str, Any] = {}
+        for i, part in enumerate(parts):
+            payload: dict[str, Any] = {
+                "chat_id": chat_id,
+                "text": part,
+                "disable_web_page_preview": disable_web_page_preview,
+            }
+            if buttons and i == len(parts) - 1:
+                payload["reply_markup"] = {"inline_keyboard": buttons}
+            result = await self._call("sendMessage", payload)
+        return result
 
     async def send_contact_request(self, chat_id: int | str, text: str, button_text: str) -> dict[str, Any]:
         """يرسل رسالة مع زر لوحة ردّ واحد (reply_keyboard، لا inline) بخاصية
@@ -219,7 +277,7 @@ class TelegramClient:
         # HTTPStatusError هنا تحديدًا ونبني استثناءً/رسالة سجلّ **جديدين
         # تمامًا** (كود الحالة + مسار الملف فقط، لا الرابط الخام إطلاقًا)
         # — و`from None` عمدًا (لا `from exc`) حتى لا يبقى الاستثناء الأصلي
-        # (وتوكنه) مُتسلسلًا بـ`__cause__` فيظهر مجددًا بأي traceback مُسجَّل
+        # (وتوكنه) مُتسلسلًا بـ__cause__ فيظهر مجددًا بأي traceback مُسجَّل
         # لاحقًا عبر exc_info=True رغم الرسالة الآمنة.
         url = f"{self.base_url}/file/bot{self.token}/{file_path}"
         try:
