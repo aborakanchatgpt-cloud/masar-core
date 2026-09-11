@@ -7,7 +7,7 @@ Core مباشرة، بقائمة أزرار inline واحدة تُغطّي كل 
 **بوابة وصول مغلقة افتراضيًا (fail-closed)** — نفس فلسفة app.auth تمامًا:
 لا رسالة تُعالَج ولا ردّ يُرسَل لأي محادثة غير MASAR_OWNER_CHAT_ID، وإن غاب
 MASAR_OWNER_CHAT_ID من البيئة يتعطّل هذا البوت بالكامل (لا "يفتح" بالخطأ).
-هذا التحقق مكرَّر هنا عمدًا فوق فحص app.telegram_api (دفاع بالعمق — لا
+هذا التحقق مكرّر هنا عمدًا فوق فحص app.telegram_api (دفاع بالعمق — لا
 نعتمد على طبقة توجيه واحدة فقط لحماية أوامر إدارية حسّاسة كالتفعيل/الإيقاف).
 
 كل أمر يستدعي **مباشرة** الدالة الأساسية بنفس نقطة النهاية HTTP الموجودة
@@ -79,8 +79,8 @@ def _clear_session(chat_id: int) -> None:
 
 def is_owner_chat(chat_id: int) -> bool:
     """فشل مغلق عمدًا (نفس نمط app.auth.require_admin_token): غياب
-    MASAR_OWNER_CHAT_ID بالبيئة يعني "لا مالك مُعرَّف" فيُرفض أي chat_id
-    بلا استثناء، بدل معاملة قيمة فارغة كمطابقة بالخطأ."""
+    MASAR_OWNER_CHAT_ID بالبيئة يعني "لا مالك مُعرّف" فيُرفض أي chat_id بلا
+    استثناء، بدل معاملة قيمة فارغة كمطابقة بالخطأ."""
     owner = os.environ.get("MASAR_OWNER_CHAT_ID", "")
     if not owner:
         return False
@@ -267,10 +267,19 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
         return
 
     if step == "extend_days":
+        # B9/A6: كان أي إدخال غير رقمي هنا (خطأ كتابة، مثلًا) يُمرّر بصمت
+        # كـEXTEND_DEFAULT_DAYS (30 يومًا) بلا أي إشعار — قد يُمدّد اشتراك
+        # عميل بعدد أيام لم يقصده أحمد إطلاقًا. الآن: نفس نمط إعادة الطلب
+        # المُستخدَم بكل خطوة رقمية أخرى بهذا الملف (extend_id/status_id/...)
+        # — إدخال غير صحيح يُعيد نفس السؤال بدل الاستمرار بقيمة مخمّنة.
         try:
             days = int(text)
         except ValueError:
-            days = EXTEND_DEFAULT_DAYS
+            await client.send_message(
+                event.chat_id,
+                f"لم أفهم هذا كعدد أيام. اكتب رقمًا صحيحًا (مثال: 30)، افتراضيًا {EXTEND_DEFAULT_DAYS}:",
+            )
+            return
         customer_id = int(data.get("customer_id", 0))
         _clear_session(event.chat_id)
         await _reply_extend_subscription(client, event.chat_id, customer_id, days)
@@ -301,7 +310,7 @@ async def _reply_create_customer(client: TelegramClient, chat_id: int, name: str
     await client.send_message(
         chat_id,
         f"✅ تم تسجيل العميل #{result['customer_id']} — {name}\n"
-        f"الجوال: {phone_digits or 'غير محدَّد'}\n\n"
+        f"الجوال: {phone_digits or 'غير محدّد'}\n\n"
         "سيربط العميل حسابه بنفسه عند مراسلة بوت مسار ومشاركة رقم جواله.",
     )
 
@@ -420,15 +429,15 @@ async def _reply_set_status(client: TelegramClient, chat_id: int, customer_id: i
     except HTTPException as exc:
         await client.send_message(chat_id, f"⚠️ {exc.detail}")
         return
-    label = "مُفعَّل ▶️" if new_status == "active" else "مُوقَف ⏸️"
+    label = "مُفعّل ▶️" if new_status == "active" else "مُوقف ⏸️"
     await client.send_message(chat_id, f"✅ تم تحديث حالة العميل #{result['customer_id']} إلى {label}.")
 
 
 async def _reply_extend_subscription(client: TelegramClient, chat_id: int, customer_id: int, days: int) -> None:
-    """يمدّد أحدث اشتراك فعّال للعميل بعدد أيام محدَّد — لا نقطة نهاية HTTP
-    جاهزة لهذا حاليًا بالمستودع، فيُنفَّذ هنا مباشرة (SQL بسيط، نفس نمط
-    الملفات الأخرى: UPDATE محمي بشرط status='active' فلا يُمدَّد اشتراك
-    مُغلَق سهوًا)."""
+    """يمدّد أحدث اشتراك فعّال للعميل بعدد أيام محدّد — لا نقطة نهاية HTTP
+    جاهزة لهذا حاليًا بالمستودع، فيُنفذ هنا مباشرة (SQL بسيط، نفس نمط
+    الملفات الأخرى: UPDATE محمي بشرط status='active' فلا يُمدّد اشتراك
+    مُغلَق سهوًا."""
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(

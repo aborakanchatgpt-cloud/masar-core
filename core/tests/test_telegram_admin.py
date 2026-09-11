@@ -1,5 +1,5 @@
 """اختبارات core/app/telegram_admin.py (B8) — بوابة الوصول is_owner_chat
-وتوجيه handle_update لمحادثات غير مصرَّح بها فقط (بلا قاعدة بيانات، تعمل
+وتوجيه handle_update لمحادثات غير مصرّح بها فقط (بلا قاعدة بيانات، تعمل
 دومًا). فشل مغلق (fail-closed) عمدًا: نفس فلسفة app.auth.require_admin_token
 — غياب MASAR_OWNER_CHAT_ID بالبيئة يُعطّل بوت الأدمن بالكامل بدل معاملة قيمة
 فارغة كمطابقة بالخطأ.
@@ -58,4 +58,30 @@ def test_handle_update_ignores_non_owner_silently(monkeypatch, chat_id):
         message_id=1, document=None, photo=None, contact=None, from_user_id=chat_id,
     )
     _run(admin.handle_update({}, event, _Client()))
-    assert calls == []  # لا أي ردّ لمحادثة غير مصرَّح بها
+    assert calls == []  # لا أي ردّ لمحادثة غير مصرّح بها
+
+
+# ---------------------------------------------------------------------------
+# B9/A6: خطوة extend_days — إدخال غير رقمي يجب أن يُعيد الطلب (بلا لمس
+# قاعدة البيانات إطلاقًا بهذا المسار: لا _clear_session ولا
+# _reply_extend_subscription تُستدعيان قبل التحقق من صحة الرقم) بدل
+# الاستمرار بصمت بـEXTEND_DEFAULT_DAYS كما كان سابقًا.
+# ---------------------------------------------------------------------------
+
+
+def test_extend_days_step_reprompts_on_non_numeric_input():
+    calls: list[Any] = []
+
+    class _Client:
+        async def send_message(self, *a, **kw):
+            calls.append((a, kw))
+
+    event = ChatEvent(
+        chat_id=1, text="ثلاثين يوم", is_callback=False, callback_data="", callback_query_id=None,
+        message_id=1, document=None, photo=None, contact=None, from_user_id=1,
+    )
+    _run(admin._handle_step_text(event, _Client(), "extend_days", {"customer_id": 7}))
+    assert len(calls) == 1
+    sent_text = calls[0][0][1]
+    assert str(admin.EXTEND_DEFAULT_DAYS) in sent_text
+    assert "لم أفهم" in sent_text
