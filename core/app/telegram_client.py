@@ -277,7 +277,7 @@ class TelegramClient:
         # HTTPStatusError هنا تحديدًا ونبني استثناءً/رسالة سجلّ **جديدين
         # تمامًا** (كود الحالة + مسار الملف فقط، لا الرابط الخام إطلاقًا)
         # — و`from None` عمدًا (لا `from exc`) حتى لا يبقى الاستثناء الأصلي
-        # (وتوكنه) مُتسلسلًا بـ__cause__ فيظهر مجددًا بأي traceback مُسجَّل
+        # (وتوكنه) مُتسلسلًا بـ`__cause__` فيظهر مجددًا بأي traceback مُسجَّل
         # لاحقًا عبر exc_info=True رغم الرسالة الآمنة.
         url = f"{self.base_url}/file/bot{self.token}/{file_path}"
         try:
@@ -323,6 +323,13 @@ class ChatEvent:
     photo: list[dict[str, Any]] | None
     contact: dict[str, Any] | None
     from_user_id: int | None
+    # B9/B2: اسم مستخدم تيليجرام لمرسل التحديث (بلا "@"، كما يُرجعه Telegram
+    # حرفيًا — قد يحوي أحرفًا كبيرة، التطبيع lower-case مسؤولية المستدعي)،
+    # أو None إن لم يضبط المستخدم اسم مستخدم إطلاقًا. حقل جديد بنهاية
+    # dataclass بقيمة افتراضية حتى لا يكسر أي بناء ChatEvent(...) قديم بالكود
+    # أو الاختبارات لا يمرّره. يُستخدم حصرًا بربط مفوّضي بوت الأدمن
+    # (telegram_admin._try_link_delegate) — لا استخدام آخر حاليًا.
+    from_username: str | None = None
 
 
 def extract_chat_event(update: dict[str, Any]) -> ChatEvent | None:
@@ -348,6 +355,7 @@ def extract_chat_event(update: dict[str, Any]) -> ChatEvent | None:
             photo=None,
             contact=None,
             from_user_id=from_user.get("id"),
+            from_username=from_user.get("username"),
         )
 
     message = update.get("message") or update.get("edited_message")
@@ -369,6 +377,7 @@ def extract_chat_event(update: dict[str, Any]) -> ChatEvent | None:
         photo=message.get("photo"),
         contact=message.get("contact"),
         from_user_id=from_user.get("id"),
+        from_username=from_user.get("username"),
     )
 
 
