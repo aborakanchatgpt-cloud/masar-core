@@ -123,7 +123,19 @@ services:
       # فقط يستبدلها ذاتيًا بـ${VAR} هنا)، كل تشفير/فك تشفير سرّ بريد يفشل
       # دومًا (MailCryptoUnavailable)، ولا مسار sink قابل للتفعيل إطلاقًا.
       MAIL_FERNET_KEY: ${MAIL_FERNET_KEY:-}
-      MAIL_SINK_SMTP: ${MAIL_SINK_SMTP:-mailpit:1025}
+      # تصحيح 11 سبتمبر (اكتشاف أثناء تفعيل الإرسال الحي الأول): الصيغة
+      # القديمة `${MAIL_SINK_SMTP:-mailpit:1025}` (بنقطتين) تُطبّق القيمة
+      # الافتراضية أيضًا حين تكون MAIL_SINK_SMTP مضبوطة صراحةً بـ.env لكن
+      # **فارغة** (نفس معاملة "غير معرَّفة" — دلالة `:-` القياسية بكل من
+      # bash وDocker Compose) — ما كان يجعل تعطيل sink عبر ".env فارغ"
+      # مستحيلًا فعليًا بلا تعديل هذا الملف نفسه أيضًا. الصيغة الجديدة بلا
+      # نقطتين (`${VAR-default}`) تُفرّق بين "غير معرَّفة إطلاقًا" (لا يوجد
+      # سطر MAIL_SINK_SMTP بـ.env أصلًا → mailpit:1025 كما كان دومًا، يبقى
+      # الافتراضي الآمن لأي بيئة تطوير لا تضبط شيئًا) وبين "معرَّفة صراحةً
+      # وفارغة" (سطر `MAIL_SINK_SMTP=` بـ.env → قيمة فعلية فارغة تصل
+      # للحاوية → core.app.sender.resolve_transport يتعامل معها كـ"sink
+      # غير مفعّل" فعليًا، يسمح بوضع الإرسال الحي الحقيقي عبر MAIL_LIVE=true).
+      MAIL_SINK_SMTP: ${MAIL_SINK_SMTP-mailpit:1025}
       MAIL_SINK_API_URL: ${MAIL_SINK_API_URL:-http://mailpit:8025}
       DRY_RUN_TO: ${DRY_RUN_TO:-}
       MAIL_LIVE: ${MAIL_LIVE:-false}
@@ -210,7 +222,9 @@ services:
       # فعليًا (send_builder، كل 10 دقائق) ويرسل (sender، كل دقيقة) ويقرأ
       # الوارد (inbox، كل 15 دقيقة)، فيحتاجها جميعًا لا core وحدها.
       MAIL_FERNET_KEY: ${MAIL_FERNET_KEY:-}
-      MAIL_SINK_SMTP: ${MAIL_SINK_SMTP:-mailpit:1025}
+      # نفس تصحيح 11 سبتمبر أعلاه بخدمة core — راجع التعليق هناك (بلا
+      # نقطتين كي يُحترَم سطر ".env فارغ صراحةً" لا أن يُعامَل كـ"غير معرَّف").
+      MAIL_SINK_SMTP: ${MAIL_SINK_SMTP-mailpit:1025}
       MAIL_SINK_API_URL: ${MAIL_SINK_API_URL:-http://mailpit:8025}
       DRY_RUN_TO: ${DRY_RUN_TO:-}
       MAIL_LIVE: ${MAIL_LIVE:-false}
