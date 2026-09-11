@@ -2,6 +2,17 @@
 إجراء (تفعيل/إيقاف، تمديد، تقرير اليوم، رسالة له، رابط ربط بريد) — و"✉️
 رسالة لعميل" (يعيد استخدام نفس البحث). راجع الدليل §B5.
 
+**B3-متابعة (فئات استهداف):** "✉️ رسالة لعميل" لم تعد تبحث عن عميل محدد
+فقط — `telegram_admin.py` يعرض أولًا فئة الاستهداف (عميل محدد/كل العملاء/
+النشطون/منتهو الاشتراك)، وفئات الجماعة الثلاث الأخيرة تصل هنا عبر
+`count_customers_by_target`/`send_bulk_message_and_log` بدل البحث الفردي.
+"العميل النشط" = `customers.status = 'active'`، و"منتهي الاشتراك" =
+`customers.status = 'expired'` (نفس القيمتين المُستخدَمتين فعليًا بعدة
+ملفات أخرى — `telegram_admin_commands.reply_overview`/
+`telegram_onboarding._handle_unlinked`). لا إرسال لعميل بلا
+`telegram_chat_id` (لا يقدر يستلم رسالة تيليجرام أصلًا) — يُحتسَب "فشل"
+بالتقرير النهائي لا يُوقف بقية الدفعة.
+
 لا إدارة جلسة هنا إطلاقًا (لا `_save_session`/`_clear_session`) — نفس نمط
 `telegram_admin_delegates.py`: `telegram_admin.py` وحده يملك خطوات الجلسة
 متعددة الرسائل، وهذا الملف دوال صرفة (بحث/عرض/فعل) يستدعيها. كل استدعاء
@@ -12,9 +23,9 @@ link_api) — بحث متعدد المعايير فقط (لا نقطة نهاي�
 B9/B5-hotfix (11 سبتمبر، بعد مراجعة أحمد): `card_report` كان يستدعي
 `reports_api.customer_report(customer_id)` بلا تمرير `date` صراحة — معامل
 FastAPI الافتراضي `Query(default=None)` لا يُحلّ لقيمته الفعلية عند
-الاستدعاء المباشر (بلا HTTP)، فيبقى كائن Query نفسه ويُمرَّر لاستعلام SQL
+الاستدعاء المباشر (بلا HTTP)، فيبقى كائن Query نفسه ويُمرّر لاستعلام SQL
 فيفشل بصمت. أُصلح بتمرير `date=None` صراحة + شبكة أمان `except Exception`
-تُخبر أحمد بخطأ داخلي بدل صمت تام لأي عطل غير متوقع مستقبلي بنفس النمط.
+تُخبر أحمد بخطأ داخلي بدل صمت تام لأي عطل غير متوقع مستقبلًا بنفس النمط.
 """
 from __future__ import annotations
 
@@ -151,7 +162,7 @@ async def reply_customer_card(client: TelegramClient, chat_id: int, customer_id:
         package_line = f"{extra['subscription']['product_code']} — ينتهي {extra['subscription']['ends_at'].date()}"
     else:
         package_line = f"رصيد: {c.get('wallet_balance', 0)}"
-    mail_line = {"ok": "مربوط ✅", "failed": "فشل ❌", "unverified": "بانتظار التحقّق"}.get(
+    mail_line = {"ok": "مربوط ✅", "failed": "فشل ❌", "unverified": "بانتظار التحقق"}.get(
         extra["mail_status"], "غير موجود"
     )
 
@@ -196,7 +207,7 @@ async def card_toggle_status(client: TelegramClient, chat_id: int, customer_id: 
     except HTTPException as exc:
         await client.send_message(chat_id, f"⚠️ {exc.detail}", buttons=nav_rows(None, "admin:menu"))
         return
-    label = "مُفعَّل ▶️" if new_status == "active" else "مُوقَف ⏸️"
+    label = "مُفعّل ▶️" if new_status == "active" else "مُوقَف ⏸️"
     await client.send_message(chat_id, f"✅ تم تحديث حالة العميل #{result['customer_id']} إلى {label}.")
     await reply_customer_card(client, chat_id, customer_id)
 
@@ -232,7 +243,7 @@ async def card_link(client: TelegramClient, chat_id: int, customer_id: int) -> N
     domain = os.environ.get("MASAR_DOMAIN", "")
     if not domain:
         await client.send_message(
-            chat_id, "⚠️ MASAR_DOMAIN غير معرَّف بالخادم — لا يمكن توليد رابط قابل للفتح."
+            chat_id, "⚠️ MASAR_DOMAIN غير معرّف بالخادم — لا يمكن توليد رابط قابل للفتح."
         )
         return
     link_url = f"https://{domain}{token_result['path']}"
@@ -281,3 +292,98 @@ async def send_customer_message_and_log(
             {"cid": customer_id, "txt": message_text, "by": chat_id},
         )
     await client.send_message(chat_id, "✅ أُرسلت الرسالة للعميل.", buttons=nav_rows(None, "admin:menu"))
+
+
+# =========================================================================
+# ✉️ رسالة لعميل — فئات استهداف جماعية (B3-متابعة)
+# =========================================================================
+
+MSG_TARGET_LABELS = {
+    "all": "كل العملاء",
+    "active": "العملاء النشطين",
+    "expired": "العملاء المنتهية اشتراكاتهم",
+}
+
+
+def _customer_ids_by_target(target: str) -> list[int]:
+    engine = get_engine()
+    with engine.connect() as conn:
+        if target == "all":
+            rows = conn.execute(
+                sql_text("SELECT id FROM customers WHERE telegram_chat_id IS NOT NULL")
+            ).all()
+        elif target in ("active", "expired"):
+            rows = conn.execute(
+                sql_text("SELECT id FROM customers WHERE telegram_chat_id IS NOT NULL AND status = :st"),
+                {"st": target},
+            ).all()
+        else:
+            return []
+    return [r[0] for r in rows]
+
+
+def count_customers_by_target(target: str) -> int:
+    return len(_customer_ids_by_target(target))
+
+
+async def reply_msg_category_menu(client: TelegramClient, chat_id: int) -> None:
+    buttons = [
+        [{"text": "🎯 عميل محدد", "callback_data": "admin:msg_cat:specific"}],
+        [{"text": "👥 كل العملاء", "callback_data": "admin:msg_cat:all"}],
+        [{"text": "🟢 العملاء النشطون", "callback_data": "admin:msg_cat:active"}],
+        [{"text": "⌛ العملاء المنتهية اشتراكاتهم", "callback_data": "admin:msg_cat:expired"}],
+    ]
+    buttons.extend(nav_rows(None, "admin:menu"))
+    await client.send_message(chat_id, "✉️ رسالة لعميل — اختر الفئة المستهدفة:", buttons=buttons)
+
+
+async def reply_msg_bulk_preview(client: TelegramClient, chat_id: int, target: str, message_text: str) -> None:
+    """يُستدعى بعد كتابة الأدمن نص رسالة جماعية — معاينة + زرّي تأكيد/إلغاء
+    قبل أي إرسال فعلي (`telegram_admin.py` يحفظ الجلسة `msg_bulk_confirm`
+    قبل استدعاء هذه، وزرّ ✅ يقرأها لاحقًا لاستدعاء `send_bulk_message_and_log`)."""
+    count = count_customers_by_target(target)
+    label = MSG_TARGET_LABELS.get(target, target)
+    await client.send_message(
+        chat_id,
+        f"معاينة الرسالة لـ{label} ({count} عميل):\n\n{message_text}",
+        buttons=[
+            [{"text": f"✅ تأكيد الإرسال لـ{count} عميل", "callback_data": "msgbulk:send"}],
+            [{"text": "❌ إلغاء", "callback_data": "admin:menu"}],
+        ],
+    )
+
+
+async def send_bulk_message_and_log(client: TelegramClient, chat_id: int, target: str, message_text: str) -> None:
+    """يُستدعى بعد تأكيد الأدمن الصريح (زر ✅) بـ`telegram_admin.py` —
+    نفس منطق `send_customer_message_and_log` لكل عميل على حدة (إرسال حقيقي
+    + تسجيل بـ`customer_messages`)، مع تقرير نجاح/فشل مجمّع بالنهاية بدل
+    رسالة تأكيد لكل عميل (قد يكونون عشرات)."""
+    customer_ids = _customer_ids_by_target(target)
+    engine = get_engine()
+    sent = 0
+    failed = 0
+    for customer_id in customer_ids:
+        customer_chat_id = _fetch_customer_chat_id(customer_id)
+        if not customer_chat_id:
+            failed += 1
+            continue
+        try:
+            send_customer_message(customer_chat_id, message_text)
+        except (TelegramNotConfigured, TelegramSendError):
+            logger.warning("تعذّر إرسال رسالة جماعية لعميل #%s (target=%s)", customer_id, target, exc_info=True)
+            failed += 1
+            continue
+        with engine.begin() as conn:
+            conn.execute(
+                sql_text(
+                    "INSERT INTO customer_messages (customer_id, direction, text, sent_by_chat_id) "
+                    "VALUES (:cid, 'out', :txt, :by)"
+                ),
+                {"cid": customer_id, "txt": message_text, "by": chat_id},
+            )
+        sent += 1
+    label = MSG_TARGET_LABELS.get(target, target)
+    summary = f"✅ أُرسلت الرسالة لـ{label}: نجح {sent}"
+    if failed:
+        summary += f"، فشل {failed} (بلا ربط تيليجرام أو خطأ إرسال)"
+    await client.send_message(chat_id, summary + ".", buttons=nav_rows(None, "admin:menu"))
