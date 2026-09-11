@@ -5,10 +5,10 @@ Masar Core — بوت الأدمن الخاص على تيليجرام (B8: إز�
 Core مباشرة، بقائمة أزرار inline واحدة تُغطّي كل ما يحتاجه أحمد يوميًا.
 
 **بوابة وصول مغلقة افتراضيًا (fail-closed)** — نفس فلسفة app.auth تمامًا:
-لا رسالة تُعالَج ولا ردّ يُرسَل لأي محادثة غير `is_admin_chat` (المالك، أو
+لا رسالة تُعالَج ولا ردّ يُرسل لأي محادثة غير `is_admin_chat` (المالك، أو
 مفوّض نشط مربوط — B9/B2). إن غاب MASAR_OWNER_CHAT_ID من البيئة يتعطّل هذا
 البوت بالكامل للمالك (لا "يفتح" بالخطأ)؛ محادثات المفوّضين تبقى معطّلة
-تلقائيًا أيضًا (بلا مالك مُعرَّف، القائمة الرئيسية بلا معنى تشغيليًا).
+تلقائيًا أيضًا (بلا مالك مُعرَّف، القائمة الرئيسية بلا معنى تشغيليًا).
 
 **B9/B2 — طبقة الهوية الوحيدة الآن:** كانت `app.telegram_api` تحمل بوابة
 `is_owner_chat` ثانوية عند مسار `/admin` *قبل* الوصول لهذا الملف، فتصدّ أي
@@ -23,17 +23,21 @@ app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، �
 نتيجة كل استدعاء (نفس ما كانت تفعله عقد "تنسيق ..." بـn8n).
 
 **B9/B5 — القائمة الموسّعة + البحث والإعدادات:** أُضيفت 🔍 بحث عن عميل
-(يقبل الآن رقم/جوال/اسم جزئي، لا مُعرّفًا رقميًا فقط) ببطاقة عميل موسَّعة
+(يقبل الآن رقم/جوال/اسم جزئيًا، لا مُعرّفًا رقميًا فقط) ببطاقة عميل موسّعة
 وأزرار إجراء (تفعيل/إيقاف/تمديد/تقرير/رسالة/رابط ربط بريد) بملف منفصل
 `app.telegram_admin_search` (مستورَد كـ`search_mod`)، و✉️ رسالة لعميل (تعيد
 استخدام نفس البحث)، و⚙️ الإعدادات (بيانات التحويل/الباقات/واتساب الدعم)
 بملف منفصل `app.telegram_admin_settings` (مستورَد كـ`settings_mod`) —
 للمالك حصرًا، نفس نمط فحص `is_owner_chat` المُستخدَم أصلًا مع 👥 المفوّضون.
 🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا مستقلًا بالقائمة،
-لكن `admin:segments` يبقى مسارًا فعّالًا لأي مرجع قديم). 💳 طلبات الدفع
-(المذكورة بالقائمة المستهدَفة بالدليل §B5) **مؤجَّلة عمدًا لدفعة B3** —
-لا معنى لعرضها الآن (جدول `payment_requests` فارغ دومًا حتى B3 يبدأ الكتابة
-إليه، وقرار ✅/❌ يحتاج تكامل `catalog.py` الموصوف بالدليل §B3 البند 9).
+لكن `admin:segments` يبقى مسارًا فعّالًا لأي مرجع قديم).
+
+**B9/B3 — 💳 طلبات الدفع:** أصبحت زرًا فعليًا بالقائمة الرئيسية (ملف منفصل
+`app.telegram_admin_payments`، مستورَد كـ`payments_mod`) — يعرض الطلبات
+المعلّقة (حتى 20) بأزرار ✅/❌ لكل واحد. الإشعار الفوري بصورة/ملف الإيصال
+(الذي يحمل نفس الزرّين) يصل مباشرة من `app.telegram_payments` وقت تقديم
+العميل لإيصاله — هذه القائمة احتياطية لمراجعة كل المعلّق دفعة واحدة. كلا
+المسارين يوجّهان لنفس `pay:ok:{id}`/`pay:no:{id}` أدناه.
 """
 from __future__ import annotations
 
@@ -47,6 +51,7 @@ from sqlalchemy import text as sql_text
 
 from app import telegram_admin_commands as commands
 from app import telegram_admin_delegates as delegates
+from app import telegram_admin_payments as payments_mod
 from app import telegram_admin_search as search_mod
 from app import telegram_admin_settings as settings_mod
 from app.discovery import get_engine
@@ -61,7 +66,7 @@ EXTEND_DEFAULT_DAYS = 30
 # =========================================================================
 # جلسة الأدمن — نفس جدول telegram_sessions المشترك مع onboarding (بلا
 # تصادم عمليًا: chat_id الأدمن هو معرّف حساب Telegram الشخصي لأحمد، ولا
-# يمكن أن يتطابق مع chat_id عميل حقيقي آخر — راجع تعليق التصميم بتقرير
+# يمكن أن يتطابق مع chat_id عميل حقيقي آخر — راجع تعليق تصميم الملف بتقرير
 # التسليم REPORT.md لتفصيل هذا القرار).
 # =========================================================================
 
@@ -102,7 +107,7 @@ def _clear_session(chat_id: int) -> None:
 
 def is_owner_chat(chat_id: int) -> bool:
     """فشل مغلق عمدًا (نفس نمط app.auth.require_admin_token): غياب
-    MASAR_OWNER_CHAT_ID بالبيئة يعني "لا مالك مُعرَّف" فيُرفض أي chat_id
+    MASAR_OWNER_CHAT_ID بالبيئة يعني "لا مالك مُعرَّف" فيُرفض أي chat_id
     بلا استثناء، بدل معاملة قيمة فارغة كمطابقة بالخطأ."""
     owner = os.environ.get("MASAR_OWNER_CHAT_ID", "")
     if not owner:
@@ -148,6 +153,7 @@ def _main_menu_buttons(is_owner: bool) -> list[list[dict[str, str]]]:
             {"text": "🔍 بحث عن عميل", "callback_data": "admin:lookup"},
             {"text": "📨 تقرير عميل", "callback_data": "admin:report"},
         ],
+        [{"text": "💳 طلبات الدفع", "callback_data": "admin:payments"}],
         [{"text": "📊 نظرة عامة", "callback_data": "admin:overview"}],
         [{"text": "▶️ تشغيل كل التقارير الآن", "callback_data": "admin:run_reports"}],
         [
@@ -196,7 +202,7 @@ async def handle_update(update: dict[str, Any], event: ChatEvent, client: Telegr
         return
 
     # B9/B2: محادثة غير معروفة (لا مالك ولا مفوّض مربوط مسبقًا) — حاول ربط
-    # مفوّض بانتظار الربط أولًا، وإلا صمت تام (لا ردّ، لا كشف لوجود البوت).
+    # مفوّض بانتظار الربط أولاً، وإلا صمت تام (لا ردّ، لا كشف لوجود البوت).
     delegate_name = await delegates.try_link_delegate(event)
     if delegate_name:
         logger.info("تم ربط مفوّض جديد بمحادثة أدمن (الاسم=%s, chat_id=%s)", delegate_name, event.chat_id)
@@ -260,7 +266,7 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         _save_session(event.chat_id, "extend_days", {"customer_id": customer_id})
         await client.send_message(
             event.chat_id,
-            f"كم عدد الأيام اللي تحب تمدّدها؟ (اكتب رقمًا، افتراضيًا {EXTEND_DEFAULT_DAYS}):",
+            f"كم عدد الأيام اللي تحب تمدّدها؟ (افتراضيًا {EXTEND_DEFAULT_DAYS}):",
             buttons=nav_rows(None, "admin:menu"),
         )
         return
@@ -330,13 +336,23 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         await commands.reply_guarantees(client, event.chat_id)
         return
 
+    if data == "admin:payments":
+        await payments_mod.reply_payment_requests_menu(client, event.chat_id)
+        return
+
+    if data.startswith("pay:ok:") or data.startswith("pay:no:"):
+        decision = "ok" if data.startswith("pay:ok:") else "no"
+        request_id = int(data.rsplit(":", 1)[-1])
+        await payments_mod.decide_payment(client, event.chat_id, event.message_id, request_id, decision)
+        return
+
     if data.startswith("settle:"):
         ledger_id = data[len("settle:") :]
         await commands.reply_settle_guarantee(client, event.chat_id, int(ledger_id))
         return
 
     # B9/B2: المفوّضون — للمالك فقط (لا زر لها أصلًا بقائمة المفوّض، وهذا
-    # الفحص الإضافي دفاع بالعمق لو خمَّن مفوّض callback_data بنفسه).
+    # الفحص الإضافي دفاع بالعمق لو خمّن مفوّض callback_data بنفسه).
     if data == "admin:delegates":
         if not is_owner_chat(event.chat_id):
             return
@@ -540,17 +556,17 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
         _save_session(event.chat_id, "extend_days", {"customer_id": customer_id})
         await client.send_message(
             event.chat_id,
-            f"كم عدد الأيام اللي تحب تمدّدها؟ (اكتب رقمًا، افتراضيًا {EXTEND_DEFAULT_DAYS}):",
+            f"كم عدد الأيام اللي تحب تمدّدها؟ (افتراضيًا {EXTEND_DEFAULT_DAYS}):",
             buttons=nav_rows("admin:extend", "admin:menu"),
         )
         return
 
     if step == "extend_days":
-        # B9/A6: كان أي إدخال غير رقمي هنا (خطأ كتابة، مثلًا) يُمرَّر بصمت
-        # كـEXTEND_DEFAULT_DAYS (30 يومًا) بلا أي إشعار — قد يُمدَّد اشتراك
+        # B9/A6: كان أي إدخال غير رقمي هنا (خطأ كتابة، مثلاً) يُمرّر بصمت
+        # كـEXTEND_DEFAULT_DAYS (30 يومًا) بلا أي إشعار — قد يُمدّد اشتراك
         # عميل بعدد أيام لم يقصده أحمد إطلاقًا. الآن: نفس نمط إعادة الطلب
         # المُستخدَم بكل خطوة رقمية أخرى بهذا الملف (extend_id/status_id/...)
-        # — إدخال غير صحيح يُعيد نفس السؤال بدل الاستمرار بقيمة مخمَّنة.
+        # — إدخال غير صحيح يُعيد نفس السؤال بدل الاستمرار بقيمة مخمّنة.
         try:
             days = int(text)
         except ValueError:
