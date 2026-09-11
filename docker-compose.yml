@@ -136,7 +136,12 @@ services:
       # للحاوية → core.app.sender.resolve_transport يتعامل معها كـ"sink
       # غير مفعّل" فعليًا، يسمح بوضع الإرسال الحي الحقيقي عبر MAIL_LIVE=true).
       MAIL_SINK_SMTP: ${MAIL_SINK_SMTP-mailpit:1025}
-      MAIL_SINK_API_URL: ${MAIL_SINK_API_URL:-http://mailpit:8025}
+      # B9/A6: نفس تصحيح MAIL_SINK_SMTP أعلاه بالضبط، طُبِّق على
+      # MAIL_SINK_API_URL أيضًا (كان لا يزال بالصيغة القديمة `:-` حتى
+      # مراجعة الجاهزية قبل التجربة الحيّة، 2026-09-11) — بلا نقطتين كي
+      # يُحترَم سطر ".env فارغ صراحةً" (core.app.mail_api.sink_messages
+      # يتعامل مع القيمة الفارغة أصلًا بالاشتقاق من MAIL_SINK_SMTP).
+      MAIL_SINK_API_URL: ${MAIL_SINK_API_URL-http://mailpit:8025}
       DRY_RUN_TO: ${DRY_RUN_TO:-}
       MAIL_LIVE: ${MAIL_LIVE:-false}
       MAIL_IGNORE_SEND_WINDOW: ${MAIL_IGNORE_SEND_WINDOW:-false}
@@ -225,7 +230,9 @@ services:
       # نفس تصحيح 11 سبتمبر أعلاه بخدمة core — راجع التعليق هناك (بلا
       # نقطتين كي يُحترَم سطر ".env فارغ صراحةً" لا أن يُعامَل كـ"غير معرَّف").
       MAIL_SINK_SMTP: ${MAIL_SINK_SMTP-mailpit:1025}
-      MAIL_SINK_API_URL: ${MAIL_SINK_API_URL:-http://mailpit:8025}
+      # B9/A6: نفس تصحيح MAIL_SINK_SMTP أعلاه بالضبط، طُبِّق على
+      # MAIL_SINK_API_URL أيضًا (راجع نفس التعليق بخدمة core أعلاه).
+      MAIL_SINK_API_URL: ${MAIL_SINK_API_URL-http://mailpit:8025}
       DRY_RUN_TO: ${DRY_RUN_TO:-}
       MAIL_LIVE: ${MAIL_LIVE:-false}
       MAIL_IGNORE_SEND_WINDOW: ${MAIL_IGNORE_SEND_WINDOW:-false}
