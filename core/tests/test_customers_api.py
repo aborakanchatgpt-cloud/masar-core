@@ -151,6 +151,46 @@ def test_status_expired_customer_rejects_transition(engine, customer_id):
 
 
 # ---------------------------------------------------------------------------
+# B9/B0: customers.status='pending' — الافتراضي الجديد + التفعيل اليدوي
+# ---------------------------------------------------------------------------
+
+
+def test_new_customer_defaults_to_pending_status(engine):
+    """ترحيل 0017_b9_payments_delegates يغيّر customers.status الافتراضي من
+    'active' إلى 'pending' — POST /customers لا يمرّر status صراحة إطلاقًا
+    (customers_api.create_customer)، فهذا يتحقق من القيمة الفعلية بقاعدة
+    البيانات بعد الترحيل لا من افتراض بايثون."""
+    body = customers_api.CustomerCreateRequest(name="عميل تسجيل ذاتي تجريبي", telegram_chat_id=None)
+    result = _run(customers_api.create_customer(body))
+    assert result["ok"] is True
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT status FROM customers WHERE id = :id"), {"id": result["customer_id"]}
+        ).first()
+    assert row[0] == "pending"
+
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM wallets WHERE customer_id = :id"), {"id": result["customer_id"]})
+        conn.execute(text("DELETE FROM customers WHERE id = :id"), {"id": result["customer_id"]})
+
+
+def test_status_transition_pending_to_active_allowed(engine, customer_id):
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE customers SET status = 'pending' WHERE id = :id"), {"id": customer_id})
+
+    body = customers_api.CustomerStatusRequest(status="active", note="تأكيد الدفع يدويًا")
+    result = _run(customers_api.update_customer_status(customer_id, body))
+
+    assert result == {
+        "ok": True, "customer_id": customer_id, "old_status": "pending", "new_status": "active",
+    }
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT status FROM customers WHERE id = :id"), {"id": customer_id}).first()
+    assert row[0] == "active"
+
+
+# ---------------------------------------------------------------------------
 # POST /customers/{id}/cv
 # ---------------------------------------------------------------------------
 
