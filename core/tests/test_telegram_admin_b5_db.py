@@ -3,6 +3,10 @@
 `admin.handle_update` بالكامل (نفس نمط `test_telegram_admin_db.py`، بملف
 منفصل فقط لحجم `repo_write` — راجع docstring `app.telegram_admin_commands`).
 
+**B3-متابعة:** تغطية 🏦 بيانات التحويل (قائمة حسابات متعددة) انتقلت
+لملف منفصل `test_telegram_admin_b3_followup_db.py` — راجع التعليق أسفل قسم
+⚙️ الإعدادات أدناه.
+
 يحتاج قاعدة بيانات Postgres حقيقية مهاجَرة حتى 0017 — يُتخطّى تلقائيًا
 (skip) إن تعذّر الاتصال، نفس نمط test_telegram_admin_db.py.
 """
@@ -234,7 +238,7 @@ def test_message_customer_success_logs_customer_messages(monkeypatch, engine, cr
 
 
 def test_settings_hidden_from_non_owner_delegate(engine):
-    """B9/B2+B5: مفوّض لا يرى ⚙️ الإعدادات — حتى لو خمَّن callback_data
+    """B9/B2+B5: مفوّض لا يرى ⚙️ الإعدادات — حتى لو خمّن callback_data
     مباشرة، الفحص الإضافي (`is_owner_chat`) يمنعه بصمت (لا ردّ)."""
     tag = uuid.uuid4().hex[:10]
     with engine.begin() as conn:
@@ -257,12 +261,12 @@ def test_settings_hidden_from_non_owner_delegate(engine):
         conn.execute(text("DELETE FROM admin_delegates WHERE telegram_chat_id = :c"), {"c": delegate_chat_id})
 
 
-def test_settings_bank_field_edit_roundtrip(engine):
-    client = RecordingTelegramClient()
-    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_edit:bank_name"), client))
-    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="بنك الاختبار"), client))
-    assert any("تم تحديث" in m["text"] for m in client.sent)
-    assert settings_mod.get_setting("bank_name") == "بنك الاختبار"
+# B3-متابعة: بيانات التحويل الأحادية (app_settings: bank_name/account_holder/
+# iban + callback_data "settings:bank_edit:{field}" بلا مُعرّف حساب) استُبدلت
+# بقائمة حسابات بنكية (جدول bank_accounts، callback_data "settings:bank_edit:
+# {id}:{field}") — راجع docstring app.telegram_admin_settings. تغطية إضافة/
+# تعديل/إيقاف حساب بنكي الآن بملف منفصل test_telegram_admin_b3_followup_db.py
+# (نفس نمط فصل ملفات الدفعات بالمشروع)، لا هنا.
 
 
 def test_settings_whatsapp_edit_roundtrip(engine):
@@ -301,7 +305,7 @@ def test_settings_package_price_edit_and_toggle(engine, temp_product):
 
 def test_settings_package_edit_non_numeric_reprompts_without_losing_context(engine, temp_product):
     """نفس نمط B9/A6 (extend_days): إدخال غير رقمي يُعيد الطلب بدل قيمة
-    مخمَّنة — الجلسة تبقى بانتظار نفس الحقل/الباقة."""
+    مخمّنة — الجلسة تبقى بانتظار نفس الحقل/الباقة."""
     client = RecordingTelegramClient()
     _run(
         admin.handle_update(
