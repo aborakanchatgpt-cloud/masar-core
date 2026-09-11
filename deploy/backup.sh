@@ -36,6 +36,23 @@ docker compose exec -T postgres pg_dump -U "${POSTGRES_USER:-masar}" "${POSTGRES
 gpg --batch --yes --passphrase "$BACKUP_PASSPHRASE" --symmetric --cipher-algo AES256 -o "$ENC_FILE" "$DUMP_FILE"
 rm -f "$DUMP_FILE"
 
+# B9/A4: نسخة ملفات السيرة الذاتية المولَّدة (core/app/cv_builder.py،
+# CV_DATA_DIR=/data/cv داخل حاوية core، volume مُسمّى cv_data مشترك مع
+# core-scheduler — راجع docker-compose.yml). غيابها من النسخ الاحتياطية
+# يعني فقدانها الفعلي عند أي كارثة تمسح الـvolume رغم بقاء سجلّها بقاعدة
+# البيانات. غير قاتلة عمدًا: فشل نسخ CV لا يجب أن يوقف باقي السكربت (نسخة
+# قاعدة البيانات أهمّ بكثير وتسبقها هنا أصلًا) — فقط يُسجَّل تحذير.
+CV_TAR_FILE="$BACKUP_DIR/cv_${TS}.tar.gz"
+CV_TAR_ENC_FILE="${CV_TAR_FILE}.gpg"
+if docker compose exec -T core tar -C /data -czf - cv > "$CV_TAR_FILE" 2>/dev/null; then
+  gpg --batch --yes --passphrase "$BACKUP_PASSPHRASE" --symmetric --cipher-algo AES256 -o "$CV_TAR_ENC_FILE" "$CV_TAR_FILE" \
+    && rm -f "$CV_TAR_FILE" \
+    || echo "cv backup failed"
+else
+  rm -f "$CV_TAR_FILE"
+  echo "cv backup failed"
+fi
+
 # نسخة قاعدة بيانات n8n — بأمر منفصل مع "|| true" حتى لا يوقف السكربت لو
 # n8n لم يُنشر بعد على هذا الخادم (خدمة اختيارية إضافية)
 N8N_DUMP_FILE="$BACKUP_DIR/n8n_${TS}.sql"
@@ -59,8 +76,9 @@ else
   echo "$(date -u +%FT%TZ) — تنبيه: تعذّر نسخ ملف إعدادات n8n — تخطّي."
 fi
 
-# حذف النسخ الأقدم من KEEP_DAYS يوم (masar، n8n، وملف إعدادات n8n)
+# حذف النسخ الأقدم من KEEP_DAYS يوم (masar، cv، n8n، وملف إعدادات n8n)
 find "$BACKUP_DIR" -name "masar_*.sql.gpg" -mtime "+${KEEP_DAYS}" -delete
+find "$BACKUP_DIR" -name "cv_*.tar.gz.gpg" -mtime "+${KEEP_DAYS}" -delete
 find "$BACKUP_DIR" -name "n8n_*.sql.gpg" -mtime "+${KEEP_DAYS}" -delete
 find "$BACKUP_DIR" -name "n8n_config_*.json.gpg" -mtime "+${KEEP_DAYS}" -delete
 
