@@ -8,7 +8,7 @@ Core مباشرة، بقائمة أزرار inline واحدة تُغطّي كل 
 لا رسالة تُعالَج ولا ردّ يُرسل لأي محادثة غير `is_admin_chat` (المالك، أو
 مفوّض نشط مربوط — B9/B2). إن غاب MASAR_OWNER_CHAT_ID من البيئة يتعطّل هذا
 البوت بالكامل للمالك (لا "يفتح" بالخطأ)؛ محادثات المفوّضين تبقى معطّلة
-تلقائيًا أيضًا (بلا مالك مُعرَّف، القائمة الرئيسية بلا معنى تشغيليًا).
+تلقائيًا أيضًا (بلا مالك مُعرَّف، القائمة الرئيسية بلا معنى تشغيليًا).
 
 **B9/B2 — طبقة الهوية الوحيدة الآن:** كانت `app.telegram_api` تحمل بوابة
 `is_owner_chat` ثانوية عند مسار `/admin` *قبل* الوصول لهذا الملف، فتصدّ أي
@@ -38,6 +38,15 @@ app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، �
 (الذي يحمل نفس الزرّين) يصل مباشرة من `app.telegram_payments` وقت تقديم
 العميل لإيصاله — هذه القائمة احتياطية لمراجعة كل المعلّق دفعة واحدة. كلا
 المسارين يوجّهان لنفس `pay:ok:{id}`/`pay:no:{id}` أدناه.
+
+**B3-متابعة (بنوك متعددة + فئات استهداف):** 🏦 بيانات التحويل أصبحت قائمة
+حسابات (`settings:bank`→`reply_bank_list`، `settings:bank:{id}` للتفاصيل،
+`settings:bank_add` للإضافة، `settings:bank_edit:{id}:{field}`/
+`settings:bank_toggle:{id}` للتعديل/الإيقاف) بدل حساب واحد — راجع
+`app.telegram_admin_settings`. ✉️ رسالة لعميل أصبحت تسأل أولًا عن فئة
+الاستهداف (`admin:msg_cat:specific|all|active|expired`) قبل النص — الفئات
+الجماعية الثلاث تمرّ بخطوة معاينة وتأكيد صريح (`msgbulk:send`) قبل الإرسال
+الفعلي لعدّة عملاء دفعة واحدة، لأنها لا تُراجَع فرديًا كالمسار المحدد.
 """
 from __future__ import annotations
 
@@ -107,7 +116,7 @@ def _clear_session(chat_id: int) -> None:
 
 def is_owner_chat(chat_id: int) -> bool:
     """فشل مغلق عمدًا (نفس نمط app.auth.require_admin_token): غياب
-    MASAR_OWNER_CHAT_ID بالبيئة يعني "لا مالك مُعرَّف" فيُرفض أي chat_id
+    MASAR_OWNER_CHAT_ID بالبيئة يعني "لا مالك مُعرَّف" فيُرفض أي chat_id
     بلا استثناء، بدل معاملة قيمة فارغة كمطابقة بالخطأ."""
     owner = os.environ.get("MASAR_OWNER_CHAT_ID", "")
     if not owner:
@@ -282,10 +291,31 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         return
 
     if data == "admin:msg":
-        _save_session(event.chat_id, "msg_search_query", {})
+        _clear_session(event.chat_id)
+        await search_mod.reply_msg_category_menu(client, event.chat_id)
+        return
+
+    if data.startswith("admin:msg_cat:"):
+        target = data[len("admin:msg_cat:") :]
+        if target == "specific":
+            _save_session(event.chat_id, "msg_search_query", {})
+            await client.send_message(
+                event.chat_id,
+                "ابحث عن العميل (رقم/جوال/اسم) لإرسال رسالة له:",
+                buttons=nav_rows(None, "admin:menu"),
+            )
+            return
+        count = search_mod.count_customers_by_target(target)
+        if count == 0:
+            await client.send_message(
+                event.chat_id, "لا يوجد عملاء يطابقون هذه الفئة حاليًا.", buttons=nav_rows(None, "admin:menu")
+            )
+            return
+        label = search_mod.MSG_TARGET_LABELS.get(target, target)
+        _save_session(event.chat_id, "msg_text", {"target": target})
         await client.send_message(
             event.chat_id,
-            "ابحث عن العميل (رقم/جوال/اسم) لإرسال رسالة له:",
+            f"اكتب نص الرسالة اللي تبي ترسلها لـ{label} ({count} عميل):",
             buttons=nav_rows(None, "admin:menu"),
         )
         return
@@ -296,6 +326,16 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         await client.send_message(
             event.chat_id, "اكتب نص الرسالة اللي تبي ترسلها للعميل:", buttons=nav_rows(None, "admin:menu")
         )
+        return
+
+    if data == "msgbulk:send":
+        step, sess_data = _get_session(event.chat_id)
+        if step != "msg_bulk_confirm":
+            return
+        target = sess_data.get("target", "")
+        message_text = sess_data.get("text", "")
+        _clear_session(event.chat_id)
+        await search_mod.send_bulk_message_and_log(client, event.chat_id, target, message_text)
         return
 
     if data == "admin:report":
@@ -382,21 +422,14 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         await settings_mod.reply_settings_menu(client, event.chat_id)
         return
 
-    if data == "settings:bank":
+    # 🏦 بيانات التحويل — كل "settings:bank"* (قائمة/تفاصيل/إضافة/تعديل/إيقاف)
+    # موجّهة بدالة واحدة بـ`telegram_admin_settings.py` (منقولة من هنا بسبب
+    # حجم repo_write فقط، راجع docstring تلك الدالة) — الفحص هنا لأن كل
+    # المسارات الفرعية للمالك حصرًا، نفس نمط بقية ⚙️ الإعدادات.
+    if data.startswith("settings:bank"):
         if not is_owner_chat(event.chat_id):
             return
-        await settings_mod.reply_bank_details(client, event.chat_id)
-        return
-
-    if data.startswith("settings:bank_edit:"):
-        if not is_owner_chat(event.chat_id):
-            return
-        field = data[len("settings:bank_edit:") :]
-        _save_session(event.chat_id, "settings_bank_edit", {"field": field})
-        label = settings_mod.BANK_FIELD_LABELS.get(field, field)
-        await client.send_message(
-            event.chat_id, f"اكتب القيمة الجديدة لـ{label}:", buttons=nav_rows("settings:bank", "admin:menu")
-        )
+        await settings_mod.handle_bank_callback(data, event.chat_id, client, _save_session)
         return
 
     if data == "settings:whatsapp":
@@ -494,15 +527,23 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
         return
 
     if step == "msg_text":
+        # B3-متابعة: فئة جماعية (target) تمرّ بمعاينة وتأكيد صريح قبل
+        # الإرسال الفعلي — عميل محدد (customer_id) يُرسَل مباشرة كالسابق
+        # (مراجعة فردية أصلًا عبر البحث قبل الوصول لهذه الخطوة).
+        target = data.get("target")
+        if target:
+            _save_session(event.chat_id, "msg_bulk_confirm", {"target": target, "text": text})
+            await search_mod.reply_msg_bulk_preview(client, event.chat_id, target, text)
+            return
         customer_id = int(data.get("customer_id", 0))
         _clear_session(event.chat_id)
         await search_mod.send_customer_message_and_log(client, event.chat_id, customer_id, text)
         return
 
-    if step == "settings_bank_edit":
-        field = data.get("field", "")
-        _clear_session(event.chat_id)
-        await settings_mod.apply_bank_field(client, event.chat_id, field, text)
+    # 🏦 إضافة/تعديل حساب بنكي — أربع خطوات ممكنة، موجّهة بدالة واحدة
+    # بـ`telegram_admin_settings.py` (نفس سبب نقل `settings:bank*` أعلاه).
+    if step in settings_mod.BANK_STEP_NAMES:
+        await settings_mod.handle_bank_step_text(step, event.chat_id, client, data, text, _save_session, _clear_session)
         return
 
     if step == "settings_whatsapp_edit":
