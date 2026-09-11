@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
+import re
 import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
@@ -40,6 +43,13 @@ public_router = APIRouter(prefix="/link", tags=["link-public"])
 
 TOKEN_TTL_HOURS = 48
 MAX_ATTEMPTS = 5
+
+# B9/A5: صفحة شروط الخدمة العامة (بنية فقط بهذه الدفعة — بلا أي ربط بتدفّق
+# onboarding الحالي، راجع migrations/versions/0016_terms_accepted.py).
+# نفس نمط REPO_DIR بـapp/mcp_bridge.py: جذر المستودع مركّب للقراءة فقط
+# داخل حاوية core على /repo (راجع docker-compose.yml)، فـdocs/TERMS_AR.md
+# مقروء دومًا بلا حاجة لنسخه بـDockerfile أو إعادة بناء الصورة عند تعديله.
+TERMS_MD_PATH = Path(os.environ.get("REPO_DIR", "/repo")) / "docs" / "TERMS_AR.md"
 
 _PAGE_STYLE = """
 body{font-family:'Tahoma','Segoe UI',sans-serif;background:#f6f5f2;color:#2b2b28;
@@ -83,6 +93,92 @@ def _message_page(title: str, message: str, *, error: bool = False) -> HTMLRespo
 
 def _hash_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# B9/A5 — GET /terms: صفحة شروط الخدمة العامة
+# ---------------------------------------------------------------------------
+
+
+def _inline_md(text_: str) -> str:
+    """تشديد **نص** + تفريغ أحرف HTML الخاصة (لا يوجد سواه بـTERMS_AR.md)."""
+    escaped = text_.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", escaped)
+
+
+def _render_terms_html(markdown_text: str) -> str:
+    """محوّل Markdown→HTML يدوي مبسّط (بلا تبعية جديدة لصفحة واحدة نادرة
+    التغيّر — core/requirements.txt لا يحوي مكتبة markdown أصلًا). يدعم فقط
+    ما يظهر فعليًا بـdocs/TERMS_AR.md: عناوين # و##، فقرات نصية، قوائم
+    نقطية (-) ومرقّمة (1.)، وتشديد **نص** داخل أي سطر."""
+    html_parts: list[str] = []
+    para_buffer: list[str] = []
+    list_buffer: list[str] = []
+    list_tag: str | None = None
+
+    def flush_para() -> None:
+        if para_buffer:
+            html_parts.append(f"<p>{' '.join(_inline_md(p) for p in para_buffer)}</p>")
+            para_buffer.clear()
+
+    def flush_list() -> None:
+        nonlocal list_tag
+        if list_buffer:
+            tag = list_tag or "ul"
+            items = "".join(f"<li>{_inline_md(item)}</li>" for item in list_buffer)
+            html_parts.append(f"<{tag}>{items}</{tag}>")
+            list_buffer.clear()
+            list_tag = None
+
+    for raw_line in markdown_text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            flush_para()
+            flush_list()
+            continue
+        if line.startswith("## "):
+            flush_para()
+            flush_list()
+            html_parts.append(f"<h2>{_inline_md(line[3:])}</h2>")
+        elif line.startswith("# "):
+            flush_para()
+            flush_list()
+            html_parts.append(f"<h1>{_inline_md(line[2:])}</h1>")
+        elif line.startswith("- "):
+            flush_para()
+            if list_tag == "ol":
+                flush_list()
+            list_tag = "ul"
+            list_buffer.append(line[2:])
+        elif re.match(r"^\d+\.\s", line):
+            flush_para()
+            if list_tag == "ul":
+                flush_list()
+            list_tag = "ol"
+            list_buffer.append(re.sub(r"^\d+\.\s", "", line))
+        else:
+            flush_list()
+            para_buffer.append(line)
+
+    flush_para()
+    flush_list()
+    return "".join(html_parts)
+
+
+def _load_terms_html() -> str:
+    try:
+        raw = TERMS_MD_PATH.read_text(encoding="utf-8")
+    except OSError:
+        logger.error("تعذّرت قراءة ملف الشروط %s", TERMS_MD_PATH)
+        return "<p>تعذّر تحميل نص الشروط حاليًا. حاول لاحقًا أو تواصل معنا.</p>"
+    return _render_terms_html(raw)
+
+
+@router.get("/terms")
+async def show_terms() -> HTMLResponse:
+    """GET /terms — عامة، بلا مصادقة، RTL (نفس نمط _page() بـ/link/{token}
+    تمامًا). بنية فقط بهذه الدفعة: لا ترابط بأي خطوة onboarding حاليًا."""
+    return HTMLResponse(_page("شروط خدمة مسار", _load_terms_html()))
 
 
 # ---------------------------------------------------------------------------
