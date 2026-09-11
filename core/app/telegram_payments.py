@@ -3,7 +3,7 @@
 يُستدعى حصرًا من `app.telegram_onboarding` (لا مسار وارد مستقل — نفس فلسفة
 `app.telegram_admin_settings`/`telegram_admin_search`: ملف منطق مُستورَد،
 لا يحمل نقطة دخول Webhook خاصة به). التدفّق: **الباقات → الشروط (أول مرة
-فقط) → بيانات التحويل → الإيصال → المبلغ المُعلَن → اسم المُحوِّل → إشعار
+فقط) → بيانات التحويل → الإيصال → المبلغ المُعلَن → اسم المُحوِّل → إشعار
 الأدمن بالصورة/الملف + زرّي ✅/❌**. قرار الأدمن نفسه (تأكيد/رفض) يُعالَج
 بملف منفصل `app.telegram_admin_payments` (بوت مختلف تمامًا، ويب هوك منفصل
 — لا تصادم بأسماء callback_data رغم اشتراك بادئة "pay" في كليهما).
@@ -18,13 +18,13 @@
 المعتادة.
 
 **التسعير**: باقة بلا `price_sar` (لم يحدّده أحمد بعد من ⚙️ الإعدادات) لا
-تظهر للعميل إطلاقًا — إن لم تكن أي باقة مُسعَّرة بعد، العميل الجديد لا يقدر
-يكمل تسجيله، ويُخبَر بانتظار قصير بدل رسالة فنية، ويُنبَّه أحمد فورًا (نفس
+تظهر للعميل إطلاقًا — إن لم تكن أي باقة مُسعّرة بعد، العميل الجديد لا يقدر
+يكمل تسجيله، ويُخبَر بانتظار قصير بدل رسالة فنية، ويُنبّه أحمد فورًا (نفس
 منطق `PRICE_TBD` بـ`catalog.py` — لا سعر تخميني أبدًا).
 
 **الإيصال**: يُحفَظ خامًا تحت `{CV_DATA_DIR}/payments/{customer_id}/{request_id}.<ext>`
 (نفس جذر `CV_DATA_DIR` المُستخدَم أصلًا للسير الذاتية، فيُشمَل تلقائيًا
-بنسخ `deploy/backup.sh` الاحتياطي — لا حاجة لتعديل سكربت النسخ). لا حذف —
+بنسخ دعم/backup.sh الاحتياطي — لا حاجة لتعديل سكربت النسخ). لا حذف —
 فشل/رفض الطلب يُبقي `payment_requests` كسجلّ تاريخي (`status='rejected'`)
 لا صفًا محذوفًا.
 
@@ -32,7 +32,7 @@
 `catalog.create_order` **مباشرة كدالة بايثون** (لا HTTP داخلي، نفس نمط كل
 `telegram_admin*.py` مع `customers_api`/`overview_api`/`guarantee_api`) —
 هذه الدالة بلا أي معامل `Query(...)` افتراضي (جسم Pydantic فقط)، فلا تقع
-بفخ B9/B5-hotfix الموثَّق بـ`telegram_admin_commands.py`."""
+بفخ B9/B5-hotfix الموثّق بـ`telegram_admin_commands.py`."""
 from __future__ import annotations
 
 import json
@@ -242,7 +242,7 @@ def build_packages_buttons(products: list[dict[str, Any]]) -> list[list[dict[str
 
 
 WHICH_PACKAGE_ADVICE = (
-    "إذا تبي بحثًا مستمرًا يوميًا وتضمن عدد تقديمات ثابت كل شهر، الاشتراك الشهري أنسب لك 🤍\n\n"
+    "إذا تبي بحثًا مستمرَّا يوميًا وتضمن عدد تقديمات ثابت كل شهر، الاشتراك الشهري أنسب لك 🤍\n\n"
     "وإذا تبي تجرب الخدمة أو تحتاج عدد تقديمات محدد بلا التزام شهري، باقات الرصيد أنسب — رصيدك ما "
     "ينتهي أبدًا مهما طال الوقت."
 )
@@ -257,15 +257,18 @@ def build_terms_message(domain: str) -> str:
     )
 
 
-def build_bank_message(bank_name: str, account_holder: str, iban: str, package_name: str, price_sar: float) -> str:
-    return (
-        f"تمام ✅ اخترت {package_name} بقيمة {price_sar:.0f} ريال.\n\n"
-        "حوّل المبلغ على:\n"
-        f"🏦 {bank_name}\n"
-        f"👤 {account_holder}\n"
-        f"🔢 IBAN: {iban}\n\n"
-        "بعد التحويل أرسل لي صورة الإيصال أو ملفه هنا 📎"
-    )
+def build_bank_message(banks: list[dict[str, Any]], package_name: str, price_sar: float) -> str:
+    """B3-متابعة: `banks` قائمة حسابات نشطة (`bank_name`/`account_holder`/
+    `iban`) من `telegram_admin_settings.active_bank_accounts()` — قد تكون
+    أكثر من حساب واحد الآن، فيُعرَض كل حساب مرقّمًا إن كان أكثر من واحد."""
+    intro = f"تمام ✅ اخترت {package_name} بقيمة {price_sar:.0f} ريال.\n"
+    lead = "حوّل المبلغ على أي من الحسابات التالية:" if len(banks) > 1 else "حوّل المبلغ على:"
+    lines = [intro, lead]
+    for i, b in enumerate(banks, start=1):
+        prefix = f"{i}) " if len(banks) > 1 else ""
+        lines.append(f"\n{prefix}🏦 {b['bank_name']}\n👤 {b['account_holder']}\n🔢 IBAN: {b['iban']}")
+    lines.append("\nبعد التحويل أرسل لي صورة الإيصال أو ملفه هنا 📎")
+    return "\n".join(lines).strip()
 
 
 # =========================================================================
@@ -280,7 +283,7 @@ async def start(client: TelegramClient, chat_id: int, customer_id: int) -> None:
             chat_id, "نجهّز باقاتنا حاليًا، بنكمل معك خلال وقت قصير بإذن الله 🤍"
         )
         await _notify_admin_urgent(
-            f"نحتاجك فورا — عميل جديد #{customer_id} وصل لخطوة اختيار الباقة، لكن ولا باقة مُسعَّرة "
+            f"نحتاجك فورا — عميل جديد #{customer_id} وصل لخطوة اختيار الباقة، لكن ولا باقة مُسعّرة "
             "بعد بـ⚙️ الإعدادات → 💼 الباقات. أضف الأسعار حتى يقدر يكمل تسجيله."
         )
         _save_session(chat_id, "await_package", {})
@@ -297,9 +300,9 @@ async def start(client: TelegramClient, chat_id: int, customer_id: int) -> None:
 
 
 async def handle_step(event: ChatEvent, client: TelegramClient, customer_id: int, step: str, data: dict) -> None:
-    # الضغطات (callback) تُوجَّه أولًا حسب بادئة النص نفسها — أوثق من
+    # الضغطات (callback) تُوجّه أولاً حسب بادئة النص نفسه — أوثق من
     # الاعتماد على step وحده (زرّا "📎 إرسال الإيصال من جديد"/"📞 تواصل معنا"
-    # بعد رفض الأدمن قد يصلان بجلسة ممسوحة، راجع docstring رأس الملف).
+    # بعد رفض الأدمن قد تصلان بجلسة ممسوحة، راجع docstring رأس الملف).
     if event.is_callback:
         cb = event.callback_data
         if cb.startswith("pkg:"):
@@ -353,7 +356,7 @@ async def handle_step(event: ChatEvent, client: TelegramClient, customer_id: int
         await _handle_receipt_sender(event, client, data)
         return
 
-    # await_package/await_terms بلا نص/ملف متوقَّع هنا — أعد عرض القائمة المناسبة
+    # await_package/await_terms بلا نص/ملف متوقّع هنا — أعد عرض القائمة المناسبة
     if step == "await_package":
         products = _fetch_priced_products()
         if products:
@@ -416,15 +419,15 @@ async def _handle_terms_accepted(event: ChatEvent, client: TelegramClient, custo
 async def _show_bank_and_create_request(
     chat_id: int, client: TelegramClient, customer_id: int, product: dict[str, Any]
 ) -> None:
-    bank_name = settings_mod.get_setting("bank_name")
-    account_holder = settings_mod.get_setting("account_holder")
-    iban = settings_mod.get_setting("iban")
-    if not (bank_name and account_holder and iban):
+    # B3-متابعة: قائمة الحسابات النشطة بدل حساب واحد — راجع docstring
+    # telegram_admin_settings.active_bank_accounts().
+    banks = settings_mod.active_bank_accounts()
+    if not banks:
         _save_session(chat_id, "await_bank_retry", {})
         await client.send_message(chat_id, "بنرسل لك بيانات التحويل خلال دقائق 🤍")
         await _notify_admin_urgent(
-            f"نحتاجك فورا — عميل #{customer_id} اختار {product['name_ar']} لكن بيانات التحويل غير "
-            "مكتملة بـ⚙️ الإعدادات → 🏦 بيانات التحويل."
+            f"نحتاجك فورا — عميل #{customer_id} اختار {product['name_ar']} لكن ولا حساب بنكي نشط "
+            "بـ⚙️ الإعدادات → 🏦 بيانات التحويل. أضف حسابًا واحدًا على الأقل."
         )
         return
 
@@ -436,12 +439,12 @@ async def _show_bank_and_create_request(
     )
     await client.send_message(
         chat_id,
-        build_bank_message(bank_name, account_holder, iban, product["name_ar"], float(product["price_sar"])),
+        build_bank_message(banks, product["name_ar"], float(product["price_sar"])),
     )
 
 
 # -------------------------------------------------------------------
-# الإيصال → المبلغ → اسم المُحوِّل → إشعار الأدمن
+# الإيصال → المبلغ → اسم المُحوِّل → إشعار الأدمن
 # -------------------------------------------------------------------
 
 
