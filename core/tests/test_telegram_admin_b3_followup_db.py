@@ -4,8 +4,9 @@
 بالكامل — نفس نمط `test_telegram_admin_b5_db.py` (ملف منفصل لحجم repo_write
 وتمييز الدفعة، لا لسبب معماري).
 
-يحتاج قاعدة بيانات Postgres حقيقية مهاجَرة حتى 0018 (جدول bank_accounts) —
-يُتخطّى تلقائيًا (skip) إن تعذّر الاتصال، نفس نمط بقية اختبارات B9/B3.
+يحتاج قاعدة بيانات Postgres حقيقية مهاجَرة حتى 0019 (حقول account_number/
+name_language + iban nullable) — يُتخطّى تلقائيًا (skip) إن تعذّر الاتصال، نفس نمط
+بقية اختبارات B9/B3.
 """
 from __future__ import annotations
 
@@ -122,7 +123,9 @@ def created_bank_account(engine):
         cid = settings_mod.create_bank_account(
             kwargs.get("bank_name", "بنك تجريبي"),
             kwargs.get("account_holder", "مسار"),
-            kwargs.get("iban", "SA9999999999999999"),
+            account_number=kwargs.get("account_number"),
+            iban=kwargs.get("iban", "SA9999999999999999"),
+            name_language=kwargs.get("name_language"),
         )
         created_ids.append(cid)
         return cid
@@ -140,26 +143,159 @@ def created_bank_account(engine):
 
 
 def test_bank_add_flow_via_admin_handle_update(engine):
+    """B3-متابعة٢: التدفّق الكامل الآن يمرّ بخطوة أزرار للغة بعد اسم البنك،
+    ثم رقم الحساب (يُكتب هنا، لا يُتخطّى) فالآيبان."""
     client = RecordingTelegramClient()
 
     _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_add"), client))
     _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="بنك الرياض"), client))
+    assert any("settings:bank_lang:ar" in str(m.get("buttons")) for m in client.sent)
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_lang:ar"), client))
     _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="مؤسسة مسار"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="1122334455"), client))
     _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="SA1234567890123456789"), client))
 
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT bank_name, account_holder, iban, active FROM bank_accounts WHERE bank_name = 'بنك الرياض'")
+            text(
+                "SELECT bank_name, account_holder, account_number, iban, name_language, active "
+                "FROM bank_accounts WHERE bank_name = 'بنك الرياض'"
+            )
         ).mappings().first()
     assert row is not None
     assert row["account_holder"] == "مؤسسة مسار"
+    assert row["account_number"] == "1122334455"
     assert row["iban"] == "SA1234567890123456789"
+    assert row["name_language"] == "ar"
     assert row["active"] is True
     assert any("✅ تمت إضافة الحساب البنكي" in m["text"] for m in client.sent)
 
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM telegram_sessions WHERE chat_id = :cid"), {"cid": OWNER_CHAT_ID})
         conn.execute(text("DELETE FROM bank_accounts WHERE bank_name = 'بنك الرياض'"))
+
+
+def test_bank_add_flow_skip_account_number_via_button(engine):
+    """تخطي رقم الحساب بالزر — يُحفَظ الحساب بآيبان فقط (account_number NULL)."""
+    client = RecordingTelegramClient()
+
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_add"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="بنك سامبا"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_lang:en"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="Masar Est"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_skip:number"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="SA9876543210987654321"), client))
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text(
+                "SELECT account_number, iban, name_language FROM bank_accounts WHERE bank_name = 'بنك سامبا'"
+            )
+        ).mappings().first()
+    assert row is not None
+    assert row["account_number"] is None
+    assert row["iban"] == "SA9876543210987654321"
+    assert row["name_language"] == "en"
+
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM telegram_sessions WHERE chat_id = :cid"), {"cid": OWNER_CHAT_ID})
+        conn.execute(text("DELETE FROM bank_accounts WHERE bank_name = 'بنك سامبا'"))
+
+
+def test_bank_add_flow_skip_iban_after_account_number(engine):
+    """تخطي الآيبان بالزر — مسموح فقط لأن رقم الحساب مُعبَّأ مسبقًا."""
+    client = RecordingTelegramClient()
+
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_add"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="بنك الإنماء"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_lang:ar"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="مسار"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="55667788"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_skip:iban"), client))
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT account_number, iban FROM bank_accounts WHERE bank_name = 'بنك الإنماء'")
+        ).mappings().first()
+    assert row is not None
+    assert row["account_number"] == "55667788"
+    assert row["iban"] is None
+    assert any("✅ تمت إضافة الحساب البنكي" in m["text"] for m in client.sent)
+
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM telegram_sessions WHERE chat_id = :cid"), {"cid": OWNER_CHAT_ID})
+        conn.execute(text("DELETE FROM bank_accounts WHERE bank_name = 'بنك الإنماء'"))
+
+
+def test_bank_add_flow_rejects_skipping_both_number_and_iban(engine):
+    """تخطي رقم الحساب ثم محاولة تخطي الآيبان أيضًا — تُرفَض، يُطلَب الآيبان
+    فعليًا حتى يوجد حقل واحد على الأقل مُعبَّأ (قيد المنتج، وقيد CHECK دفاعًا)."""
+    client = RecordingTelegramClient()
+
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_add"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="بنك الجزيرة"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_lang:ar"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="مسار"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_skip:number"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data="settings:bank_skip:iban"), client))
+
+    with engine.connect() as conn:
+        exists = conn.execute(
+            text("SELECT 1 FROM bank_accounts WHERE bank_name = 'بنك الجزيرة'")
+        ).first()
+    assert exists is None  # لم يُحفَظ شيء بعد — الرفض لم يُنشئ صفًا ناقصًا
+    assert any("يجب إدخال رقم الحساب أو الآيبان على الأقل" in m["text"] for m in client.sent)
+
+    # يكمل بكتابة آيبان فعليًا فينجح
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="SA1111122222333334444"), client))
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT account_number, iban FROM bank_accounts WHERE bank_name = 'بنك الجزيرة'")
+        ).mappings().first()
+    assert row is not None
+    assert row["account_number"] is None
+    assert row["iban"] == "SA1111122222333334444"
+
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM telegram_sessions WHERE chat_id = :cid"), {"cid": OWNER_CHAT_ID})
+        conn.execute(text("DELETE FROM bank_accounts WHERE bank_name = 'بنك الجزيرة'"))
+
+
+def test_bank_edit_account_number_and_toggle_language(engine, created_bank_account):
+    account_id = created_bank_account(
+        bank_name="بنك أصلي٢", account_holder="مسار", account_number="000111", iban="SA0000000000000001"
+    )
+    client = RecordingTelegramClient()
+
+    _run(
+        admin.handle_update(
+            {},
+            _make_event(OWNER_CHAT_ID, is_callback=True, callback_data=f"settings:bank_edit:{account_id}:account_number"),
+            client,
+        )
+    )
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="999888"), client))
+
+    with engine.connect() as conn:
+        number = conn.execute(
+            text("SELECT account_number FROM bank_accounts WHERE id = :id"), {"id": account_id}
+        ).scalar()
+    assert number == "999888"
+
+    # لغة الاسم NULL افتراضيًا (لم تُحدّد بـcreated_bank_account) — أول تبديل يجعلها 'ar'
+    _run(
+        admin.handle_update(
+            {}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data=f"settings:bank_lang_toggle:{account_id}"), client
+        )
+    )
+    with engine.connect() as conn:
+        lang = conn.execute(
+            text("SELECT name_language FROM bank_accounts WHERE id = :id"), {"id": account_id}
+        ).scalar()
+    assert lang == "ar"
+
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM telegram_sessions WHERE chat_id = :cid"), {"cid": OWNER_CHAT_ID})
 
 
 def test_bank_edit_and_toggle_via_admin_handle_update(engine, created_bank_account):
@@ -172,11 +308,11 @@ def test_bank_edit_and_toggle_via_admin_handle_update(engine, created_bank_accou
             {}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data=f"settings:bank_edit:{account_id}:bank_name"), client
         )
     )
-    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="بنك مُعدَّل"), client))
+    _run(admin.handle_update({}, _make_event(OWNER_CHAT_ID, text="بنك مُعدَّل"), client))
 
     with engine.connect() as conn:
         name = conn.execute(text("SELECT bank_name FROM bank_accounts WHERE id = :id"), {"id": account_id}).scalar()
-    assert name == "بنك مُعدَّل"
+    assert name == "بنك مُعدَّل"
 
     # إيقاف الحساب — لا يظهر بـactive_bank_accounts() بعدها
     assert any(a["id"] == account_id for a in settings_mod.active_bank_accounts())
