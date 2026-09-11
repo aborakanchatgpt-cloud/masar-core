@@ -44,6 +44,16 @@ customers/profiles الحقيقية عند الإنهاء). **لا نُبقي أ
 مفتوحًا عبر استدعاء شبكي (Telegram/تنزيل ملف)** — كل دالة تفتح اتصالها
 الخاص القصير، تُنفّذ عملها، وتُغلقه، ثم تُكمل الشبكة بعده (تفاديًا لاستنزاف
 مجمّع اتصالات محدود أثناء انتظار شبكي، الدليل: DB_POOL_SIZE=10+5 بـcore).
+
+**B4 — قناة "📞 تواصل معنا" أصبحت مصنَّفة (عميل → أدمن):** زرّ القائمة
+النشطة نفسه، لكنه الآن يعرض أولًا ثلاث فئات (`contact:cat:complaint|
+heart_to_heart|note`) قبل طلب النص. الرسالة تُسجَّل بجدول
+`customer_messages` (`direction='in'`, عمود `category` جديد — ترحيلة
+`0020_b4_customer_messages_category`)، وإشعار الأدمن يحمل زرّ "↩️ رد"
+(`inbox:reply:{message_id}` يوجّهه `app.telegram_admin` لخطوة نصّية تُعيد
+استخدام `telegram_admin_search.send_customer_message_and_log` الموجودة —
+لا منطق إرسال مكرَّر). هذا اتجاه معاكس تمامًا لـ"✉️ رسالة لعميل" (أدمن→عميل،
+موجودة أصلًا بـB3-متابعة).
 """
 from __future__ import annotations
 
@@ -88,6 +98,14 @@ _PDF_MAGIC = b"%PDF-"
 MIN_CV_TEXT_CHARS = 40  # أقل من هذا = فشل تحليل فعلي (ملف فارغ/تالف/صورة نصّها غير قابل للقراءة)
 
 CONTACT_BUTTON_TEXT = "📱 مشاركة رقم الجوال"
+
+# B4: تصنيف قناة "📞 تواصل معنا" (عميل → أدمن) — راجع docstring
+# _handle_active_menu وترحيلة 0020_b4_customer_messages_category.
+CONTACT_CATEGORY_LABELS: dict[str, str] = {
+    "complaint": "😔 شكوى",
+    "heart_to_heart": "💬 من قلب لقلب",
+    "note": "📝 ملاحظة",
+}
 
 
 # =========================================================================
@@ -376,6 +394,36 @@ async def _notify_admin(text: str) -> None:
         logger.warning("تعذّر إرسال إشعار إداري لأحمد", exc_info=True)
 
 
+async def _notify_admin_with_buttons(text: str, buttons: list[list[dict[str, str]]]) -> None:
+    """B4: نفس `_notify_admin` لكن بأزرار — يستخدمها إشعار قناة "تواصل
+    معنا" الجديدة لإرفاق زرّ "↩️ رد" (`app.telegram_admin` يوجّهه
+    لـ`inbox:reply:{message_id}`)."""
+    owner_chat_id = os.environ.get("MASAR_OWNER_CHAT_ID", "")
+    admin_client = get_admin_bot_client()
+    if not owner_chat_id or admin_client is None:
+        return
+    try:
+        await admin_client.send_message(owner_chat_id, text, buttons=buttons)
+    except TelegramAPIError:
+        logger.warning("تعذّر إرسال إشعار إداري بأزرار لأحمد", exc_info=True)
+
+
+def _log_customer_message_in(customer_id: int, category: str, text: str) -> int:
+    """B4: يسجّل رسالة واردة من عميل (قناة "📞 تواصل معنا" المصنَّفة) بجدول
+    customer_messages (`direction='in'`) ويُعيد معرّف الصفّ الجديد — يُستخدم
+    بزرّ "↩️ رد" بإشعار الأدمن (`inbox:reply:{id}` بـ`app.telegram_admin`)."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        new_id = conn.execute(
+            sql_text(
+                "INSERT INTO customer_messages (customer_id, direction, category, text) "
+                "VALUES (:cid, 'in', :cat, :txt) RETURNING id"
+            ),
+            {"cid": customer_id, "cat": category, "txt": text},
+        ).scalar_one()
+    return int(new_id)
+
+
 # =========================================================================
 # المعالج الرئيسي
 # =========================================================================
@@ -457,7 +505,7 @@ async def _handle_unlinked(event: ChatEvent, client: TelegramClient) -> None:
     # ونطلب مشاركة الرقم (نفس نص n8n الأصلي، بلا تعديل — النبرة مقصودة).
     await client.send_contact_request(
         event.chat_id,
-        "🌱 \"وَأَن لَّيْسَ لِلْإِنسَانِ إِلَّا مَا سَعَى\"\n\n"
+        "🌱 \"وَأَن لَّيْسَ لِلْإِنسَانِ إِلَّا مَا سَعَى\"\n\n"
         "كل خطوة تخطوها بحثًا عن رزقك هي خطوة مباركة. امنح نفسك اليوم فرصة "
         "المحاولة، فالسعي عبادة والرزق بيد الله.\n\n"
         "أهلاً وسهلاً 👋 أنا مسار، وجهتنا معك واحدة: نبحث ونقدّم نيابةً عنك "
@@ -756,10 +804,17 @@ async def _handle_active_menu(
     step, data = _get_session(event.chat_id)
 
     if step == "awaiting_contact_message" and not event.is_callback and event.text:
+        # B4: قناة "تواصل معنا" أصبحت مصنَّفة (شكوى/قلب لقلب/ملاحظة) —
+        # `data["category"]` مضبوطة بخطوة اختيار الفئة أدناه؛ "note" احتياط
+        # فقط لجلسة قديمة جدًا وصلت بلا فئة (لا يُفترض حدوثه عمليًا).
+        category = data.get("category") or "note"
         name = state.get("name") or "غير معروف"
         phone = state.get("phone") or "غير متوفر"
-        await _notify_admin(
-            f"📨 رسالة من عميل #{customer_id}\n👤 {name}\n📱 {phone}\n\n💬 {event.text}"
+        message_id = _log_customer_message_in(customer_id, category, event.text)
+        cat_label = CONTACT_CATEGORY_LABELS.get(category, category)
+        await _notify_admin_with_buttons(
+            f"📨 {cat_label} من عميل #{customer_id}\n👤 {name}\n📱 {phone}\n\n💬 {event.text}",
+            buttons=[[{"text": "↩️ رد", "callback_data": f"inbox:reply:{message_id}"}]],
         )
         _clear_session(event.chat_id)
         await client.send_message(
@@ -773,7 +828,18 @@ async def _handle_active_menu(
         return
 
     if event.is_callback and event.callback_data == "menu:contact":
-        _save_session(event.chat_id, "awaiting_contact_message", {})
+        buttons = [
+            [{"text": lbl, "callback_data": f"contact:cat:{key}"}]
+            for key, lbl in CONTACT_CATEGORY_LABELS.items()
+        ]
+        await client.send_message(event.chat_id, "وش نوع رسالتك؟ اختر من الأسفل 👇", buttons=buttons)
+        return
+
+    if event.is_callback and event.callback_data.startswith("contact:cat:"):
+        category = event.callback_data[len("contact:cat:") :]
+        if category not in CONTACT_CATEGORY_LABELS:
+            return
+        _save_session(event.chat_id, "awaiting_contact_message", {"category": category})
         await client.send_message(event.chat_id, "اكتب رسالتك وبنوصّلها لفريق مسار مباشرة:")
         return
 
