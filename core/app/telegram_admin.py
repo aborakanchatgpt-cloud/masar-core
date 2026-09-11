@@ -27,6 +27,7 @@ from sqlalchemy import text as sql_text
 
 from app import customers_api, guarantee_api, overview_api, reports_api
 from app.discovery import get_engine
+from app.phone import canonical_phone
 from app.telegram_client import ChatEvent, TelegramClient
 
 logger = logging.getLogger("masar.telegram_admin")
@@ -286,7 +287,9 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
 
 
 async def _reply_create_customer(client: TelegramClient, chat_id: int, name: str, phone_text: str) -> None:
-    phone_digits = "".join(ch for ch in phone_text if ch.isdigit())
+    # B9/A1: توحيد الصيغة هنا يضمن تطابقها لاحقًا مع الرقم الذي يرسله
+    # تيليجرام فعليًا (966xxxxxxxxx) عند مشاركة العميل رقمه — راجع app/phone.py
+    phone_digits = canonical_phone(phone_text)
     _clear_session(chat_id)
     try:
         result = await customers_api.create_customer(
