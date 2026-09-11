@@ -1,6 +1,8 @@
 """اختبارات B9/B5 نقية (بلا قاعدة بيانات حقيقية) — صيغة 📊 نظرة عامة
 المُنسَّقة (`telegram_admin_commands.reply_overview`، مموّهة بالكامل عبر
-`overview_api.overview`)، `telegram_admin_settings._mask_iban` (دالة صرفة)،
+`overview_api.overview`)، `telegram_admin_settings._mask_value` (دالة صرفة —
+اسمها كان `_mask_iban` قبل B3-متابعة٢، عُمِّم الاسم لأنها تُستخدَم الآن
+لإخفاء account_number أيضًا بجانب iban، بلا أي تغيير بمنطقها)،
 و`telegram_admin_search.search_customers` (مموّه بمحرّك مزيّف بسيط — نفس
 فلسفة `test_telegram_notify_admin.py`: لا حاجة لـPostgres حقيقي لتغطية
 منطق اختيار مسار "رقم" مقابل "اسم" داخل الدالة نفسها).
@@ -107,21 +109,21 @@ def test_reply_overview_dry_run_and_empty_families(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# ⚙️ الإعدادات — _mask_iban (دالة صرفة)
+# ⚙️ الإعدادات — _mask_value (دالة صرفة، عامة لـiban/account_number)
 # ---------------------------------------------------------------------------
 
 
 def test_mask_iban_masks_middle_keeps_edges():
-    assert settings_mod._mask_iban("SA0380000000608010167519") == "SA03 **** **** 7519"
+    assert settings_mod._mask_value("SA0380000000608010167519") == "SA03 **** **** 7519"
 
 
 def test_mask_iban_none_or_empty_reports_undefined():
-    assert settings_mod._mask_iban(None) == "غير محدَّد"
-    assert settings_mod._mask_iban("") == "غير محدَّد"
+    assert settings_mod._mask_value(None) == "غير محدَّد"
+    assert settings_mod._mask_value("") == "غير محدَّد"
 
 
 def test_mask_iban_short_value_returned_as_is():
-    assert settings_mod._mask_iban("SA03") == "SA03"
+    assert settings_mod._mask_value("SA03") == "SA03"
 
 
 # ---------------------------------------------------------------------------
