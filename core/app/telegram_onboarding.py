@@ -1,13 +1,13 @@
 """
 Masar Core — محادثة بوت العملاء "مسار" على تيليجرام (B8: إزالة n8n نهائيًا
-من مسار الدخول الوارد — الدليل: كل تفاعل تيليجرام يُدار داخل Core نفسها).
+من مسار الدخول الوارد — الدليل: كل تفاعل تيليجرام يُدار داخل Core مباشرة).
 
 يُعيد بناء منطق ورشة عمل n8n القديمة
 (`n8n/workflows/job-bot-customer-onboarding-telegram-intake__8TCvk5BsrMPosr9q.json`،
-58 عقدة — المرجع الكامل لهذا التصميم) داخل Core مباشرة، بتبسيطات مقصودة
-توثَّق أدناه لأن n8n كان يعتمد أدوات (Data Tables خاصة بـn8n، وكيل ذكاء
-اصطناعي Claude لقراءة صور/PDF السيرة الذاتية) لا وجود لمثيل حقيقي لها
-بـCore بعد:
+58 عقدة — المرجع الكامل لهذا التصميم) داخل Core مباشرة، بتبسيطات
+مقصودة تُوثّق أدناه لأن n8n كان يعتمد أدوات (Data Tables خاصة بـn8n، وكيل
+ذكاء اصطناعي Claude لقراءة صور/PDF السيرة الذاتية) لا وجود لمثيل حقيقي لها
+بمخطّط Core بعد:
 
     1. **بلا بوابة "Pending Approvals" (موافقة واتساب يدوية)** — ذلك الجدول
        كان يعيش فقط بـn8n Data Tables ولا مقابل له بمخطّط Core. البديل هنا:
@@ -15,7 +15,7 @@ Masar Core — محادثة بوت العملاء "مسار" على تيليجر
        والجوال فقط، `telegram_chat_id` يبقى NULL) بعد استلام الدفع خارج
        Telegram — تمامًا كما كانت بوابة الموافقة تعمل، لكن بلا جدول وسيط.
        العميل بعدها **يربط** هويّة تيليجرام بصفّه عبر مشاركة رقم جواله
-       (زر Telegram الحقيقي request_contact، موثَّق من حساب Telegram نفسه —
+       (زر Telegram الحقيقي request_contact، موثّق من حساب Telegram نفسه —
        نفس مستوى التحقق الذي كان يعتمده تدفّق n8n القديم) — إن طابق الرقم
        صفًّا موجودًا بلا telegram_chat_id، يُربط فورًا؛ إن لم يطابق أي شيء،
        نُخبر العميل بلطف ونُنبّه أحمد (عبر بوت الأدمن) ليتحقق من الاشتراك.
@@ -27,16 +27,15 @@ Masar Core — محادثة بوت العملاء "مسار" على تيليجر
        المجال/المسميات). هنا: نص PDF يُستخرَج بمكتبة `pypdf` (تبعية خفيفة
        جديدة — أول قدرة استخراج نص PDF بالمستودع، راجع core/requirements.txt)
        ثم يمرّ لنفس مسار الاستخراج الحتمي الموجود أصلًا
-       (`app.customers_api.upsert_profile`، لا يُعاد تطبيقه هنا). الصور
-       (JPEG/PNG) **غير مدعومة حاليًا** (بلا OCR) — نطلب من العميل ملف PDF
-       فقط؛ هذا قيد مذكور صراحة بتقرير التسليم كسؤال مفتوح لأحمد.
+       (`app.customers_api.upsert_profile`، لا يُعاد تطبيقه هنا). الصور (JPEG/PNG) **غير مدعومة حاليًا** (بلا OCR) — نطلب من العميل ملف PDF
+       فقط؛ هذا قيد مذكور صراحةً بتقرير التسليم كسؤال مفتوح لأحمد.
     3. **بلا "جتني مقابلة! 🎉" (تحضير مقابلة بالذكاء الاصطناعي)** — تلك
-       الميزة بn8n كانت تستدعي وكيل Claude آخر مباشرة؛ لا مقابل لها بـCore
+       الميزة بـn8n كانت تستدعي وكيل Claude آخر مباشرة؛ لا مقابل لها بـCore
        اليوم وخارج نطاق هذا التسليم (تدفّق داخلي/صادر، لا وارد Telegram).
     4. **لا نسأل عن بريد إلكتروني منفصل** — الحقل `email_service` بجدول
-       customers هو صندوق Gmail المخصَّص الذي تربطه صفحة `/link/{token}`
+       customers هو صندوق Gmail المخصّص الذي تربطه صفحة `/link/{token}`
        (app.link_api) حصريًا، لا حقل "بريدك الشخصي" النصي الذي كان يُسأل
-       بn8n كخطوة منفصلة بلا استخدام حقيقي بمخطّط Core — أُسقطت الخطوة.
+       بـn8n كخطوة منفصلة بلا استخدام حقيقي بمخطّط Core — أُسقطت الخطوة.
 
 الحالة بين رسائل نفس المحادثة تُخزَّن بجدول `telegram_sessions` جديد
 (migrations/versions/0013_telegram_sessions.py) — عمود واحد `step` (أين
@@ -59,6 +58,7 @@ from fastapi import HTTPException
 from sqlalchemy import text as sql_text
 
 from app import customers_api, link_api
+from app import telegram_payments
 from app.discovery import classify_family, get_engine
 from app.phone import canonical_phone
 from app.telegram_client import (
@@ -72,8 +72,8 @@ from app.telegram_client import (
 logger = logging.getLogger("masar.telegram_onboarding")
 
 # -----------------------------------------------------------------------
-# ثوابت التدفّق — مناطق السعودية الـ13 والحدود القصوى منقولة حرفيًا من
-# منطق n8n القديم (Onboarding Router node) للحفاظ على نفس تجربة المستخدم.
+# ثوابت التدفّق — مناطق السعودية الـــــــــــــ 13 والحدود القصوى منقولة حرفيًا
+# من منطق n8n القديم (Onboarding Router node) للحفاظ على نفس تجربة المستخدم.
 # -----------------------------------------------------------------------
 
 REGIONS: list[str] = [
@@ -85,7 +85,7 @@ MAX_CITIES = 5
 MAX_FAMILIES = 3
 CV_MAX_BYTES = 5 * 1024 * 1024  # 5MB — يطابق app.customers_api.CV_MAX_BYTES عمدًا
 _PDF_MAGIC = b"%PDF-"
-MIN_CV_TEXT_CHARS = 40  # أقل من هذا = فشل استخراج فعلي (ملف فاضٍ/تالف/صورة نصّها غير قابل للقراءة)
+MIN_CV_TEXT_CHARS = 40  # أقل من هذا = فشل تحليل فعلي (ملف فارغ/تالف/صورة نصّها غير قابل للقراءة)
 
 CONTACT_BUTTON_TEXT = "📱 مشاركة رقم الجوال"
 
@@ -186,7 +186,7 @@ def build_cities_message(cities: list[str]) -> str:
 
 
 def build_families_buttons(families: list[str]) -> list[list[dict[str, str]]]:
-    rows: list[list[dict[str, str]]] = [[{"text": "✅ القائمة كافية، تقدّم بها", "callback_data": "families:ok"}]]
+    rows: list[list[dict[str, str]]] = [[{"text": "✅ القائمة كافية، تقدم بها", "callback_data": "families:ok"}]]
     if len(families) < MAX_FAMILIES:
         rows.append([{"text": "➕ أضف مجالًا آخر", "callback_data": "families:add"}])
     for i, fam in enumerate(families):
@@ -209,7 +209,7 @@ def classify_family_input(existing: list[str], typed: str) -> tuple[str | None, 
     """يصنّف نصًا حرًّا (اسم مجال/مسمى كتبه العميل) لعائلة مهنية معروفة
     بمعجم taxonomy_local.yaml عبر app.discovery.classify_family (نفس محرّك
     تصنيف الوظائف — لا منطق مستقل هنا)، ويضيفها للقائمة إن لم تكن موجودة
-    ولم نتجاوز الحد الأقصى. يُرجع (اسم العائلة المُطابَقة أو None، القائمة
+    ولم نتجاوز الحد الأقصى. يُرجع (اسم العائلة المُطابقة أو None، القائمة
     الجديدة) — دالة نقية بالكامل، قابلة للاختبار بلا قاعدة بيانات."""
     if len(existing) >= MAX_FAMILIES:
         return None, existing
@@ -225,13 +225,13 @@ def classify_family_input(existing: list[str], typed: str) -> tuple[str | None, 
 
 
 def extract_pdf_text(content: bytes) -> str:
-    """يستخرج نص PDF نصّي (لا صور مصوَّرة/ممسوحة ضوئيًا بلا طبقة نص) عبر
-    pypdf. يُرجع نصًا فارغًا (لا استثناء) عند أي فشل قراءة — المستدعي يقرّر
+    """يستخرج نص PDF نصّي (لا صور مصوّرة/ممسوحة ضوئيًا بلا طبقة نص) عبر
+    pypdf. يُرجع نصًا فارغًا (لا استثناء) عند أي فشل قراءة — المستدعي يقرر
     وفق MIN_CV_TEXT_CHARS إن كان هذا "فشل تحليل فعلي" يستدعي طلب ملف أوضح."""
     try:
         from pypdf import PdfReader
     except ImportError:
-        logger.warning("مكتبة pypdf غير مثبَّتة — تعذّر استخراج نص PDF")
+        logger.warning("مكتبة pypdf غير مثبّتة — تعذّر استخراج نص PDF")
         return ""
     try:
         import io
@@ -310,6 +310,39 @@ def _finalize_preferences(customer_id: int, cities: list[str], families: list[st
         )
 
 
+def _self_register_customer(chat_id: int, phone_digits: str) -> int:
+    """B9/B3: تسجيل ذاتي — لا يطابق `_link_telegram_by_phone` أي صفّ موجود
+    (لم يسجّله أحمد يدويًا مسبقًا) فننشئ صفًّا جديدًا فورًا بلا أي تدخّل من
+    أحمد (قرار المنتج 11 سبتمبر: "تسجيل ذاتي"). الاسم يبقى فارغًا هنا —
+    يُلتقَط بالخطوة التالية مباشرة (راجع `_handle_unlinked`) ثم يُحدّث عبر
+    `_update_customer_name` أدناه. `customers.status` الافتراضي `pending`
+    (0017) يُطبّق تلقائيًا بلا تمريره صراحةً هنا."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            sql_text(
+                "INSERT INTO customers (telegram_chat_id, phone, name, target_daily) "
+                "VALUES (:cid, :phone, '', 17) RETURNING id"
+            ),
+            {"cid": chat_id, "phone": phone_digits},
+        ).first()
+        customer_id = row[0]
+        conn.execute(
+            sql_text("INSERT INTO wallets (customer_id, balance) VALUES (:id, 0) ON CONFLICT DO NOTHING"),
+            {"id": customer_id},
+        )
+    return customer_id
+
+
+def _update_customer_name(customer_id: int, name: str) -> None:
+    engine = get_engine()
+    with engine.begin() as conn:
+        conn.execute(
+            sql_text("UPDATE customers SET name = :name, updated_at = now() WHERE id = :id"),
+            {"name": name, "id": customer_id},
+        )
+
+
 def _link_telegram_by_phone(chat_id: int, phone_digits: str) -> int | None:
     """يربط chat_id بصفّ عميل موجود مسبقًا (أنشأه أحمد عبر بوت الأدمن)
     برقم الجوال — فقط إن لم يكن ذلك الصفّ مربوطًا بمحادثة تيليجرام أخرى
@@ -349,10 +382,10 @@ async def _notify_admin(text: str) -> None:
 
 
 async def handle_update(update: dict[str, Any], event: ChatEvent, client: TelegramClient) -> None:
-    """نقطة الدخول التي يستدعيها app.telegram_api لكل تحديث موجَّه لبوت
+    """نقطة الدخول التي يستدعيها app.telegram_api لكل تحديث موجّه لبوت
     العملاء (chat_id != MASAR_OWNER_CHAT_ID). `event` مُستخرَج مسبقًا
     بالمستدعي (extract_chat_event) و`client` هو عميل بوت العملاء الجاهز —
-    كلاهما يُمرَّر بدل إعادة استخراجهما هنا تفاديًا لازدواج المنطق مع
+    كلاهما يُمرّر بدل إعادة استخراجهما هنا تفاديًا لازدواج المنطق مع
     app.telegram_admin الذي يمرّ بنفس نقطة الدخول بالموجّه المشترك."""
     try:
         lookup = await customers_api.get_customer_by_telegram(event.chat_id)
@@ -381,7 +414,7 @@ async def handle_update(update: dict[str, Any], event: ChatEvent, client: Telegr
 
 
 # -------------------------------------------------------------------
-# عميل غير مربوط بعد بأي صفّ (لا يوجد customer_id لهذه المحادثة)
+# عميل غير مربوط بعد (لا يوجد customer_id لهذه المحادثة)
 # -------------------------------------------------------------------
 
 
@@ -408,22 +441,23 @@ async def _handle_unlinked(event: ChatEvent, client: TelegramClient) -> None:
                     "الآن أرسل لي سيرتك الذاتية كملف PDF لنبدأ العمل عليها 📄",
                 )
         else:
+            # B9/B3: لا صفّ موجود بهذا الرقم — تسجيل ذاتي فورًا (قرار
+            # المنتج 11 سبتمبر)، لا رسالة دخول مسدود كما كان سابقًا.
+            new_customer_id = _self_register_customer(event.chat_id, phone_digits)
+            _save_session(event.chat_id, "await_name", {})
             await client.send_message(
                 event.chat_id,
-                "ما لقينا اشتراكًا مسجَّلًا بهذا الرقم عندنا 🙏\n\n"
-                "إذا اشتركت حديثًا، أعطنا شوي حتى يُفعَّل حسابك، أو تواصل معنا "
-                "عبر واتساب على: +966544161255",
+                "أهلًا وسهلًا 👋 يبدو هذي أول مرة تتواصل معنا فيها بهذا الرقم — تمام، نبدأ تسجيلك الآن.\n\n"
+                "وش اسمك الكريم؟",
             )
-            await _notify_admin(
-                f"⚠️ محاولة ربط تيليجرام برقم غير مسجَّل\nرقم: {phone_digits}\nchatId: {event.chat_id}"
-            )
+            await _notify_admin(f"🆕 عميل جديد بدأ التسجيل الذاتي: #{new_customer_id} — {phone_digits}")
         return
 
     # أول تواصل (أو أعاد الكتابة بدل الضغط على الزر) — نُرسل الترحيب الدافئ
     # ونطلب مشاركة الرقم (نفس نص n8n الأصلي، بلا تعديل — النبرة مقصودة).
     await client.send_contact_request(
         event.chat_id,
-        "🌱 \"وَأَن لَّيْسَ لِلْإِنسَانِ إِلَّا مَا سَعَىٰ\"\n\n"
+        "🌱 \"وَأَن لَّيْسَ لِلْإِنسَانِ إِلَّا مَا سَعَى\"\n\n"
         "كل خطوة تخطوها بحثًا عن رزقك هي خطوة مباركة. امنح نفسك اليوم فرصة "
         "المحاولة، فالسعي عبادة والرزق بيد الله.\n\n"
         "أهلاً وسهلاً 👋 أنا مسار، وجهتنا معك واحدة: نبحث ونقدّم نيابةً عنك "
@@ -456,6 +490,27 @@ async def _handle_onboarding_step(
 ) -> None:
     step, data = _get_session(event.chat_id)
 
+    # B9/B3: زرّا "📎 إرسال الإيصال من جديد"/"📞 تواصل معنا" (يظهران للعميل
+    # بعد رفض الأدمن لطلب دفع سابق) قد تصل بجلسة ممسوحة (لا step نشط) —
+    # يُتحقّق منهما ببادئة callback_data مباشرة بصرف النظر عن step، راجع
+    # docstring app.telegram_payments.
+    if event.is_callback and (event.callback_data.startswith("payretry:") or event.callback_data == "paycontact"):
+        await telegram_payments.handle_step(event, client, customer_id, step, data)
+        return
+
+    if step == "await_name":
+        if event.is_callback or not event.text:
+            await client.send_message(event.chat_id, "وش اسمك الكريم؟ اكتبه هنا:")
+            return
+        name = event.text.strip()[:255]
+        _update_customer_name(customer_id, name)
+        await telegram_payments.start(client, event.chat_id, customer_id)
+        return
+
+    if step in telegram_payments.PAYMENT_FLOW_STEPS:
+        await telegram_payments.handle_step(event, client, customer_id, step, data)
+        return
+
     if not state.get("cv_pdf_path"):
         await _step_cv(event, client, customer_id, state, step, data)
         return
@@ -485,8 +540,8 @@ async def _step_cv(
         try:
             file_info = await client.get_file(event.document["file_id"])
             # B9/A6: نمرّر حد التنزيل الفعلي (CV_MAX_BYTES=5MB) لا الافتراضي
-            # (8MB) حتى تكون رسالة الخطأ صحيحة ("يتجاوز 5MB") بدل رسالة تنزيل
-            # عامة مضلِّلة لملف بين 5 و8 ميجابايت.
+            # (8MB) حتى تكون رسالة الخطأ صحيحة ("يتجاوز 5MB") بدل رسالة تنزيل خطأ
+            # عامة مضلّلة لملف بين 5 ور8 ميجابايت.
             content = await client.download_file_bytes(file_info["file_path"], max_bytes=CV_MAX_BYTES)
         except TelegramAPIError:
             logger.warning("فشل تنزيل مرفق CV من Telegram", exc_info=True)
@@ -505,10 +560,10 @@ async def _step_cv(
                 event.chat_id,
                 "عذرًا 🙏 ما قدرت أقرأ محتوى واضحًا من هذا الملف (قد يكون صورة ممسوحة ضوئيًا "
                 "بلا طبقة نص، أو ملفًا فارغًا/تالفًا).\n\n"
-                "حاول ترسل ملف PDF نصّيًا (وليس صورة مُصدَّرة كـPDF):",
+                "حاول ترسل ملف PDF نصّيًا (وليس صورة مُصدرة كـPDF):",
             )
             await _notify_admin(
-                f"⚠️ فشل استخراج نص من سيرة عميل #{customer_id} — تحقق يدويًا إن تكرر."
+                f"⚠️ فشل استخراج نص من سيرة عميل #{customer_id} — تحقق يدويًا إن تكرّر."
             )
             return
 
@@ -530,7 +585,7 @@ async def _step_cv(
         )
         return
 
-    await client.send_message(event.chat_id, "لسّة وصلت! 📄 أرسل سيرتك الذاتية كملف PDF عشان نبدأ العمل:")
+    await client.send_message(event.chat_id, "لسّة وصلت! 📄 أرسل سيرتك الذاتية كملف PDF عشان نبدأ:")
 
 
 async def _step_cities(
@@ -665,7 +720,7 @@ async def _finalize_onboarding(
         logger.warning("تعذّر توليد رابط ربط البريد للعميل #%s", customer_id, exc_info=True)
 
     closing = (
-        "🎉 تم كل شي بنجاح! سيرتك جاهزة، ومدنك ومجالاتك محفوظة، وراح نبدأ نبحث ونقدّم لك "
+        "🎉 تم كل شي بنجاح! سيرتك جاهزة، ومدنك ومجالاتك محفوظة، وراح نبدأ نبحث ونقدم لك "
         "على الوظائف المناسبة نيابةً عنك بإذن الله.\n\n"
     )
     if link_url:

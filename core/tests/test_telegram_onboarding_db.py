@@ -1,12 +1,12 @@
 """اختبارات core/app/telegram_onboarding.py (B8) — مسار onboarding كامل
 من عميل "سجّله أحمد" عبر بوت الأدمن (بالاسم والجوال فقط) حتى اكتمال
-الملف، عبر عميل تيليجرام مزيَّف بالكامل (RecordingTelegramClient) — صفر
+الملف، عبر عميل تيليجرام مزيّف بالكامل (RecordingTelegramClient) — صفر
 استدعاءات شبكية حقيقية لـTelegram.
 
 يحتاج قاعدة بيانات Postgres حقيقية مهاجَرة حتى 0013 (جدول telegram_sessions)
 — يُتخطّى تلقائيًا (skip) إن تعذّر الاتصال، نفس نمط test_catalog.py/
 test_link_api.py. الدوال النقية بلا قاعدة بيانات موجودة بملف منفصل
-test_telegram_onboarding.py (يعمل دومًا، لا يتأثّر بتخطّي هذا الملف).
+test_telegram_onboarding.py (يعمل دومًا، لا يتأثر بتخطّي هذا الملف).
 """
 from __future__ import annotations
 
@@ -170,7 +170,11 @@ def test_handle_update_links_customer_by_shared_contact(engine, registered_custo
     assert any("تم التحقق" in m["text"] for m in client.sent if m["type"] == "message")
 
 
-def test_handle_update_unmatched_phone_does_not_link_anyone(engine, registered_customer):
+def test_handle_update_unmatched_phone_self_registers(engine, registered_customer):
+    """B9/B3: رقم لا يطابق أي صفّ موجود لم يعد يُقابَل برسالة رفض —
+    يُسجّل العميل تلقائيًا (تسجيل ذاتي، قرار المنتج 11 سبتمبر) بصفّ جديد
+    مستقل (لا يمسّ registered_customer الأصلي إطلاقًا)، وتُطلب منه بياناته
+    (اسمه) قبل الانتقال لخطوة الباقات."""
     chat_id = registered_customer["id"] + 10**9
     event = _make_event(chat_id, contact={"phone_number": "0500000000", "user_id": chat_id})
     client = RecordingTelegramClient()
@@ -178,11 +182,25 @@ def test_handle_update_unmatched_phone_does_not_link_anyone(engine, registered_c
     _run(ob.handle_update({}, event, client))
 
     with engine.connect() as conn:
-        row = conn.execute(
+        original_row = conn.execute(
             text("SELECT telegram_chat_id FROM customers WHERE id = :id"), {"id": registered_customer["id"]}
         ).first()
-    assert row[0] is None
-    assert any("ما لقينا" in m["text"] for m in client.sent if m["type"] == "message")
+        new_row = conn.execute(
+            text("SELECT id, status, phone FROM customers WHERE telegram_chat_id = :cid"), {"cid": chat_id}
+        ).mappings().first()
+    assert original_row[0] is None  # العميل الأصلي غير المطابق لم يُلمَس
+    assert new_row is not None
+    assert new_row["status"] == "pending"
+    assert new_row["phone"] == "966500000000"
+
+    step, _data = ob._get_session(chat_id)
+    assert step == "await_name"
+    assert any("وش اسمك" in m["text"] for m in client.sent if m["type"] == "message")
+
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM telegram_sessions WHERE chat_id = :cid"), {"cid": chat_id})
+        conn.execute(text("DELETE FROM wallets WHERE customer_id = :id"), {"id": new_row["id"]})
+        conn.execute(text("DELETE FROM customers WHERE id = :id"), {"id": new_row["id"]})
 
 
 def test_full_onboarding_flow_cv_cities_families(engine, registered_customer, monkeypatch, tmp_path):
@@ -215,7 +233,7 @@ def test_full_onboarding_flow_cv_cities_families(engine, registered_customer, mo
     done_event = _make_event(chat_id, is_callback=True, callback_data="city:done")
     _run(ob.handle_update({}, done_event, client))
 
-    # 4) كتابة مجال مهني يُصنَّف تلقائيًا، ثم تأكيد الإنهاء
+    # 4) كتابة مجال مهني يُصنّف تلقائيًا، ثم تأكيد الإنهاء
     monkeypatch.setattr(ob, "classify_family", lambda text: "accounting" if text else None)
     family_event = _make_event(chat_id, text="محاسبة")
     _run(ob.handle_update({}, family_event, client))
