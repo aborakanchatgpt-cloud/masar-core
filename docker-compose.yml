@@ -110,6 +110,14 @@ services:
       REPO_DIR: /repo
       MCP_BRIDGE_TOKEN: ${MCP_BRIDGE_TOKEN:-}
       DATA_DIR: /app/data
+      # B8 (إزالة n8n من مسار تيليجرام): توكنات بوتي تيليجرام (عملاء/إدارة)،
+      # معرّف محادثة المالك، وسرّ الـwebhook — core.app.telegram_api يحتاجها
+      # كلها مباشرة (نقطة /telegram/webhook/{token} تُعطِّل نفسها 503 بلا
+      # TELEGRAM_WEBHOOK_SECRET، تمامًا مثل MCP_BRIDGE_TOKEN أعلاه).
+      TELEGRAM_CUSTOMER_BOT_TOKEN: ${TELEGRAM_CUSTOMER_BOT_TOKEN:-}
+      TELEGRAM_ADMIN_BOT_TOKEN: ${TELEGRAM_ADMIN_BOT_TOKEN:-}
+      MASAR_OWNER_CHAT_ID: ${MASAR_OWNER_CHAT_ID:-}
+      TELEGRAM_WEBHOOK_SECRET: ${TELEGRAM_WEBHOOK_SECRET:-}
       # B4 — تصحيح Critical 1/2 بمراجعة B4 الأوفلاين: بلا هذه المتغيرات
       # داخل بيئة الحاوية فعليًا (compose لا يمرّر .env تلقائيًا للحاوية —
       # فقط يستبدلها ذاتيًا بـ${VAR} هنا)، كل تشفير/فك تشفير سرّ بريد يفشل
@@ -190,6 +198,14 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-masar}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-masar}
       GOTENBERG_URL: http://gotenberg:3000
       DATA_DIR: /app/data
+      # B8 (إزالة n8n من مسار تيليجرام): نفس متغيرات تيليجرام أعلاه —
+      # core-scheduler هو من يرسل التقارير اليومية/التذكيرات عبر
+      # app.telegram_notify/telegram_notify_admin (reports_relay.py،
+      # retention.py، skill_gap.py)، فيحتاجها للإرسال الصادر تمامًا كما
+      # تحتاجها core للـwebhook الوارد.
+      TELEGRAM_CUSTOMER_BOT_TOKEN: ${TELEGRAM_CUSTOMER_BOT_TOKEN:-}
+      TELEGRAM_ADMIN_BOT_TOKEN: ${TELEGRAM_ADMIN_BOT_TOKEN:-}
+      MASAR_OWNER_CHAT_ID: ${MASAR_OWNER_CHAT_ID:-}
       # نفس متغيّرات core أعلاه بالضبط — core-scheduler هو من يبني الطابور
       # فعليًا (send_builder، كل 10 دقائق) ويرسل (sender، كل دقيقة) ويقرأ
       # الوارد (inbox، كل 15 دقيقة)، فيحتاجها جميعًا لا core وحدها.
