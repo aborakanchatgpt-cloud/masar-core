@@ -41,13 +41,16 @@ rm -f "$DUMP_FILE"
 # core-scheduler — راجع docker-compose.yml). غيابها من النسخ الاحتياطية
 # يعني فقدانها الفعلي عند أي كارثة تمسح الـvolume رغم بقاء سجلّها بقاعدة
 # البيانات. غير قاتلة عمدًا: فشل نسخ CV لا يجب أن يوقف باقي السكربت (نسخة
-# قاعدة البيانات أهمّ بكثير وتسبقها هنا أصلًا) — فقط يُسجَّل تحذير.
+# قاعدة البيانات أهمّ بكثير وتسبقها هنا أصلًا).
 CV_TAR_FILE="$BACKUP_DIR/cv_${TS}.tar.gz"
 CV_TAR_ENC_FILE="${CV_TAR_FILE}.gpg"
 if docker compose exec -T core tar -C /data -czf - cv > "$CV_TAR_FILE" 2>/dev/null; then
-  gpg --batch --yes --passphrase "$BACKUP_PASSPHRASE" --symmetric --cipher-algo AES256 -o "$CV_TAR_ENC_FILE" "$CV_TAR_FILE" \
-    && rm -f "$CV_TAR_FILE" \
-    || echo "cv backup failed"
+  if gpg --batch --yes --passphrase "$BACKUP_PASSPHRASE" --symmetric --cipher-algo AES256 -o "$CV_TAR_ENC_FILE" "$CV_TAR_FILE"; then
+    rm -f "$CV_TAR_FILE"
+    echo "$(date -u +%FT%TZ) — نسخة السيرة الذاتية مشفّرة: $CV_TAR_ENC_FILE"
+  else
+    echo "cv backup failed"
+  fi
 else
   rm -f "$CV_TAR_FILE"
   echo "cv backup failed"
