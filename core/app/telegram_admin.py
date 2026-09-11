@@ -8,7 +8,7 @@ Core مباشرة، بقائمة أزرار inline واحدة تُغطّي كل 
 لا رسالة تُعالَج ولا ردّ يُرسل لأي محادثة غير `is_admin_chat` (المالك، أو
 مفوّض نشط مربوط — B9/B2). إن غاب MASAR_OWNER_CHAT_ID من البيئة يتعطّل هذا
 البوت بالكامل للمالك (لا "يفتح" بالخطأ)؛ محادثات المفوّضين تبقى معطّلة
-تلقائيًا أيضًا (بلا مالك مُعرَّف، القائمة الرئيسية بلا معنى تشغيليًا).
+تلقائيًا أيضًا (بلا مالك مُعرّف، القائمة الرئيسية بلا معنى تشغيليًا).
 
 **B9/B2 — طبقة الهوية الوحيدة الآن:** كانت `app.telegram_api` تحمل بوابة
 `is_owner_chat` ثانوية عند مسار `/admin` *قبل* الوصول لهذا الملف، فتصدّ أي
@@ -29,7 +29,7 @@ app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، �
 استخدام نفس البحث)، و⚙️ الإعدادات (بيانات التحويل/الباقات/واتساب الدعم)
 بملف منفصل `app.telegram_admin_settings` (مستورَد كـ`settings_mod`) —
 للمالك حصرًا، نفس نمط فحص `is_owner_chat` المُستخدَم أصلًا مع 👥 المفوّضون.
-🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا مستقلًا بالقائمة،
+🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا مستقلًّا بالقائمة،
 لكن `admin:segments` يبقى مسارًا فعّالًا لأي مرجع قديم).
 
 **B9/B3 — 💳 طلبات الدفع:** أصبحت زرًا فعليًا بالقائمة الرئيسية (ملف منفصل
@@ -43,10 +43,17 @@ app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، �
 حسابات (`settings:bank`→`reply_bank_list`، `settings:bank:{id}` للتفاصيل،
 `settings:bank_add` للإضافة، `settings:bank_edit:{id}:{field}`/
 `settings:bank_toggle:{id}` للتعديل/الإيقاف) بدل حساب واحد — راجع
-`app.telegram_admin_settings`. ✉️ رسالة لعميل أصبحت تسأل أولًا عن فئة
+`app.telegram_admin_settings`. ✉️ رسالة لعميل أصبحت تسأل أولاً عن فئة
 الاستهداف (`admin:msg_cat:specific|all|active|expired`) قبل النص — الفئات
 الجماعية الثلاث تمرّ بخطوة معاينة وتأكيد صريح (`msgbulk:send`) قبل الإرسال
 الفعلي لعدّة عملاء دفعة واحدة، لأنها لا تُراجَع فرديًا كالمسار المحدد.
+
+**B3-متابعة٢ (رقم الحساب + لغة الاسم):** تدفّق ➕ إضافة بنك جديد صار
+يمرّ بخطوة أزرار للغة اسم البنك (`settings:bank_lang:ar|en`) بعد الاسم
+مباشرة، ثم رقم الحساب والآيبان باختياريّة (كلاهما قابل للتخطي بزر
+`settings:bank_skip:number|iban`، بشرط عدم تخطي الاثنين معًا) — كل هذا
+موجّه لـ`handle_bank_callback` بتمرير `_get_session` أيضًا (لا `_save_session`
+فقط كالسابق) لأن أزرار اللغة/التخطي تحتاج قراءة بيانات الجلسة المتراكمة.
 """
 from __future__ import annotations
 
@@ -116,7 +123,7 @@ def _clear_session(chat_id: int) -> None:
 
 def is_owner_chat(chat_id: int) -> bool:
     """فشل مغلق عمدًا (نفس نمط app.auth.require_admin_token): غياب
-    MASAR_OWNER_CHAT_ID بالبيئة يعني "لا مالك مُعرَّف" فيُرفض أي chat_id
+    MASAR_OWNER_CHAT_ID بالبيئة يعني "لا مالك مُعرّف" فيُرفض أي chat_id
     بلا استثناء، بدل معاملة قيمة فارغة كمطابقة بالخطأ."""
     owner = os.environ.get("MASAR_OWNER_CHAT_ID", "")
     if not owner:
@@ -429,7 +436,7 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
     if data.startswith("settings:bank"):
         if not is_owner_chat(event.chat_id):
             return
-        await settings_mod.handle_bank_callback(data, event.chat_id, client, _save_session)
+        await settings_mod.handle_bank_callback(data, event.chat_id, client, _save_session, _get_session, _clear_session)
         return
 
     if data == "settings:whatsapp":
@@ -477,7 +484,7 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
 
 
 # -------------------------------------------------------------------
-# توجيه الرسائل النصية أثناء انتظار مُدخَل (خطوات متعددة الرسائل)
+# توجيه الرسائل النصّية أثناء انتظار مُدخَل (خطوات متعددة الرسائل)
 # -------------------------------------------------------------------
 
 
@@ -540,7 +547,7 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
         await search_mod.send_customer_message_and_log(client, event.chat_id, customer_id, text)
         return
 
-    # 🏦 إضافة/تعديل حساب بنكي — أربع خطوات ممكنة، موجّهة بدالة واحدة
+    # 🏦 إضافة/تعديل حساب بنكي — خطوات ممكنة، موجّهة بدالة واحدة
     # بـ`telegram_admin_settings.py` (نفس سبب نقل `settings:bank*` أعلاه).
     if step in settings_mod.BANK_STEP_NAMES:
         await settings_mod.handle_bank_step_text(step, event.chat_id, client, data, text, _save_session, _clear_session)
@@ -603,7 +610,7 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
         return
 
     if step == "extend_days":
-        # B9/A6: كان أي إدخال غير رقمي هنا (خطأ كتابة، مثلاً) يُمرّر بصمت
+        # B9/A6: كان أي إدخال غير رقمي هنا (خطأ كتابة، مثلًا) يُمرّر بصمت
         # كـEXTEND_DEFAULT_DAYS (30 يومًا) بلا أي إشعار — قد يُمدّد اشتراك
         # عميل بعدد أيام لم يقصده أحمد إطلاقًا. الآن: نفس نمط إعادة الطلب
         # المُستخدَم بكل خطوة رقمية أخرى بهذا الملف (extend_id/status_id/...)
