@@ -1,9 +1,10 @@
 """
-Masar Core — نقطة استقبال Webhook تيليجرام الموحَّدة (B8: إزالة n8n نهائيًا
-من مسار الدخول الوارد — بديل مباشر لعقدتي Telegram Trigger اللتين كانتا
-تعيشان بـn8n لكل من بوت العملاء "مسار" وبوت الأدمن الخاص).
+Masar Core — نقطة استقبال Webhook تيليجرام (B8: إزالة n8n نهائيًا من مسار
+الدخول الوارد — بديل مباشر لعقدتي Telegram Trigger اللتين كانتا تعيشان
+بـn8n لكل من بوت العملاء "مسار" وبوت الأدمن الخاص).
 
-    POST /telegram/webhook/{token}   نقطة الويب هوك الوحيدة لكلا البوتين
+    POST /telegram/webhook/{token}/{bot_kind}   نقطة ويب هوك مستقلة لكل بوت
+                                                  (bot_kind ∈ {admin, customer})
 
 **بلا أي طبقة auth.require_admin_token هنا عمدًا** — تيليجرام لا يقدر يرسل
 ترويسة Authorization: Bearer بأي شكل (لا اعتماد HTTP قابل للتخصيص بواجهة
@@ -15,13 +16,26 @@ app.mcp_bridge./mcp/{token} بالضبط — توكن خاطئ ⇐ 404 بلا ك
 — إن وصلت هذه الترويسة يجب أن تطابق التوكن أيضًا، دفاعًا بالعمق فوق توكن
 المسار وحده (لا اعتماد على طبقة واحدة فقط).
 
-**توجيه بوتين على مسار واحد بمعرّف الدردشة فقط، لا بتوكن البوت** — تيليجرام
-لا يُضمّن أي معرّف بوت بجسم Update نفسه (نفس JSON مهما كان البوت)، فالتفريق
-الوحيد الممكن هنا هو: chat_id == MASAR_OWNER_CHAT_ID ⇐ بوت الأدمن،
-غير ذلك ⇐ بوت العملاء. هذا صحيح عمليًا لأن chat_id بمحادثة خاصة هو معرّف
-حساب Telegram الشخصي لصاحبها (لا يتغيّر بين البوتات) — **افتراض تصميم
-مهم**: أحمد يتواصل دومًا عبر بوت الأدمن الخاص، لا بوت "مسار" العام (إن
-جرّب بوت العملاء بنفسه سيُعامَل كأدمن لا كعميل — سلوك مقصود، لا عطل).
+**توجيه بوتين — مقطع مسار منفصل لكل بوت (bot_kind)، لا chat_id** — كان
+التصميم الأصلي يوجّه عبر chat_id == MASAR_OWNER_CHAT_ID فقط لأن تيليجرام
+لا يُضمّن أي معرّف بوت بجسم Update نفسه، لكن هذا افترض أن أحمد (صاحب
+MASAR_OWNER_CHAT_ID) يتواصل *دومًا* عبر بوت الأدمن فقط — فإن جرّب بوت
+العملاء بنفسه (ليراقب تجربة العميل عن قرب، وهو استخدام مطلوب فعليًا لا
+استثناء) كان يُعامَل كأدمن بالخطأ داخل محادثة العميل. الحل: كل بوت له
+مسار Webhook مستقل يحمل bot_kind بمقطع المسار (يُضبط مرة واحدة بـsetWebhook
+لكل بوت، فتيليجرام نفسه يخبرنا بالبوت عبر أي مسار استدعى، لا عبر جسم
+الطلب). التوجيه الآن حصرًا حسب bot_kind بالمسار:
+
+    bot_kind == "admin"    ⇐ بوت الأدمن الخاص (telegram_admin.handle_update)
+    bot_kind == "customer" ⇐ بوت "مسار" العام (telegram_onboarding.handle_update)
+
+**chat_id == MASAR_OWNER_CHAT_ID يبقى بوابة أمان ثانوية على مسار admin فقط**
+(لا على التوجيه نفسه): أي محادثة تصل مسار /admin بمعرّف دردشة غير أحمد
+تُرفَض بصمت (200، بلا استدعاء أي معالج) — حتى لو خمّن أحد ما رابط بوت
+الأدمن (سرّي أصلًا بتوكن المسار)، فلن يُعامَل كأدمن ما لم يكن فعليًا صاحب
+MASAR_OWNER_CHAT_ID. مسار /customer بلا أي قيد على chat_id — أي أحد، أحمد
+نفسه ضمنًا، يُعامَل كعميل عادي عبره (هذا بالضبط ما يتيح لأحمد تجربة مسار
+العميل من حسابه الشخصي دون حساب تيليجرام ثانٍ).
 
 **الشقّ الصادر (B8، بعد الدمج مع تيار reports_relay.py/telegram_notify.py)**:
 كل رسالة تقرير يومي يُرفَق بها زرّا 👎/🎉 (app.telegram_notify.build_feedback_keyboard)
@@ -29,19 +43,19 @@ app.mcp_bridge./mcp/{token} بالضبط — توكن خاطئ ⇐ 404 بلا ك
 
     fb:<customer_id>:<send_queue_id>:<thumbs_down|celebrate>
 
-هذا التنسيق يُعتَرض هنا **قبل** التوجيه لبوت الأدمن/العملاء العادي (قبل حتى
-تأكيد الاستلام المركزي أدناه — _handle_feedback_callback يؤكّد بنص تأكيد
-مخصَّص بنفسه) لأن الضغطة تصل دومًا من محادثة عميل عبر بوت العميل (التقرير
-يُرسَل عبر TELEGRAM_CUSTOMER_BOT_TOKEN حصرًا)، بصرف النظر عن chat_id —
-يستدعي app.feedback_api.submit_feedback مباشرة (نفس نمط telegram_admin.py:
-استدعاء الدالة الأساسية بايثون مباشرة، لا طلب HTTP داخلي، متجاوزًا
-Depends(require_admin_token) على مستوى الراوتر عمدًا — البوت نفسه بوابة
-التحقق هنا، تمامًا كما تفعل بقية أوامر telegram_admin.py). **customer_id
-المُضمَّن بالزر مكشوف وقابل للتخمين (رقم تسلسلي)، فلا يُوثَق به بمفرده
-أبدًا** — _handle_feedback_callback يتحقّق أولًا عبر
-customers_api.get_customer_by_telegram(chat_id) أن صاحب chat_id الذي
-أرسل الضغطة فعليًا هو نفسه customer_id المكتوب بالزر، ويرفض بصمت (رد عام
-"غير متاح" بلا كشف السبب) عند أي عدم تطابق أو محادثة غير مربوطة.
+هذا التنسيق يُعتَرض هنا **قبل** التوجيه حسب bot_kind (قبل حتى تأكيد
+الاستلام المركزي أدناه — _handle_feedback_callback يؤكّد بنص تأكيد
+مخصَّص بنفسه)، بصرف النظر عن bot_kind أو chat_id — عمليًا تصل دومًا عبر
+مسار /customer لأن التقرير يُرسَل عبر TELEGRAM_CUSTOMER_BOT_TOKEN حصرًا،
+لكن المعالجة هنا غير مشروطة بذلك تحسّبًا. يستدعي app.feedback_api.submit_feedback
+مباشرة (نفس نمط telegram_admin.py: استدعاء الدالة الأساسية بايثون مباشرة،
+لا طلب HTTP داخلي، متجاوزًا Depends(require_admin_token) على مستوى الراوتر
+عمدًا — البوت نفسه بوابة التحقق هنا، تمامًا كما تفعل بقية أوامر
+telegram_admin.py). **customer_id المُضمَّن بالزر مكشوف وقابل للتخمين (رقم
+تسلسلي)، فلا يُوثَق به بمفرده أبدًا** — _handle_feedback_callback يتحقّق
+أولًا عبر customers_api.get_customer_by_telegram(chat_id) أن صاحب chat_id
+الذي أرسل الضغطة فعليًا هو نفسه customer_id المكتوب بالزر، ويرفض بصمت (رد
+عام "غير متاح" بلا كشف السبب) عند أي عدم تطابق أو محادثة غير مربوطة.
 """
 from __future__ import annotations
 
@@ -69,6 +83,8 @@ router = APIRouter(tags=["telegram"])
 
 FEEDBACK_CALLBACK_PREFIX = "fb:"
 
+_VALID_BOT_KINDS = {"admin", "customer"}
+
 _FEEDBACK_CONFIRM_TEXT = {
     "celebrate": "🎉 شكرًا لتقييمك! يسعدنا نسمع هذا.",
     "thumbs_down": "👎 تم تسجيل ملاحظتك — ما راح نرسل لك فرص من هذي الشركة مرة ثانية.",
@@ -87,12 +103,14 @@ def _constant_time_eq(a: str, b: str) -> bool:
         return False
 
 
-@router.post("/telegram/webhook/{token}")
-async def telegram_webhook(token: str, request: Request) -> JSONResponse:
+@router.post("/telegram/webhook/{token}/{bot_kind}")
+async def telegram_webhook(token: str, bot_kind: str, request: Request) -> JSONResponse:
     expected = _webhook_secret()
     if not expected:
         return JSONResponse(status_code=503, content={"error": "telegram webhook disabled"})
     if not _constant_time_eq(token, expected):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    if bot_kind not in _VALID_BOT_KINDS:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
 
     secret_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
@@ -113,7 +131,7 @@ async def telegram_webhook(token: str, request: Request) -> JSONResponse:
         return JSONResponse(status_code=200, content={"ok": True})
 
     # الشقّ الصادر (B8، راجع docstring رأس الملف): ضغطة زر تغذية راجعة على
-    # تقرير يومي — تُعترَض هنا قبل أي توجيه أدمن/عميل عادي، وقبل تأكيد
+    # تقرير يومي — تُعترَض هنا قبل أي توجيه حسب bot_kind، وقبل تأكيد
     # الاستلام المركزي أدناه (لها تأكيدها المخصَّص الخاص).
     if event.is_callback and event.callback_data.startswith(FEEDBACK_CALLBACK_PREFIX):
         feedback_client = get_customer_bot_client()
@@ -129,7 +147,16 @@ async def telegram_webhook(token: str, request: Request) -> JSONResponse:
             logger.exception("فشل غير متوقع أثناء معالجة ضغطة تغذية راجعة (chat_id=%s)", event.chat_id)
         return JSONResponse(status_code=200, content={"ok": True})
 
-    if is_owner_chat(event.chat_id):
+    # التوجيه حسب bot_kind بالمسار (راجع docstring رأس الملف) — لا حسب
+    # chat_id. مسار /admin يحمل بوابة أمان ثانوية: غير صاحب
+    # MASAR_OWNER_CHAT_ID يُرفَض بصمت هنا (200، بلا استدعاء أي معالج) حتى لو
+    # عرف رابط بوت الأدمن السرّي بطريقة ما.
+    if bot_kind == "admin":
+        if not is_owner_chat(event.chat_id):
+            logger.warning(
+                "محادثة غير مالكة وصلت مسار /admin — رفض بصمت (chat_id=%s)", event.chat_id
+            )
+            return JSONResponse(status_code=200, content={"ok": True})
         client = get_admin_bot_client()
         handler = telegram_admin.handle_update
         client_label = "admin"
@@ -269,11 +296,13 @@ async def _handle_feedback_callback(event: ChatEvent, client: TelegramClient) ->
             )
 
 
-@router.get("/telegram/webhook/{token}")
-async def telegram_webhook_get(token: str) -> JSONResponse:
+@router.get("/telegram/webhook/{token}/{bot_kind}")
+async def telegram_webhook_get(token: str, bot_kind: str) -> JSONResponse:
     expected = _webhook_secret()
     if not expected:
         return JSONResponse(status_code=503, content={"error": "telegram webhook disabled"})
     if not _constant_time_eq(token, expected):
+        return JSONResponse(status_code=404, content={"detail": "Not Found"})
+    if bot_kind not in _VALID_BOT_KINDS:
         return JSONResponse(status_code=404, content={"detail": "Not Found"})
     return JSONResponse(status_code=405, content={"detail": "Method Not Allowed — use POST"})

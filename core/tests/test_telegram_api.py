@@ -1,9 +1,15 @@
-"""اختبارات core/app/telegram_api.py (POST /telegram/webhook/{token}) — لم
-يكن لهذا الراوتر أي اختبار آلي قبل الدمج (تقرير تيار الوارد اكتفى بتحقّق
+"""اختبارات core/app/telegram_api.py (POST /telegram/webhook/{token}/{bot_kind})
+— لم يكن لهذا الراوتر أي اختبار آلي قبل الدمج (تقرير تيار الوارد اكتفى بتحقّق
 يدوي عبر TestClient، راجع REPORT.md الأصلي). يُضاف هنا كجزء من الدمج،
 خصوصًا لتغطية الوصلة الجديدة بين التيارين: ضغطة تغذية راجعة (fb:...) التي
 يُرفقها تيار الصادر (telegram_notify.build_feedback_keyboard) ويعالجها هذا
 الراوتر (_handle_feedback_callback → feedback_api.submit_feedback).
+
+كما يغطي التوجيه حسب bot_kind بمقطع المسار (بدل chat_id وحده، راجع
+docstring رأس telegram_api.py): مسار /customer يعامل أي chat_id — بما فيه
+صاحب MASAR_OWNER_CHAT_ID نفسه — كعميل عادي (هذا ما يتيح لأحمد تجربة بوت
+العملاء من حسابه الشخصي)، ومسار /admin يرفض بصمت أي chat_id غير صاحب
+MASAR_OWNER_CHAT_ID حتى لو عرف رابطه السرّي.
 
 نفس أسلوب بقية اختبارات core/tests (استدعاء دالة الراوتر مباشرة عبر
 asyncio.run بدل TestClient — لا حاجة لإقلاع app.main كاملة ولا اتصال شبكة/
@@ -49,25 +55,32 @@ def _set_webhook_secret(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# بوابة التوكن/السر
+# بوابة التوكن/السر/bot_kind
 # ---------------------------------------------------------------------------
 
 
 def test_webhook_disabled_returns_503_without_secret_env(monkeypatch):
     monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
-    resp = _run(telegram_webhook("anything", _FakeRequest({})))
+    resp = _run(telegram_webhook("anything", "customer", _FakeRequest({})))
     assert resp.status_code == 503
 
 
 def test_webhook_wrong_token_returns_404():
-    resp = _run(telegram_webhook("wrong-token", _FakeRequest({})))
+    resp = _run(telegram_webhook("wrong-token", "customer", _FakeRequest({})))
+    assert resp.status_code == 404
+
+
+def test_webhook_invalid_bot_kind_returns_404():
+    resp = _run(telegram_webhook(WEBHOOK_SECRET, "bogus", _FakeRequest({})))
     assert resp.status_code == 404
 
 
 def test_webhook_wrong_secret_header_returns_404():
     resp = _run(
         telegram_webhook(
-            WEBHOOK_SECRET, _FakeRequest({}, headers={"X-Telegram-Bot-Api-Secret-Token": "not-the-secret"})
+            WEBHOOK_SECRET,
+            "customer",
+            _FakeRequest({}, headers={"X-Telegram-Bot-Api-Secret-Token": "not-the-secret"}),
         )
     )
     assert resp.status_code == 404
@@ -79,6 +92,7 @@ def test_webhook_correct_secret_header_passes_gate(monkeypatch):
     resp = _run(
         telegram_webhook(
             WEBHOOK_SECRET,
+            "customer",
             _FakeRequest({"my_chat_member": {}}, headers={"X-Telegram-Bot-Api-Secret-Token": WEBHOOK_SECRET}),
         )
     )
@@ -87,40 +101,45 @@ def test_webhook_correct_secret_header_passes_gate(monkeypatch):
 
 def test_webhook_get_disabled_returns_503(monkeypatch):
     monkeypatch.delenv("TELEGRAM_WEBHOOK_SECRET", raising=False)
-    resp = _run(telegram_webhook_get("anything"))
+    resp = _run(telegram_webhook_get("anything", "customer"))
     assert resp.status_code == 503
 
 
 def test_webhook_get_wrong_token_returns_404():
-    resp = _run(telegram_webhook_get("wrong-token"))
+    resp = _run(telegram_webhook_get("wrong-token", "customer"))
+    assert resp.status_code == 404
+
+
+def test_webhook_get_invalid_bot_kind_returns_404():
+    resp = _run(telegram_webhook_get(WEBHOOK_SECRET, "bogus"))
     assert resp.status_code == 404
 
 
 def test_webhook_get_method_not_allowed():
-    resp = _run(telegram_webhook_get(WEBHOOK_SECRET))
+    resp = _run(telegram_webhook_get(WEBHOOK_SECRET, "customer"))
     assert resp.status_code == 405
 
 
 def test_webhook_invalid_json_body_returns_200_ok():
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest(b"not json")))
+    resp = _run(telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest(b"not json")))
     assert resp.status_code == 200
     assert json.loads(resp.body) == {"ok": True}
 
 
 def test_webhook_non_dict_body_returns_200_ok():
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest([1, 2, 3])))
+    resp = _run(telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest([1, 2, 3])))
     assert resp.status_code == 200
 
 
 def test_webhook_unsupported_update_returns_200_ok(monkeypatch):
     monkeypatch.delenv("TELEGRAM_CUSTOMER_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_ADMIN_BOT_TOKEN", raising=False)
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest({"my_chat_member": {}})))
+    resp = _run(telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest({"my_chat_member": {}})))
     assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
-# توجيه أدمن/عميل عادي — بلا توكن بوت مضبوط = تجاهل بصمت (200)
+# توجيه حسب bot_kind — بلا توكن بوت مضبوط = تجاهل بصمت (200)
 # ---------------------------------------------------------------------------
 
 
@@ -128,11 +147,11 @@ def test_webhook_regular_message_without_bot_token_is_ignored(monkeypatch):
     monkeypatch.delenv("TELEGRAM_CUSTOMER_BOT_TOKEN", raising=False)
     monkeypatch.delenv("MASAR_OWNER_CHAT_ID", raising=False)
     update = {"message": {"chat": {"id": 555}, "from": {"id": 555}, "text": "مرحبا"}}
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest(update)))
+    resp = _run(telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest(update)))
     assert resp.status_code == 200
 
 
-def test_webhook_routes_to_admin_handler_for_owner_chat(monkeypatch):
+def test_webhook_routes_to_admin_handler_on_admin_bot_kind_for_owner_chat(monkeypatch):
     monkeypatch.setenv("TELEGRAM_ADMIN_BOT_TOKEN", "ADMINTOKEN")
     monkeypatch.setenv("MASAR_OWNER_CHAT_ID", "999")
 
@@ -149,12 +168,12 @@ def test_webhook_routes_to_admin_handler_for_owner_chat(monkeypatch):
     monkeypatch.setattr(telegram_api.TelegramClient, "answer_callback_query", fake_answer_callback_query)
 
     update = {"message": {"chat": {"id": 999}, "from": {"id": 999}, "text": "hi"}}
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest(update)))
+    resp = _run(telegram_webhook(WEBHOOK_SECRET, "admin", _FakeRequest(update)))
     assert resp.status_code == 200
     assert called == {"handler": "admin", "chat_id": 999}
 
 
-def test_webhook_routes_to_customer_handler_for_non_owner_chat(monkeypatch):
+def test_webhook_routes_to_customer_handler_on_customer_bot_kind_for_non_owner_chat(monkeypatch):
     monkeypatch.setenv("TELEGRAM_CUSTOMER_BOT_TOKEN", "CUSTTOKEN")
     monkeypatch.setenv("MASAR_OWNER_CHAT_ID", "999")
 
@@ -167,9 +186,54 @@ def test_webhook_routes_to_customer_handler_for_non_owner_chat(monkeypatch):
     monkeypatch.setattr(telegram_api.telegram_onboarding, "handle_update", fake_onboarding_handle_update)
 
     update = {"message": {"chat": {"id": 555}, "from": {"id": 555}, "text": "hi"}}
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest(update)))
+    resp = _run(telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest(update)))
     assert resp.status_code == 200
     assert called == {"handler": "customer", "chat_id": 555}
+
+
+def test_webhook_owner_chat_on_customer_bot_kind_is_treated_as_customer(monkeypatch):
+    """القدرة الجديدة التي طلبها أحمد صراحةً: صاحب MASAR_OWNER_CHAT_ID
+    (هو نفسه) يراسل بوت العملاء من حسابه الشخصي فيُعامَل كعميل عادي فعليًا
+    (لا كأدمن)، لأن التوجيه الآن حسب bot_kind بالمسار لا chat_id."""
+    monkeypatch.setenv("TELEGRAM_CUSTOMER_BOT_TOKEN", "CUSTTOKEN")
+    monkeypatch.setenv("MASAR_OWNER_CHAT_ID", "677475661")
+
+    called = {}
+
+    async def fake_onboarding_handle_update(update, event, client):
+        called["handler"] = "customer"
+        called["chat_id"] = event.chat_id
+
+    async def fake_admin_handle_update(update, event, client):
+        called["handler"] = "admin"
+
+    monkeypatch.setattr(telegram_api.telegram_onboarding, "handle_update", fake_onboarding_handle_update)
+    monkeypatch.setattr(telegram_api.telegram_admin, "handle_update", fake_admin_handle_update)
+
+    update = {"message": {"chat": {"id": 677475661}, "from": {"id": 677475661}, "text": "hi"}}
+    resp = _run(telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest(update)))
+    assert resp.status_code == 200
+    assert called == {"handler": "customer", "chat_id": 677475661}
+
+
+def test_webhook_non_owner_chat_on_admin_bot_kind_is_silently_ignored(monkeypatch):
+    """بوابة الأمان الثانوية على مسار /admin: غير صاحب MASAR_OWNER_CHAT_ID
+    لا يُعامَل كأدمن حتى لو وصل مسار بوت الأدمن (السرّي أصلًا بتوكن المسار)
+    — رفض بصمت، بلا استدعاء أي معالج."""
+    monkeypatch.setenv("TELEGRAM_ADMIN_BOT_TOKEN", "ADMINTOKEN")
+    monkeypatch.setenv("MASAR_OWNER_CHAT_ID", "999")
+
+    called = {"handler": None}
+
+    async def fake_admin_handle_update(update, event, client):
+        called["handler"] = "admin"
+
+    monkeypatch.setattr(telegram_api.telegram_admin, "handle_update", fake_admin_handle_update)
+
+    update = {"message": {"chat": {"id": 555}, "from": {"id": 555}, "text": "hi"}}
+    resp = _run(telegram_webhook(WEBHOOK_SECRET, "admin", _FakeRequest(update)))
+    assert resp.status_code == 200
+    assert called["handler"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +254,7 @@ def _feedback_update(data: str, *, message_id: int = 3, chat_id: int = 12345) ->
 
 def test_feedback_callback_without_customer_bot_token_is_ignored(monkeypatch):
     monkeypatch.delenv("TELEGRAM_CUSTOMER_BOT_TOKEN", raising=False)
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest(_feedback_update("fb:7:99:celebrate"))))
+    resp = _run(telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest(_feedback_update("fb:7:99:celebrate"))))
     assert resp.status_code == 200
 
 
@@ -235,7 +299,9 @@ def test_feedback_callback_calls_submit_feedback_and_answers_and_edits_markup(mo
     monkeypatch.setattr(telegram_api.TelegramClient, "answer_callback_query", fake_answer_callback_query)
     monkeypatch.setattr(telegram_api.TelegramClient, "edit_message_reply_markup", fake_edit_message_reply_markup)
 
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest(_feedback_update("fb:7:99:celebrate"))))
+    resp = _run(
+        telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest(_feedback_update("fb:7:99:celebrate")))
+    )
 
     assert resp.status_code == 200
     assert calls["submit_feedback"] == (7, 99, "celebrate")
@@ -266,7 +332,9 @@ def test_feedback_callback_thumbs_down_confirmation_text(monkeypatch):
     monkeypatch.setattr(telegram_api.TelegramClient, "answer_callback_query", fake_answer_callback_query)
     monkeypatch.setattr(telegram_api.TelegramClient, "edit_message_reply_markup", fake_edit_message_reply_markup)
 
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest(_feedback_update("fb:7:99:thumbs_down"))))
+    resp = _run(
+        telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest(_feedback_update("fb:7:99:thumbs_down")))
+    )
     assert resp.status_code == 200
     assert "👎" in answered[0]["text"]
 
@@ -282,7 +350,9 @@ def test_feedback_callback_malformed_data_answers_generic_error(monkeypatch):
 
     monkeypatch.setattr(telegram_api.TelegramClient, "answer_callback_query", fake_answer_callback_query)
 
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest(_feedback_update("fb:not-a-number:99:celebrate"))))
+    resp = _run(
+        telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest(_feedback_update("fb:not-a-number:99:celebrate")))
+    )
     assert resp.status_code == 200
     assert answered[0]["text"] == "⚠️ طلب غير صالح"
 
@@ -298,7 +368,9 @@ def test_feedback_callback_unknown_kind_answers_generic_error(monkeypatch):
 
     monkeypatch.setattr(telegram_api.TelegramClient, "answer_callback_query", fake_answer_callback_query)
 
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest(_feedback_update("fb:7:99:not_a_kind"))))
+    resp = _run(
+        telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest(_feedback_update("fb:7:99:not_a_kind")))
+    )
     assert resp.status_code == 200
     assert answered[0]["text"] == "⚠️ طلب غير صالح"
 
@@ -319,7 +391,9 @@ def test_feedback_callback_http_exception_shows_alert(monkeypatch):
     monkeypatch.setattr(feedback_api, "submit_feedback", fake_submit_feedback)
     monkeypatch.setattr(telegram_api.TelegramClient, "answer_callback_query", fake_answer_callback_query)
 
-    resp = _run(telegram_webhook(WEBHOOK_SECRET, _FakeRequest(_feedback_update("fb:7:99:celebrate"))))
+    resp = _run(
+        telegram_webhook(WEBHOOK_SECRET, "customer", _FakeRequest(_feedback_update("fb:7:99:celebrate")))
+    )
     assert resp.status_code == 200
     assert answered[0]["show_alert"] is True
     assert "لا يوجد تقديم" in answered[0]["text"]
@@ -363,7 +437,9 @@ def test_feedback_callback_spoofed_customer_id_is_rejected_without_submitting(mo
     monkeypatch.setattr(telegram_api.TelegramClient, "edit_message_reply_markup", fake_edit_message_reply_markup)
 
     resp = _run(
-        telegram_webhook(WEBHOOK_SECRET, _FakeRequest(_feedback_update("fb:42:99:thumbs_down", chat_id=12345)))
+        telegram_webhook(
+            WEBHOOK_SECRET, "customer", _FakeRequest(_feedback_update("fb:42:99:thumbs_down", chat_id=12345))
+        )
     )
 
     assert resp.status_code == 200
@@ -400,7 +476,9 @@ def test_feedback_callback_unlinked_chat_is_rejected_without_submitting(monkeypa
     monkeypatch.setattr(telegram_api.TelegramClient, "answer_callback_query", fake_answer_callback_query)
 
     resp = _run(
-        telegram_webhook(WEBHOOK_SECRET, _FakeRequest(_feedback_update("fb:7:99:celebrate", chat_id=99999)))
+        telegram_webhook(
+            WEBHOOK_SECRET, "customer", _FakeRequest(_feedback_update("fb:7:99:celebrate", chat_id=99999))
+        )
     )
 
     assert resp.status_code == 200

@@ -19,14 +19,14 @@ B1b: أُضيف جسر MCP (app/mcp_bridge.py) — يجعل جلسات Claude م
 Cloud لعمليات القراءة/الكتابة بالمستودع وتشغيل أوامر المضيف.
 
 B8: إزالة n8n نهائيًا من تفاعل تيليجرام بالكامل (تيّاران دُمجا هنا):
-    - الشقّ الوارد: app/telegram_api.py (راوتر POST /telegram/webhook/{token})
-      يستبدل بالكامل تدفّقات n8n القديمة لبوت العملاء "مسار" وبوت الأدمن
-      الخاص (app/telegram_onboarding.py وapp/telegram_admin.py على
-      التوالي، فوق app/telegram_client.py). مُدرج ضمن حلقة الاستيراد
-      المحروسة أدناه (نفس بقية وحدات B4+) لأنه يعتمد على app.reports_api/
-      overview_api/guarantee_api/link_api/feedback_api التي قد لا تكون
-      موجودة بعد بأي فرع مبكر — غيابه الآن ImportError متوقع، يُسجّل
-      معلوماتيًا فقط.
+    - الشقّ الوارد: app/telegram_api.py (راوتر POST /telegram/webhook/{token}/{bot_kind}
+      — مسار مستقل لكل بوت، bot_kind ∈ {admin, customer}) يستبدل بالكامل
+      تدفّقات n8n القديمة لبوت العملاء "مسار" وبوت الأدمن الخاص
+      (app/telegram_onboarding.py وapp/telegram_admin.py على التوالي، فوق
+      app/telegram_client.py). مُدرج ضمن حلقة الاستيراد المحروسة أدناه
+      (نفس بقية وحدات B4+) لأنه يعتمد على app.reports_api/overview_api/
+      guarantee_api/link_api/feedback_api التي قد لا تكون موجودة بعد بأي
+      فرع مبكر — غيابه الآن ImportError متوقع، يُسجّل معلوماتيًا فقط.
     - الشقّ الصادر: app/telegram_notify_admin.py.notify_admin — تنبيه أحمد
       فورًا عبر تيليجرام مباشرة عند فشل تحميل أي راوتر بخطأ غير متوقّع عند
       الإقلاع (بديل مباشر لجسر core-notify-admin بـn8n، راجع تعليق الحلقة
