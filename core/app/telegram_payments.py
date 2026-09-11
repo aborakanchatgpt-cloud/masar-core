@@ -3,14 +3,14 @@
 يُستدعى حصرًا من `app.telegram_onboarding` (لا مسار وارد مستقل — نفس فلسفة
 `app.telegram_admin_settings`/`telegram_admin_search`: ملف منطق مُستورَد،
 لا يحمل نقطة دخول Webhook خاصة به). التدفّق: **الباقات → الشروط (أول مرة
-فقط) → بيانات التحويل → الإيصال → المبلغ المُعلَن → اسم المُحوِّل → إشعار
+فقط) → بيانات التحويل → الإيصال → المبلغ المُعلَن → اسم المُحوّل → إشعار
 الأدمن بالصورة/الملف + زرّي ✅/❌**. قرار الأدمن نفسه (تأكيد/رفض) يُعالَج
 بملف منفصل `app.telegram_admin_payments` (بوت مختلف تمامًا، ويب هوك منفصل
 — لا تصادم بأسماء callback_data رغم اشتراك بادئة "pay" في كليهما).
 
 **جلسة المحادثة**: نفس جدول `telegram_sessions` المشترك مع
 `telegram_onboarding.py`، لكن بدوال قراءة/كتابة/مسح **خاصة بهذا الملف**
-(نفس نمط التكرار المتعمَّد المُستخدَم أصلًا بـ`telegram_admin.py` مقابل
+(نفس نمط التكرار المتعمّد المُستخدَم أصلًا بـ`telegram_admin.py` مقابل
 `telegram_onboarding.py` — كل ملف مستقل تمامًا، لا اعتماد متبادل على دوال
 خاصة (`_prefixed`) بملف آخر). `PAYMENT_FLOW_STEPS` أدناه هي القائمة التي
 يتحقّق منها `telegram_onboarding._handle_onboarding_step` ليقرّر تفويض
@@ -259,14 +259,26 @@ def build_terms_message(domain: str) -> str:
 
 def build_bank_message(banks: list[dict[str, Any]], package_name: str, price_sar: float) -> str:
     """B3-متابعة: `banks` قائمة حسابات نشطة (`bank_name`/`account_holder`/
-    `iban`) من `telegram_admin_settings.active_bank_accounts()` — قد تكون
-    أكثر من حساب واحد الآن، فيُعرَض كل حساب مرقّمًا إن كان أكثر من واحد."""
+    `account_number`/`iban`) من `telegram_admin_settings.active_bank_accounts()`
+    — قد تكون أكثر من حساب واحد الآن، فيُعرَض كل حساب مرقّمًا إن كان أكثر
+    من واحد.
+
+    B3-متابعة٢: `account_number`/`iban` أصبحا اختياريَّين بمصدر البيانات
+    (راجع `telegram_admin_settings`) — يُعرَض للعميل فقط ما هو مُعبَّأ
+    فعليًا من الاثنين (واحد على الأقل مضمون بقيد CHECK بقاعدة البيانات).
+    `name_language` لا يظهر هنا إطلاقًا — تنظيم داخلي للأدمن فقط، اسم
+    البنك يُكتب مرّة واحدة كما أدخله أحمد، لا بلغتين معًا أبدًا."""
     intro = f"تمام ✅ اخترت {package_name} بقيمة {price_sar:.0f} ريال.\n"
     lead = "حوّل المبلغ على أي من الحسابات التالية:" if len(banks) > 1 else "حوّل المبلغ على:"
     lines = [intro, lead]
     for i, b in enumerate(banks, start=1):
         prefix = f"{i}) " if len(banks) > 1 else ""
-        lines.append(f"\n{prefix}🏦 {b['bank_name']}\n👤 {b['account_holder']}\n🔢 IBAN: {b['iban']}")
+        detail = [f"\n{prefix}🏦 {b['bank_name']}", f"👤 {b['account_holder']}"]
+        if b.get("account_number"):
+            detail.append(f"🔢 رقم الحساب: {b['account_number']}")
+        if b.get("iban"):
+            detail.append(f"🔢 IBAN: {b['iban']}")
+        lines.append("\n".join(detail))
     lines.append("\nبعد التحويل أرسل لي صورة الإيصال أو ملفه هنا 📎")
     return "\n".join(lines).strip()
 
@@ -444,7 +456,7 @@ async def _show_bank_and_create_request(
 
 
 # -------------------------------------------------------------------
-# الإيصال → المبلغ → اسم المُحوِّل → إشعار الأدمن
+# الإيصال → المبلغ → اسم المُحوّل → إشعار الأدمن
 # -------------------------------------------------------------------
 
 
