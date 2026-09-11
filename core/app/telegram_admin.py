@@ -29,7 +29,7 @@ app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، �
 استخدام نفس البحث)، و⚙️ الإعدادات (بيانات التحويل/الباقات/واتساب الدعم)
 بملف منفصل `app.telegram_admin_settings` (مستورَد كـ`settings_mod`) —
 للمالك حصرًا، نفس نمط فحص `is_owner_chat` المُستخدَم أصلًا مع 👥 المفوّضون.
-🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا مستقلًّا بالقائمة،
+🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا مستقلًّا بالقائمة،
 لكن `admin:segments` يبقى مسارًا فعّالًا لأي مرجع قديم).
 
 **B9/B3 — 💳 طلبات الدفع:** أصبحت زرًا فعليًا بالقائمة الرئيسية (ملف منفصل
@@ -54,6 +54,13 @@ app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، �
 `settings:bank_skip:number|iban`، بشرط عدم تخطي الاثنين معًا) — كل هذا
 موجّه لـ`handle_bank_callback` بتمرير `_get_session` أيضًا (لا `_save_session`
 فقط كالسابق) لأن أزرار اللغة/التخطي تحتاج قراءة بيانات الجلسة المتراكمة.
+
+**B4 — الرد على رسائل قناة "تواصل معنا" الجديدة:** `inbox:reply:{message_id}`
+زرّ يصل ضمن إشعار عميل جديد بـ`app.telegram_onboarding` (شكوى/قلب لقلب/
+ملاحظة، `customer_messages.direction='in'`) — يفتح خطوة نصّية `inbox_reply`
+تحفظ `customer_id` بالجلسة، وعند كتابة الأدمن الردّ يُعاد استخدام
+`search_mod.send_customer_message_and_log` الموجودة بلا أي تعديل بمنطقها
+(نفس دالة "✉️ رسالة لعميل" الفردية بالضبط — تُرسل فعليًا وتُسجَّل `direction='out'`).
 """
 from __future__ import annotations
 
@@ -398,6 +405,24 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         await commands.reply_settle_guarantee(client, event.chat_id, int(ledger_id))
         return
 
+    # B4: زرّ "↩️ رد" على إشعار قناة الشكاوى/الرسائل الجديدة من العميل
+    # (customer_messages.direction='in') — راجع docstring telegram_onboarding.
+    if data.startswith("inbox:reply:"):
+        message_id = int(data[len("inbox:reply:") :])
+        msg = search_mod.fetch_inbox_message(message_id)
+        if not msg:
+            await client.send_message(
+                event.chat_id, "⚠️ ما قدرت ألقى هذي الرسالة (يمكن قديمة أو محذوفة)."
+            )
+            return
+        _save_session(event.chat_id, "inbox_reply", {"customer_id": msg["customer_id"]})
+        await client.send_message(
+            event.chat_id,
+            f"اكتب ردّك على {msg['name']} (#{msg['customer_id']}):",
+            buttons=nav_rows(None, "admin:menu"),
+        )
+        return
+
     # B9/B2: المفوّضون — للمالك فقط (لا زر لها أصلًا بقائمة المفوّض، وهذا
     # الفحص الإضافي دفاع بالعمق لو خمّن مفوّض callback_data بنفسه).
     if data == "admin:delegates":
@@ -569,6 +594,12 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
             return
         _clear_session(event.chat_id)
         await settings_mod.apply_package_field(client, event.chat_id, code, field, parsed)
+        return
+
+    if step == "inbox_reply":
+        customer_id = int(data.get("customer_id", 0))
+        _clear_session(event.chat_id)
+        await search_mod.send_customer_message_and_log(client, event.chat_id, customer_id, text)
         return
 
     if step == "report_id":
