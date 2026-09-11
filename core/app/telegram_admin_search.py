@@ -1,16 +1,16 @@
 """B9/B5: بحث الأدمن عن عميل (رقم/جوال/اسم) + بطاقة العميل الموسّعة بأزرار
-إجراء (تفعيل/إيقاف، تمديد، تقرير اليوم، رسالة له، رابط ربط بريد) — و"✉️
+إجراء (تفعيل/إيقاف، تمديد، تقرير، رسالة، رابط ربط بريد) — و"✉️
 رسالة لعميل" (يعيد استخدام نفس البحث). راجع الدليل §B5.
 
 **B3-متابعة (فئات استهداف):** "✉️ رسالة لعميل" لم تعد تبحث عن عميل محدد
-فقط — `telegram_admin.py` يعرض أولًا فئة الاستهداف (عميل محدد/كل العملاء/
+فقط — `telegram_admin.py` يعرض أولاً فئة الاستهداف (عميل محدد/كل العملاء/
 النشطون/منتهو الاشتراك)، وفئات الجماعة الثلاث الأخيرة تصل هنا عبر
 `count_customers_by_target`/`send_bulk_message_and_log` بدل البحث الفردي.
 "العميل النشط" = `customers.status = 'active'`، و"منتهي الاشتراك" =
 `customers.status = 'expired'` (نفس القيمتين المُستخدَمتين فعليًا بعدة
 ملفات أخرى — `telegram_admin_commands.reply_overview`/
 `telegram_onboarding._handle_unlinked`). لا إرسال لعميل بلا
-`telegram_chat_id` (لا يقدر يستلم رسالة تيليجرام أصلًا) — يُحتسَب "فشل"
+`telegram_chat_id` (لا يقدر يستلم رسالة تيليجرام أصلاً) — يُحتسَب "فشل"
 بالتقرير النهائي لا يُوقف بقية الدفعة.
 
 لا إدارة جلسة هنا إطلاقًا (لا `_save_session`/`_clear_session`) — نفس نمط
@@ -25,7 +25,13 @@ B9/B5-hotfix (11 سبتمبر، بعد مراجعة أحمد): `card_report` ك�
 FastAPI الافتراضي `Query(default=None)` لا يُحلّ لقيمته الفعلية عند
 الاستدعاء المباشر (بلا HTTP)، فيبقى كائن Query نفسه ويُمرّر لاستعلام SQL
 فيفشل بصمت. أُصلح بتمرير `date=None` صراحة + شبكة أمان `except Exception`
-تُخبر أحمد بخطأ داخلي بدل صمت تام لأي عطل غير متوقع مستقبلًا بنفس النمط.
+تُخبر أحمد بخطأ داخلي بدل صمت تام لأي عطل غير متوقع مستقبلاً بنفس النمط.
+
+**B4 — قناة الشكاوى/الرسائل من العميل للأدمن:** `fetch_inbox_message` دالة
+جديدة تجلب رسالة واردة (direction='in') بمعرّفها ليستخدمها زرّ "↩️ رد" على
+إشعار `app.telegram_onboarding` (القناة الجديدة "📞 تواصل معنا" المصنّفة
+شكوى/قلب لقلب/ملاحظة) — الرد الفعلي نفسه يعيد استخدام
+`send_customer_message_and_log` الموجودة بلا أي تغيير بمنطقها.
 """
 from __future__ import annotations
 
@@ -55,7 +61,7 @@ MAX_RESULTS = 5
 
 
 def search_customers(query: str) -> list[dict[str, Any]]:
-    """رقم بالكامل → مُعرّف عميل أولًا (الحالة الأشيع)، وإلا جوال (canonical
+    """رقم بالكامل → مُعرّف عميل أولاً (الحالة الأشيع)، وإلا جوال (canonical
     أو كما كُتب). نص → مطابقة جزئية بالاسم (ILIKE)، حتى 5 نتائج."""
     q = (query or "").strip()
     if not q:
@@ -147,6 +153,24 @@ def _fetch_customer_chat_id(customer_id: int) -> int | None:
         return conn.execute(
             sql_text("SELECT telegram_chat_id FROM customers WHERE id = :id"), {"id": customer_id}
         ).scalar()
+
+
+def fetch_inbox_message(message_id: int) -> dict[str, Any] | None:
+    """B4: يجلب رسالة واردة من عميل (direction='in') بمعرّفها — تُستخدم
+    بزرّ "↩️ رد" على إشعار قناة الشكاوى/الرسائل الجديدة (B4-ب، عميل→أدمن)
+    بـ`app.telegram_onboarding`. يُعيد None إن لم توجد أو كانت صادرة
+    (direction='out') — لا رد على رسائل الأدمن نفسها."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            sql_text(
+                "SELECT cm.id, cm.customer_id, cm.category, cm.text, c.name "
+                "FROM customer_messages cm JOIN customers c ON c.id = cm.customer_id "
+                "WHERE cm.id = :id AND cm.direction = 'in'"
+            ),
+            {"id": message_id},
+        ).mappings().first()
+    return dict(row) if row else None
 
 
 async def reply_customer_card(client: TelegramClient, chat_id: int, customer_id: int) -> None:
