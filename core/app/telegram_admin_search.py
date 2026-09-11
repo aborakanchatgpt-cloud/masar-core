@@ -8,6 +8,13 @@
 له نقطة نهاية HTTP جاهزة يمر عبرها مباشرة (customers_api/reports_api/
 link_api) — بحث متعدد المعايير فقط (لا نقطة نهاية جاهزة له) وقراءات بطاقة
 العميل الإضافية (باقة/بريد/تقديمات) بـSQL مباشر بنفس نمط بقية الملف.
+
+B9/B5-hotfix (11 سبتمبر، بعد مراجعة أحمد): `card_report` كان يستدعي
+`reports_api.customer_report(customer_id)` بلا تمرير `date` صراحة — معامل
+FastAPI الافتراضي `Query(default=None)` لا يُحلّ لقيمته الفعلية عند
+الاستدعاء المباشر (بلا HTTP)، فيبقى كائن Query نفسه ويُمرَّر لاستعلام SQL
+فيفشل بصمت. أُصلح بتمرير `date=None` صراحة + شبكة أمان `except Exception`
+تُخبر أحمد بخطأ داخلي بدل صمت تام لأي عطل غير متوقع مستقبلي بنفس النمط.
 """
 from __future__ import annotations
 
@@ -196,9 +203,16 @@ async def card_toggle_status(client: TelegramClient, chat_id: int, customer_id: 
 
 async def card_report(client: TelegramClient, chat_id: int, customer_id: int) -> None:
     try:
-        result = await reports_api.customer_report(customer_id)
+        # B9/B5-hotfix: تمرير date صراحة — راجع docstring الملف أعلاه.
+        result = await reports_api.customer_report(customer_id, date=None)
     except HTTPException as exc:
         await client.send_message(chat_id, f"⚠️ {exc.detail}", buttons=nav_rows(None, "admin:menu"))
+        return
+    except Exception:  # noqa: BLE001
+        logger.exception("خطأ غير متوقع بتقرير اليوم للعميل #%s", customer_id)
+        await client.send_message(
+            chat_id, "⚠️ تعذّر جلب التقرير الآن (خطأ داخلي) — سنراجعه.", buttons=nav_rows(None, "admin:menu")
+        )
         return
     payload = result.get("payload") or {}
     report_text = payload.get("text") if isinstance(payload, dict) else None

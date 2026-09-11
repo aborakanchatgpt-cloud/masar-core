@@ -1,15 +1,25 @@
 """B9/B5: أوامر بوت الأدمن البسيطة (نظرة عامة، تصنيف، تسجيل عميل، تقرير
 عميل، تشغيل التقارير، تفعيل/إيقاف، تمديد، الضمانات) — انتُزعت من
-`telegram_admin.py` نفسه فقط لتبقى دون حدّ حجم `repo_write` (~25 ألف حرف)،
+`telegram_admin.py` نفسه فقط لتبقى دون حدّ `repo_write` (~25 ألف حرف)،
 لا لأي سبب تصميمي (خلاف `telegram_admin_delegates.py`/`_search.py`/
 `_settings.py` التي فُصلت أيضًا لتماسك المسؤولية). لا إدارة جلسة هنا —
 `telegram_admin.py` وحده يملك خطوات `telegram_sessions` (نفس القاعدة
 المتّبعة بكل الملفات الفرعية الأخرى)؛ كل دالة هنا تأخذ مُدخلات نظيفة جاهزة
 وتستدعي نقطة النهاية الأساسية مباشرة (customers_api/overview_api/
 reports_api/guarantee_api) — لا إعادة تطبيق لأي منطق أعمال.
+
+B9/B5-hotfix (11 سبتمبر، بعد مراجعة أحمد): `reports_api.customer_report`
+و`guarantee_api.pending_guarantees` نقطتا نهاية FastAPI بمعاملات افتراضية
+`Query(...)` — عند استدعائهما هنا كدوال بايثون مباشرة (بلا HTTP) بلا تمرير
+تلك المعاملات صراحة، لا تُحلّ `Query(...)` إلى قيمتها الفعلية (تبقى كائن
+Query نفسه) → SQL يفشل بصمت (`cannot adapt type 'Query'`) والزر "لا
+يستجيب". الإصلاح: تمرير القيم صراحة بكل استدعاء مباشر (`date=None`،
+`limit=...، after_id=0`) + شبكة أمان `except Exception` تُخبر أحمد بخطأ
+داخلي بدل الصمت التام لأي عطل غير متوقع مستقبلي بنفس النمط.
 """
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import HTTPException
@@ -21,6 +31,8 @@ from app.phone import canonical_phone
 from app.planner import now_riyadh
 from app.telegram_client import TelegramClient
 from app.telegram_nav import nav_rows
+
+logger = logging.getLogger("masar.telegram_admin_commands")
 
 
 async def reply_create_customer(client: TelegramClient, chat_id: int, name: str, phone_text: str) -> None:
@@ -125,9 +137,14 @@ async def reply_customer_report(client: TelegramClient, chat_id: int, text: str)
         await client.send_message(chat_id, "اكتب رقم معرّف عميل صحيح (أرقام فقط).")
         return
     try:
-        result = await reports_api.customer_report(customer_id)
+        # B9/B5-hotfix: تمرير date صراحة — راجع docstring الملف أعلاه.
+        result = await reports_api.customer_report(customer_id, date=None)
     except HTTPException as exc:
         await client.send_message(chat_id, f"⚠️ {exc.detail}")
+        return
+    except Exception:  # noqa: BLE001
+        logger.exception("خطأ غير متوقع بجلب تقرير العميل #%s", customer_id)
+        await client.send_message(chat_id, "⚠️ تعذّر جلب التقرير الآن (خطأ داخلي) — سنراجعه.")
         return
     payload = result.get("payload") or {}
     report_text = payload.get("text") if isinstance(payload, dict) else None
@@ -188,7 +205,13 @@ async def reply_extend_subscription(client: TelegramClient, chat_id: int, custom
 
 
 async def reply_guarantees(client: TelegramClient, chat_id: int) -> None:
-    result = await guarantee_api.pending_guarantees()
+    try:
+        # B9/B5-hotfix: تمرير limit/after_id صراحة — راجع docstring الملف أعلاه.
+        result = await guarantee_api.pending_guarantees(limit=guarantee_api.DEFAULT_PAGE_LIMIT, after_id=0)
+    except Exception:  # noqa: BLE001
+        logger.exception("خطأ غير متوقع بجلب الضمانات المعلّقة")
+        await client.send_message(chat_id, "⚠️ تعذّر جلب الضمانات الآن (خطأ داخلي) — سنراجعه.")
+        return
     items = result["items"]
     if not items:
         await client.send_message(chat_id, "لا توجد ضمانات بانتظار التسوية الآن.")
