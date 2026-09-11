@@ -1,10 +1,10 @@
 """اختبارات core/app/telegram_payments.py + telegram_admin_payments.py
 (B9/B3) — تدفّق الباقات والدفع الكامل ببوت العميل (تسجيل ذاتي → اسم →
-باقة → شروط → بيانات تحويل → إيصال → مبلغ → اسم مُحوِّل → إشعار أدمن)
+باقة → شروط → بيانات تحويل → إيصال → مبلغ → اسم مُحوِّل → إشعار أدمن)
 وقرار الأدمن ✅/❌ (تفعيل فعلي عبر catalog.create_order أو رفض).
 
 قسمان: دوال نقية (بلا قاعدة بيانات، تعمل دومًا)، وتدفّق كامل بقاعدة بيانات
-حقيقية مهاجَرة حتى 0017 (`payment_requests`/`app_settings`) — يُتخطّى
+حقيقية مهاجَرة حتى 0018 (`payment_requests`/`bank_accounts`) — يُتخطّى
 تلقائيًا (skip) إن تعذّر الاتصال، نفس نمط بقية اختبارات B9 الموجودة
 (`test_telegram_onboarding_db.py`/`test_telegram_admin_b5_db.py`)."""
 from __future__ import annotations
@@ -69,12 +69,31 @@ def test_parse_amount_variants():
     assert pay._parse_amount("0") == 0.0  # يُرفَض لاحقًا بفحص amount<=0 بالمستدعي، لا هنا
 
 
-def test_build_bank_message_contains_all_fields():
-    msg = pay.build_bank_message("بنك الراجحي", "شركة مسار", "SA0000000000000000", "اشتراك شهري", 90.0)
+def test_build_bank_message_single_bank():
+    msg = pay.build_bank_message(
+        [{"bank_name": "بنك الراجحي", "account_holder": "شركة مسار", "iban": "SA0000000000000000"}],
+        "اشتراك شهري",
+        90.0,
+    )
     assert "بنك الراجحي" in msg
     assert "شركة مسار" in msg
     assert "SA0000000000000000" in msg
     assert "90" in msg
+    assert "1)" not in msg  # حساب واحد فقط — بلا ترقيم
+
+
+def test_build_bank_message_multiple_banks_numbered():
+    msg = pay.build_bank_message(
+        [
+            {"bank_name": "بنك الراجحي", "account_holder": "شركة مسار", "iban": "SA1111111111111111"},
+            {"bank_name": "بنك الأهلي", "account_holder": "شركة مسار", "iban": "SA2222222222222222"},
+        ],
+        "اشتراك شهري",
+        90.0,
+    )
+    assert "بنك الراجحي" in msg and "بنك الأهلي" in msg
+    assert "SA1111111111111111" in msg and "SA2222222222222222" in msg
+    assert "1) 🏦" in msg and "2) 🏦" in msg
 
 
 def test_build_terms_message_includes_domain_link():
@@ -98,6 +117,7 @@ def _make_engine() -> Engine | None:
         engine = create_engine(url, pool_pre_ping=True)
         with engine.connect() as conn:
             conn.execute(text("SELECT 1 FROM payment_requests LIMIT 1"))
+            conn.execute(text("SELECT 1 FROM bank_accounts LIMIT 1"))
         return engine
     except Exception:  # noqa: BLE001
         return None
@@ -107,7 +127,7 @@ _ENGINE = _make_engine()
 
 if _ENGINE is None:
     pytest.skip(
-        "لا اتصال بقاعدة بيانات Postgres محلية مهاجَرة (0017) — يُتخطّى test_telegram_payments_b9.py كليًا.",
+        "لا اتصال بقاعدة بيانات Postgres محلية مهاجَرة (0018) — يُتخطّى test_telegram_payments_b9.py كليًا.",
         allow_module_level=True,
     )
 
@@ -191,17 +211,19 @@ def priced_package(engine):
 
 @pytest.fixture()
 def bank_details(engine):
+    """B3-متابعة: بيانات التحويل انتقلت لجدول bank_accounts — صفّ اختبار
+    نشط واحد يُنظّف بعد الاختبار (DELETE محلي فقط، قاعدة بيانات اختبار
+    مؤقتة — لا صلة بقاعدة الإنتاج الحية، راجع القواعد المطلقة بالمشروع)."""
     with engine.begin() as conn:
-        originals = {
-            k: conn.execute(text("SELECT value FROM app_settings WHERE key = :k"), {"k": k}).scalar()
-            for k in ("bank_name", "account_holder", "iban")
-        }
-        for k, v in (("bank_name", "بنك الاختبار"), ("account_holder", "مسار"), ("iban", "SA0000000000000000")):
-            conn.execute(text("UPDATE app_settings SET value = :v WHERE key = :k"), {"k": k, "v": v})
+        account_id = conn.execute(
+            text(
+                "INSERT INTO bank_accounts (bank_name, account_holder, iban, active) "
+                "VALUES ('بنك الاختبار', 'مسار', 'SA0000000000000000', true) RETURNING id"
+            )
+        ).scalar_one()
     yield
     with engine.begin() as conn:
-        for k, v in originals.items():
-            conn.execute(text("UPDATE app_settings SET value = :v WHERE key = :k"), {"k": k, "v": v})
+        conn.execute(text("DELETE FROM bank_accounts WHERE id = :id"), {"id": account_id})
 
 
 def _cleanup_customer(engine: Engine, chat_id: int, customer_id: int) -> None:
@@ -284,7 +306,7 @@ def test_full_payment_flow_self_register_to_confirmed(engine, priced_package, ba
         # 7) المبلغ (مطابق تمامًا لقيمة الباقة)
         _run(ob.handle_update({}, _make_event(chat_id, text=str(int(priced_package["price_sar"]))), client))
 
-        # 8) اسم المُحوِّل → إشعار الأدمن بالصورة + زرّي ✅/❌ + رسالة إكمال الملف
+        # 8) اسم المُحوِّل → إشعار الأدمن بالصورة + زرّي ✅/❌ + رسالة إكمال الملف
         _run(ob.handle_update({}, _make_event(chat_id, text="أحمد المرسل"), client))
         with engine.connect() as conn:
             final_pr = conn.execute(
