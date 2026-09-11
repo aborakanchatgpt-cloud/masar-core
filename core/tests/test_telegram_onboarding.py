@@ -1,6 +1,6 @@
 """اختبارات core/app/telegram_onboarding.py (B8) — الدوال النقية فقط (بلا
 قاعدة بيانات، تعمل دومًا بأي بيئة): بناء لوحات/رسائل المدن والمجالات،
-تطبيع رقم الجوال، تصنيف نص حرّ لعائلة مهنية معروفة، واستخراج نص PDF حقيقي
+تطبيع رقم الجوال، تصنيف نص حر لعائلة مهنية معروفة، واستخراج نص PDF حقيقي
 صغير مبني بـpypdf نفسها (بلا أي اعتماد شبكي).
 
 اختبارات مسار onboarding الكامل (تحتاج Postgres محلية مهاجَرة) موجودة
@@ -15,9 +15,15 @@ import io
 from app import telegram_onboarding as ob
 
 
-def test_normalize_phone_strips_non_digits():
-    assert ob.normalize_phone("+966 50 000 0000") == "966500000000"
-    assert ob.normalize_phone("0501234567") == "0501234567"
+def test_normalize_phone_canonicalizes_to_966_format():
+    # B9/A1: كل صيغة شائعة لنفس الرقم يجب أن تنتج نفس السلسلة الموحّدة —
+    # هذا هو ما يجعل تسجيل أحمد اليدوي (05...) وربط تيليجرام التلقائي
+    # (966...) يتطابقان أخيرًا. راجع app/phone.py.
+    assert ob.normalize_phone("0501234567") == "966501234567"
+    assert ob.normalize_phone("+966 50 123 4567") == "966501234567"
+    assert ob.normalize_phone("00966501234567") == "966501234567"
+    assert ob.normalize_phone("966501234567") == "966501234567"
+    assert ob.normalize_phone("501234567") == "966501234567"
     assert ob.normalize_phone("") == ""
 
 
@@ -98,7 +104,7 @@ def _make_blank_pdf_bytes() -> bytes:
 
 def test_extract_pdf_text_returns_empty_string_for_blank_page_pdf():
     # صفحة فارغة بلا أي نص — extract_text() يجب أن يُرجع سلسلة فارغة
-    # (لا استثناء)، ما يعني "فشل تحليل" حسب MIN_CV_TEXT_CHARS بمنطق الاستدعاء.
+    # (لا استثناء)، ما يعني "فشل تحليل" حسب MIN_CV_TEXT_CHARS حسب منطق الاستدعاء.
     pdf_bytes = _make_blank_pdf_bytes()
     result = ob.extract_pdf_text(pdf_bytes)
     assert result == ""
