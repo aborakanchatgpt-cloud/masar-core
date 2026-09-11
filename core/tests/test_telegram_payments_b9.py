@@ -1,6 +1,6 @@
 """اختبارات core/app/telegram_payments.py + telegram_admin_payments.py
 (B9/B3) — تدفّق الباقات والدفع الكامل ببوت العميل (تسجيل ذاتي → اسم →
-باقة → شروط → بيانات تحويل → إيصال → مبلغ → اسم مُحوِّل → إشعار أدمن)
+باقة → شروط → بيانات تحويل → إيصال → مبلغ → اسم مُحوّل → إشعار أدمن)
 وقرار الأدمن ✅/❌ (تفعيل فعلي عبر catalog.create_order أو رفض).
 
 قسمان: دوال نقية (بلا قاعدة بيانات، تعمل دومًا)، وتدفّق كامل بقاعدة بيانات
@@ -94,6 +94,37 @@ def test_build_bank_message_multiple_banks_numbered():
     assert "بنك الراجحي" in msg and "بنك الأهلي" in msg
     assert "SA1111111111111111" in msg and "SA2222222222222222" in msg
     assert "1) 🏦" in msg and "2) 🏦" in msg
+
+
+def test_build_bank_message_account_number_only_no_iban():
+    """B3-متابعة٢: iban اختياري الآن — حساب بلا آيبان (رقم حساب فقط) يظهر
+    برقم الحساب فقط، بلا سطر IBAN فارغ أو مضلّل."""
+    msg = pay.build_bank_message(
+        [{"bank_name": "بنك سامبا", "account_holder": "شركة مسار", "account_number": "1234567890", "iban": None}],
+        "اشتراك شهري",
+        90.0,
+    )
+    assert "1234567890" in msg
+    assert "رقم الحساب" in msg
+    assert "IBAN" not in msg
+
+
+def test_build_bank_message_both_account_number_and_iban():
+    msg = pay.build_bank_message(
+        [
+            {
+                "bank_name": "بنك الرياض",
+                "account_holder": "شركة مسار",
+                "account_number": "555000111",
+                "iban": "SA0000000000000000",
+            }
+        ],
+        "اشتراك شهري",
+        90.0,
+    )
+    assert "555000111" in msg
+    assert "SA0000000000000000" in msg
+    assert "رقم الحساب" in msg and "IBAN" in msg
 
 
 def test_build_terms_message_includes_domain_link():
@@ -306,7 +337,7 @@ def test_full_payment_flow_self_register_to_confirmed(engine, priced_package, ba
         # 7) المبلغ (مطابق تمامًا لقيمة الباقة)
         _run(ob.handle_update({}, _make_event(chat_id, text=str(int(priced_package["price_sar"]))), client))
 
-        # 8) اسم المُحوِّل → إشعار الأدمن بالصورة + زرّي ✅/❌ + رسالة إكمال الملف
+        # 8) اسم المُحوّل → إشعار الأدمن بالصورة + زرّي ✅/❌ + رسالة إكمال الملف
         _run(ob.handle_update({}, _make_event(chat_id, text="أحمد المرسل"), client))
         with engine.connect() as conn:
             final_pr = conn.execute(
