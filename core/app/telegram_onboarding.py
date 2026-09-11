@@ -19,6 +19,9 @@ Masar Core — محادثة بوت العملاء "مسار" على تيليجر
        نفس مستوى التحقق الذي كان يعتمده تدفّق n8n القديم) — إن طابق الرقم
        صفًّا موجودًا بلا telegram_chat_id، يُربط فورًا؛ إن لم يطابق أي شيء،
        نُخبر العميل بلطف ونُنبّه أحمد (عبر بوت الأدمن) ليتحقق من الاشتراك.
+       (B9: منذ دفعة الباقات والدفع، أصبح التسجيل الذاتي أيضًا ممكنًا —
+       راجع app/telegram_payments.py — وهذا المسار يبقى للعملاء الذين
+       سجّلهم أحمد يدويًا.)
     2. **استخراج ملف شخصي حتمي (rules) لا وكيل ذكاء اصطناعي** — n8n كان
        يستخدم Claude Haiku لقراءة صورة/PDF ويستخرج JSON مهيكل (الاسم/
        المجال/المسميات). هنا: نص PDF يُستخرَج بمكتبة `pypdf` (تبعية خفيفة
@@ -57,6 +60,7 @@ from sqlalchemy import text as sql_text
 
 from app import customers_api, link_api
 from app.discovery import classify_family, get_engine
+from app.phone import canonical_phone
 from app.telegram_client import (
     ChatEvent,
     TelegramAPIError,
@@ -151,9 +155,11 @@ def _as_list(value: Any) -> list[str]:
 
 
 def normalize_phone(raw: str) -> str:
-    """يُبقي الأرقام فقط (نفس فلسفة رقم الجوال بجدول customers — لا صيغة
-    دولية موحّدة مضمونة من العملاء، فنطابق بالأرقام الخام لا بصيغة صارمة)."""
-    return "".join(ch for ch in (raw or "") if ch.isdigit())
+    """يوحّد رقم الجوال لصيغة 966xxxxxxxxx (B9/A1 — راجع app/phone.py
+    لتفاصيل المشكلة والحل؛ كانت هذه الدالة تُبقي الأرقام فقط بلا توحيد صيغة،
+    ما كان يمنع مطابقة رقم كتبه أحمد يدويًا برقم أرسلته جهة اتصال Telegram
+    الحقيقية)."""
+    return canonical_phone(raw)
 
 
 def build_region_buttons() -> list[list[dict[str, str]]]:
@@ -478,7 +484,10 @@ async def _step_cv(
             return
         try:
             file_info = await client.get_file(event.document["file_id"])
-            content = await client.download_file_bytes(file_info["file_path"])
+            # B9/A6: نمرّر حد التنزيل الفعلي (CV_MAX_BYTES=5MB) لا الافتراضي
+            # (8MB) حتى تكون رسالة الخطأ صحيحة ("يتجاوز 5MB") بدل رسالة تنزيل
+            # عامة مضلِّلة لملف بين 5 و8 ميجابايت.
+            content = await client.download_file_bytes(file_info["file_path"], max_bytes=CV_MAX_BYTES)
         except TelegramAPIError:
             logger.warning("فشل تنزيل مرفق CV من Telegram", exc_info=True)
             await client.send_message(event.chat_id, "تعذّر تنزيل الملف، حاول ترسله مرة ثانية 🙏")
