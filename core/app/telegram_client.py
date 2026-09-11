@@ -36,6 +36,7 @@ editMessageReplyMarkup، وgetFile/تنزيل ملف — إن احتاج لاح�
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from dataclasses import dataclass
@@ -265,6 +266,78 @@ class TelegramClient:
 
     async def get_file(self, file_id: str) -> dict[str, Any]:
         return await self._call("getFile", {"file_id": file_id})
+
+    # -----------------------------------------------------------------
+    # sendPhoto / sendDocument — رفع bytes خام (multipart) مباشرة لمحادثة
+    # أخرى، غالبًا ببوت آخر (B9/B3): إيصال دفع يستقبله بوت العملاء يُعاد
+    # رفعه لبوت الأدمن. **file_id من بوت لا يعمل مع بوت آخر** (كل file_id
+    # مرتبط بتوكن البوت الذي استقبله أصلًا) — لذا نُنزّل bytes الخام مرّة
+    # (download_file_bytes أعلاه) ثم نرفعها هنا من جديد بتوكن البوت الآخر،
+    # لا نمرّر file_id مباشرة. `_call` أعلاه غير صالحة هنا (تبني جسم JSON،
+    # لا multipart) فنبني الطلب يدويًا بنفس فلسفة معالجة الأخطاء.
+    # -----------------------------------------------------------------
+
+    async def _send_bytes(
+        self,
+        method: str,
+        field_name: str,
+        chat_id: int | str,
+        data: bytes,
+        filename: str,
+        *,
+        caption: str | None = None,
+        buttons: list[list[dict[str, str]]] | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {"chat_id": str(chat_id)}
+        if caption:
+            payload["caption"] = caption
+        if buttons is not None:
+            payload["reply_markup"] = json.dumps({"inline_keyboard": buttons}, ensure_ascii=False)
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    self._method_url(method),
+                    data=payload,
+                    files={field_name: (filename, data)},
+                )
+        except httpx.HTTPError as exc:
+            logger.warning("telegram %s فشل اتصال (chat_id=%s): %s", method, chat_id, exc)
+            raise TelegramAPIError(f"فشل اتصال Telegram ({method}): {exc}") from exc
+
+        try:
+            result = response.json()
+        except ValueError as exc:
+            raise TelegramAPIError(f"ردّ Telegram غير صالح ({method}, status={response.status_code})") from exc
+
+        if not result.get("ok"):
+            description = result.get("description", "بلا وصف")
+            logger.warning("telegram %s رفض الطلب (chat_id=%s): %s", method, chat_id, description)
+            raise TelegramAPIError(f"Telegram رفض {method}: {description}")
+        return result.get("result") or {}
+
+    async def send_photo(
+        self,
+        chat_id: int | str,
+        data: bytes,
+        filename: str,
+        *,
+        caption: str | None = None,
+        buttons: list[list[dict[str, str]]] | None = None,
+    ) -> dict[str, Any]:
+        return await self._send_bytes("sendPhoto", "photo", chat_id, data, filename, caption=caption, buttons=buttons)
+
+    async def send_document(
+        self,
+        chat_id: int | str,
+        data: bytes,
+        filename: str,
+        *,
+        caption: str | None = None,
+        buttons: list[list[dict[str, str]]] | None = None,
+    ) -> dict[str, Any]:
+        return await self._send_bytes(
+            "sendDocument", "document", chat_id, data, filename, caption=caption, buttons=buttons
+        )
 
     async def download_file_bytes(self, file_path: str, *, max_bytes: int = 8 * 1024 * 1024) -> bytes:
         # تنبيه أمني (راجع REVIEW.md البند 8.2): رابط تنزيل الملفات ببروتوكول
