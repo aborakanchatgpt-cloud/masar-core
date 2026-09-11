@@ -8,7 +8,7 @@ Core مباشرة، بقائمة أزرار inline واحدة تُغطّي كل 
 لا رسالة تُعالَج ولا ردّ يُرسَل لأي محادثة غير `is_admin_chat` (المالك، أو
 مفوّض نشط مربوط — B9/B2). إن غاب MASAR_OWNER_CHAT_ID من البيئة يتعطّل هذا
 البوت بالكامل للمالك (لا "يفتح" بالخطأ)؛ محادثات المفوّضين تبقى معطّلة
-تلقائيًا أيضًا (بلا مالك مُعرَّف، القائمة الرئيسية بلا معنى تشغيليًا).
+تلقائيًا أيضًا (بلا مالك مُعرَّف، القائمة الرئيسية بلا معنى تشغيليًا).
 
 **B9/B2 — طبقة الهوية الوحيدة الآن:** كانت `app.telegram_api` تحمل بوابة
 `is_owner_chat` ثانوية عند مسار `/admin` *قبل* الوصول لهذا الملف، فتصدّ أي
@@ -21,6 +21,19 @@ Core مباشرة، بقائمة أزرار inline واحدة تُغطّي كل 
 أصلًا (app.customers_api / app.overview_api / app.reports_api /
 app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، فقط تنسيق نص عربي حول
 نتيجة كل استدعاء (نفس ما كانت تفعله عقد "تنسيق ..." بـn8n).
+
+**B9/B5 — القائمة الموسّعة + البحث والإعدادات:** أُضيفت 🔍 بحث عن عميل
+(يقبل الآن رقم/جوال/اسم جزئي، لا مُعرّفًا رقميًا فقط) ببطاقة عميل موسَّعة
+وأزرار إجراء (تفعيل/إيقاف/تمديد/تقرير/رسالة/رابط ربط بريد) بملف منفصل
+`app.telegram_admin_search` (مستورَد كـ`search_mod`)، و✉️ رسالة لعميل (تعيد
+استخدام نفس البحث)، و⚙️ الإعدادات (بيانات التحويل/الباقات/واتساب الدعم)
+بملف منفصل `app.telegram_admin_settings` (مستورَد كـ`settings_mod`) —
+للمالك حصرًا، نفس نمط فحص `is_owner_chat` المُستخدَم أصلًا مع 👥 المفوّضون.
+🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا مستقلًا بالقائمة،
+لكن `admin:segments` يبقى مسارًا فعّالًا لأي مرجع قديم). 💳 طلبات الدفع
+(المذكورة بالقائمة المستهدَفة بالدليل §B5) **مؤجَّلة عمدًا لدفعة B3** —
+لا معنى لعرضها الآن (جدول `payment_requests` فارغ دومًا حتى B3 يبدأ الكتابة
+إليه، وقرار ✅/❌ يحتاج تكامل `catalog.py` الموصوف بالدليل §B3 البند 9).
 """
 from __future__ import annotations
 
@@ -32,10 +45,11 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import text as sql_text
 
-from app import customers_api, guarantee_api, overview_api, reports_api
+from app import telegram_admin_commands as commands
 from app import telegram_admin_delegates as delegates
+from app import telegram_admin_search as search_mod
+from app import telegram_admin_settings as settings_mod
 from app.discovery import get_engine
-from app.phone import canonical_phone
 from app.telegram_client import ChatEvent, TelegramClient
 from app.telegram_nav import nav_rows
 
@@ -88,7 +102,7 @@ def _clear_session(chat_id: int) -> None:
 
 def is_owner_chat(chat_id: int) -> bool:
     """فشل مغلق عمدًا (نفس نمط app.auth.require_admin_token): غياب
-    MASAR_OWNER_CHAT_ID بالبيئة يعني "لا مالك مُعرَّف" فيُرفض أي chat_id
+    MASAR_OWNER_CHAT_ID بالبيئة يعني "لا مالك مُعرَّف" فيُرفض أي chat_id
     بلا استثناء، بدل معاملة قيمة فارغة كمطابقة بالخطأ."""
     owner = os.environ.get("MASAR_OWNER_CHAT_ID", "")
     if not owner:
@@ -125,25 +139,32 @@ def is_admin_chat(chat_id: int) -> bool:
 
 
 def _main_menu_buttons(is_owner: bool) -> list[list[dict[str, str]]]:
+    # B9/B5: 🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا
+    # مستقلًا). ⏯️/⏳ تبقيان أيضًا هنا للوصول السريع (الدليل: "لا مانع")
+    # فوق كونهما أزرار إجراء تحت بطاقة نتيجة البحث الآن.
     rows: list[list[dict[str, str]]] = [
         [{"text": "🆕 تسجيل عميل جديد", "callback_data": "admin:new_customer"}],
-        [{"text": "📊 نظرة عامة", "callback_data": "admin:overview"}],
-        [{"text": "🧩 تصنيف العملاء", "callback_data": "admin:segments"}],
         [
             {"text": "🔍 بحث عن عميل", "callback_data": "admin:lookup"},
             {"text": "📨 تقرير عميل", "callback_data": "admin:report"},
         ],
+        [{"text": "📊 نظرة عامة", "callback_data": "admin:overview"}],
         [{"text": "▶️ تشغيل كل التقارير الآن", "callback_data": "admin:run_reports"}],
         [
             {"text": "⏯️ تفعيل/إيقاف عميل", "callback_data": "admin:status"},
             {"text": "⏳ تمديد اشتراك", "callback_data": "admin:extend"},
         ],
         [{"text": "💰 الضمانات المعلّقة", "callback_data": "admin:guarantees"}],
+        [{"text": "✉️ رسالة لعميل", "callback_data": "admin:msg"}],
     ]
-    # B9/B2: قائمة المفوّضين — للمالك فقط (المفوّض لا يرى هذه القائمة ولا
-    # يديرها، قرار أحمد). ⚙️ الإعدادات تُضاف لاحقًا بـB5.
+    # B9/B2+B5: قائمة المفوّضين والإعدادات — للمالك فقط (المفوّض لا يديرهما).
     if is_owner:
-        rows.append([{"text": "👥 المفوّضون", "callback_data": "admin:delegates"}])
+        rows.append(
+            [
+                {"text": "👥 المفوّضون", "callback_data": "admin:delegates"},
+                {"text": "⚙️ الإعدادات", "callback_data": "admin:settings"},
+            ]
+        )
     return rows
 
 
@@ -175,7 +196,7 @@ async def handle_update(update: dict[str, Any], event: ChatEvent, client: Telegr
         return
 
     # B9/B2: محادثة غير معروفة (لا مالك ولا مفوّض مربوط مسبقًا) — حاول ربط
-    # مفوّض بانتظار الربط أولًا، وإلا صمت تام (لا رد، لا كشف لوجود البوت).
+    # مفوّض بانتظار الربط أولًا، وإلا صمت تام (لا ردّ، لا كشف لوجود البوت).
     delegate_name = await delegates.try_link_delegate(event)
     if delegate_name:
         logger.info("تم ربط مفوّض جديد بمحادثة أدمن (الاسم=%s, chat_id=%s)", delegate_name, event.chat_id)
@@ -208,17 +229,66 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         return
 
     if data == "admin:overview":
-        await _reply_overview(client, event.chat_id)
+        await commands.reply_overview(client, event.chat_id)
         return
 
     if data == "admin:segments":
-        await _reply_segments(client, event.chat_id)
+        await commands.reply_segments(client, event.chat_id)
         return
 
     if data == "admin:lookup":
-        _save_session(event.chat_id, "lookup_id", {})
+        _save_session(event.chat_id, "lookup_query", {})
         await client.send_message(
-            event.chat_id, "اكتب رقم معرّف العميل (customer id):", buttons=nav_rows(None, "admin:menu")
+            event.chat_id,
+            "اكتب رقم العميل، جواله، أو جزءًا من اسمه:",
+            buttons=nav_rows(None, "admin:menu"),
+        )
+        return
+
+    if data.startswith("admin:card:"):
+        customer_id = int(data[len("admin:card:") :])
+        await search_mod.reply_customer_card(client, event.chat_id, customer_id)
+        return
+
+    if data.startswith("admin:card_toggle:"):
+        _, _, customer_id_str, new_status = data.split(":", 3)
+        await search_mod.card_toggle_status(client, event.chat_id, int(customer_id_str), new_status)
+        return
+
+    if data.startswith("admin:card_extend:"):
+        customer_id = int(data[len("admin:card_extend:") :])
+        _save_session(event.chat_id, "extend_days", {"customer_id": customer_id})
+        await client.send_message(
+            event.chat_id,
+            f"كم عدد الأيام اللي تحب تمدّدها؟ (اكتب رقمًا، افتراضيًا {EXTEND_DEFAULT_DAYS}):",
+            buttons=nav_rows(None, "admin:menu"),
+        )
+        return
+
+    if data.startswith("admin:card_report:"):
+        customer_id = int(data[len("admin:card_report:") :])
+        await search_mod.card_report(client, event.chat_id, customer_id)
+        return
+
+    if data.startswith("admin:card_link:"):
+        customer_id = int(data[len("admin:card_link:") :])
+        await search_mod.card_link(client, event.chat_id, customer_id)
+        return
+
+    if data == "admin:msg":
+        _save_session(event.chat_id, "msg_search_query", {})
+        await client.send_message(
+            event.chat_id,
+            "ابحث عن العميل (رقم/جوال/اسم) لإرسال رسالة له:",
+            buttons=nav_rows(None, "admin:menu"),
+        )
+        return
+
+    if data.startswith("admin:msgto:"):
+        customer_id = int(data[len("admin:msgto:") :])
+        _save_session(event.chat_id, "msg_text", {"customer_id": customer_id})
+        await client.send_message(
+            event.chat_id, "اكتب نص الرسالة اللي تبي ترسلها للعميل:", buttons=nav_rows(None, "admin:menu")
         )
         return
 
@@ -230,7 +300,7 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         return
 
     if data == "admin:run_reports":
-        await _reply_run_reports(client, event.chat_id)
+        await commands.reply_run_reports(client, event.chat_id)
         return
 
     if data == "admin:status":
@@ -244,7 +314,7 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
 
     if data.startswith("status_choice:"):
         _, customer_id_str, new_status = data.split(":", 2)
-        await _reply_set_status(client, event.chat_id, int(customer_id_str), new_status)
+        await commands.reply_set_status(client, event.chat_id, int(customer_id_str), new_status)
         return
 
     if data == "admin:extend":
@@ -257,16 +327,16 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         return
 
     if data == "admin:guarantees":
-        await _reply_guarantees(client, event.chat_id)
+        await commands.reply_guarantees(client, event.chat_id)
         return
 
     if data.startswith("settle:"):
         ledger_id = data[len("settle:") :]
-        await _reply_settle_guarantee(client, event.chat_id, int(ledger_id))
+        await commands.reply_settle_guarantee(client, event.chat_id, int(ledger_id))
         return
 
     # B9/B2: المفوّضون — للمالك فقط (لا زر لها أصلًا بقائمة المفوّض، وهذا
-    # الفحص الإضافي دفاع بالعمق لو خمّن مفوّض callback_data بنفسه).
+    # الفحص الإضافي دفاع بالعمق لو خمَّن مفوّض callback_data بنفسه).
     if data == "admin:delegates":
         if not is_owner_chat(event.chat_id):
             return
@@ -289,6 +359,73 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         await delegates.reply_remove_delegate(client, event.chat_id, delegate_id)
         return
 
+    # B9/B5: ⚙️ الإعدادات — للمالك فقط (نفس نمط 👥 المفوّضون أعلاه).
+    if data == "admin:settings":
+        if not is_owner_chat(event.chat_id):
+            return
+        await settings_mod.reply_settings_menu(client, event.chat_id)
+        return
+
+    if data == "settings:bank":
+        if not is_owner_chat(event.chat_id):
+            return
+        await settings_mod.reply_bank_details(client, event.chat_id)
+        return
+
+    if data.startswith("settings:bank_edit:"):
+        if not is_owner_chat(event.chat_id):
+            return
+        field = data[len("settings:bank_edit:") :]
+        _save_session(event.chat_id, "settings_bank_edit", {"field": field})
+        label = settings_mod.BANK_FIELD_LABELS.get(field, field)
+        await client.send_message(
+            event.chat_id, f"اكتب القيمة الجديدة لـ{label}:", buttons=nav_rows("settings:bank", "admin:menu")
+        )
+        return
+
+    if data == "settings:whatsapp":
+        if not is_owner_chat(event.chat_id):
+            return
+        _save_session(event.chat_id, "settings_whatsapp_edit", {})
+        await settings_mod.reply_whatsapp_prompt(client, event.chat_id)
+        return
+
+    if data == "settings:packages":
+        if not is_owner_chat(event.chat_id):
+            return
+        await settings_mod.reply_packages_menu(client, event.chat_id)
+        return
+
+    if data.startswith("settings:pkg_toggle:"):
+        if not is_owner_chat(event.chat_id):
+            return
+        code = data[len("settings:pkg_toggle:") :]
+        await settings_mod.toggle_package_active(client, event.chat_id, code)
+        return
+
+    if data.startswith("settings:pkg_edit:"):
+        if not is_owner_chat(event.chat_id):
+            return
+        _, _, code, field = data.split(":", 3)
+        _save_session(event.chat_id, "settings_pkg_edit", {"code": code, "field": field})
+        label = settings_mod.PKG_FIELD_LABELS.get(field, field)
+        await client.send_message(
+            event.chat_id,
+            f"اكتب القيمة الجديدة لـ{label} (أرقام فقط):",
+            buttons=nav_rows(f"settings:pkg:{code}", "admin:menu"),
+        )
+        return
+
+    # "settings:pkg:{code}" — فتح تفاصيل باقة (لا تصادم startswith مع
+    # "settings:pkg_toggle:"/"settings:pkg_edit:" أعلاه: الحرف التالي لـ
+    # "settings:pkg" هنا ":" لا "_"، فالبادئات الثلاث متمايزة تمامًا).
+    if data.startswith("settings:pkg:"):
+        if not is_owner_chat(event.chat_id):
+            return
+        code = data[len("settings:pkg:") :]
+        await settings_mod.reply_package_detail(client, event.chat_id, code)
+        return
+
 
 # -------------------------------------------------------------------
 # توجيه الرسائل النصية أثناء انتظار مُدخَل (خطوات متعددة الرسائل)
@@ -308,17 +445,71 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
         return
 
     if step == "new_customer_phone":
-        await _reply_create_customer(client, event.chat_id, data.get("name", ""), text)
+        _clear_session(event.chat_id)
+        await commands.reply_create_customer(client, event.chat_id, data.get("name", ""), text)
         return
 
-    if step == "lookup_id":
+    if step == "lookup_query":
         _clear_session(event.chat_id)
-        await _reply_lookup(client, event.chat_id, text)
+        results = search_mod.search_customers(text)
+        if not results:
+            await search_mod.reply_not_found(client, event.chat_id, text)
+        elif len(results) == 1:
+            await search_mod.reply_customer_card(client, event.chat_id, results[0]["id"])
+        else:
+            await search_mod.reply_pick_buttons(client, event.chat_id, results, prefix="admin:card:")
+        return
+
+    if step == "msg_search_query":
+        _clear_session(event.chat_id)
+        results = search_mod.search_customers(text)
+        if not results:
+            await search_mod.reply_not_found(client, event.chat_id, text)
+        elif len(results) == 1:
+            customer_id, customer_name = results[0]["id"], results[0]["name"]
+            _save_session(event.chat_id, "msg_text", {"customer_id": customer_id})
+            await client.send_message(
+                event.chat_id,
+                f"اكتب نص الرسالة اللي تبي ترسلها لـ{customer_name} (#{customer_id}):",
+                buttons=nav_rows(None, "admin:menu"),
+            )
+        else:
+            await search_mod.reply_pick_buttons(client, event.chat_id, results, prefix="admin:msgto:")
+        return
+
+    if step == "msg_text":
+        customer_id = int(data.get("customer_id", 0))
+        _clear_session(event.chat_id)
+        await search_mod.send_customer_message_and_log(client, event.chat_id, customer_id, text)
+        return
+
+    if step == "settings_bank_edit":
+        field = data.get("field", "")
+        _clear_session(event.chat_id)
+        await settings_mod.apply_bank_field(client, event.chat_id, field, text)
+        return
+
+    if step == "settings_whatsapp_edit":
+        _clear_session(event.chat_id)
+        await settings_mod.apply_whatsapp(client, event.chat_id, text)
+        return
+
+    if step == "settings_pkg_edit":
+        code = data.get("code", "")
+        field = data.get("field", "")
+        label = settings_mod.PKG_FIELD_LABELS.get(field, field)
+        try:
+            parsed: float | int = float(text) if field == "price_sar" else int(text)
+        except ValueError:
+            await client.send_message(event.chat_id, f"⚠️ اكتب رقمًا صحيحًا لـ{label}:")
+            return
+        _clear_session(event.chat_id)
+        await settings_mod.apply_package_field(client, event.chat_id, code, field, parsed)
         return
 
     if step == "report_id":
         _clear_session(event.chat_id)
-        await _reply_customer_report(client, event.chat_id, text)
+        await commands.reply_customer_report(client, event.chat_id, text)
         return
 
     if step == "status_id":
@@ -355,11 +546,11 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
         return
 
     if step == "extend_days":
-        # B9/A6: كان أي إدخال غير رقمي هنا (خطأ كتابة، مثلًا) يُمرّر بصمت
-        # كـEXTEND_DEFAULT_DAYS (30 يومًا) بلا أي إشعار — قد يُمدّد اشتراك
+        # B9/A6: كان أي إدخال غير رقمي هنا (خطأ كتابة، مثلًا) يُمرَّر بصمت
+        # كـEXTEND_DEFAULT_DAYS (30 يومًا) بلا أي إشعار — قد يُمدَّد اشتراك
         # عميل بعدد أيام لم يقصده أحمد إطلاقًا. الآن: نفس نمط إعادة الطلب
-        # المُستخدم بكل خطوة رقمية أخرى بهذا الملف (extend_id/status_id/...)
-        # — إدخال غير صحيح يُعيد نفس السؤال بدل الاستمرار بقيمة مخمّنة.
+        # المُستخدَم بكل خطوة رقمية أخرى بهذا الملف (extend_id/status_id/...)
+        # — إدخال غير صحيح يُعيد نفس السؤال بدل الاستمرار بقيمة مخمَّنة.
         try:
             days = int(text)
         except ValueError:
@@ -370,7 +561,7 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
             return
         customer_id = int(data.get("customer_id", 0))
         _clear_session(event.chat_id)
-        await _reply_extend_subscription(client, event.chat_id, customer_id, days)
+        await commands.reply_extend_subscription(client, event.chat_id, customer_id, days)
         return
 
     # B9/B1: المفوّضون — خطوتا الإضافة (اسم ثم @username/جوال)
@@ -400,203 +591,6 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
 # =========================================================================
 
 
-async def _reply_create_customer(client: TelegramClient, chat_id: int, name: str, phone_text: str) -> None:
-    # B9/A1: توحيد الصيغة هنا يضمن تطابقها لاحقًا مع الرقم الذي يرسله
-    # تيليجرام فعليًا (966xxxxxxxxx) عند مشاركة العميل رقمه — راجع app/phone.py
-    phone_digits = canonical_phone(phone_text)
-    _clear_session(chat_id)
-    try:
-        result = await customers_api.create_customer(
-            customers_api.CustomerCreateRequest(name=name.strip(), phone=phone_digits or None)
-        )
-    except HTTPException as exc:
-        await client.send_message(chat_id, f"⚠️ تعذّر إنشاء العميل: {exc.detail}")
-        return
-    await client.send_message(
-        chat_id,
-        f"✅ تم تسجيل العميل #{result['customer_id']} — {name}\n"
-        f"الجوال: {phone_digits or 'غير محدّد'}\n\n"
-        "سيربط العميل حسابه بنفسه عند مراسلة بوت مسار ومشاركة رقم جواله.\n"
-        # B9/B0: customers.status الافتراضي أصبح 'pending' (ترحيل
-        # 0017_b9_payments_delegates) — لم يعد العميل الجديد active فورًا.
-        "سيُفعّل عند تأكيد الدفع أو يدويًا من بطاقته.",
-    )
-
-
-async def _reply_overview(client: TelegramClient, chat_id: int) -> None:
-    o = await overview_api.overview()
-    lines = [
-        "📊 نظرة عامة",
-        "",
-        f"العملاء حسب الحالة: {o['customers_by_status']}",
-        f"تقديمات اليوم: {o['sends_today']} | آخر 7 أيام: {o['sends_last_7_days']}",
-        f"ارتدادات اليوم: {o['bounces_today']}",
-        f"طابور الإرسال: {o['send_queue_by_status']}",
-        f"صناديق البريد: {o['mail_links_by_status']}",
-        f"تقارير معلّقة: {o['pending_reports']}",
-        f"ضمانات معلّقة: {o['pending_guarantees']}",
-        f"وضع التجربة (DRY_RUN): {'مفعّل' if o['dry_run'] else 'متوقف'}",
-    ]
-    await client.send_message(chat_id, "\n".join(lines))
-
-
-async def _reply_segments(client: TelegramClient, chat_id: int) -> None:
-    engine = get_engine()
-    with engine.connect() as conn:
-        by_status = dict(conn.execute(sql_text("SELECT status, count(*) FROM customers GROUP BY status")).all())
-        by_family = conn.execute(
-            sql_text(
-                """
-                SELECT elem AS family, count(*) AS n
-                FROM customers, LATERAL jsonb_array_elements_text(families) AS elem
-                GROUP BY elem ORDER BY n DESC LIMIT 10
-                """
-            )
-        ).all()
-        by_city = conn.execute(
-            sql_text(
-                """
-                SELECT elem AS city, count(*) AS n
-                FROM customers, LATERAL jsonb_array_elements_text(cities) AS elem
-                GROUP BY elem ORDER BY n DESC LIMIT 10
-                """
-            )
-        ).all()
-
-    lines = ["🧩 تصنيف العملاء", "", f"حسب الحالة: {by_status}", "", "أكثر 10 مجالات مهنية:"]
-    if by_family:
-        lines.extend(f"  {family}: {n}" for family, n in by_family)
-    else:
-        lines.append("  لا بيانات بعد")
-    lines.append("")
-    lines.append("أكثر 10 مدن/مناطق مفضّلة:")
-    if by_city:
-        lines.extend(f"  {city}: {n}" for city, n in by_city)
-    else:
-        lines.append("  لا بيانات بعد")
-    await client.send_message(chat_id, "\n".join(lines))
-
-
-async def _reply_lookup(client: TelegramClient, chat_id: int, text: str) -> None:
-    try:
-        customer_id = int(text.strip())
-    except ValueError:
-        await client.send_message(chat_id, "اكتب رقم معرّف عميل صحيح (أرقام فقط).")
-        return
-    try:
-        result = await customers_api.get_customer(customer_id)
-    except HTTPException:
-        await client.send_message(chat_id, "لم أجد عميلًا بهذا الرقم.")
-        return
-    c = result["customer"]
-    await client.send_message(
-        chat_id,
-        f"🔍 عميل #{c['id']} — {c['name']}\n"
-        f"الحالة: {c['status']}\n"
-        f"الجوال: {c.get('phone') or '-'}\n"
-        f"تيليجرام مربوط: {'نعم' if c.get('telegram_chat_id') else 'لا'}\n"
-        f"المدن: {c.get('cities')}\n"
-        f"المجالات: {c.get('families')}\n"
-        f"الرصيد: {c.get('wallet_balance')}",
-    )
-
-
-async def _reply_customer_report(client: TelegramClient, chat_id: int, text: str) -> None:
-    try:
-        customer_id = int(text.strip())
-    except ValueError:
-        await client.send_message(chat_id, "اكتب رقم معرّف عميل صحيح (أرقام فقط).")
-        return
-    try:
-        result = await reports_api.customer_report(customer_id)
-    except HTTPException as exc:
-        await client.send_message(chat_id, f"⚠️ {exc.detail}")
-        return
-    payload = result.get("payload") or {}
-    report_text = payload.get("text") if isinstance(payload, dict) else None
-    await client.send_message(
-        chat_id, f"📨 تقرير العميل #{customer_id}:\n\n{report_text or 'لا يوجد تقرير لهذا اليوم بعد.'}"
-    )
-
-
-async def _reply_run_reports(client: TelegramClient, chat_id: int) -> None:
-    result = await reports_api.run_reports(None)
-    await client.send_message(
-        chat_id,
-        "✅ تشغيل التقارير: "
-        f"أُنشئ {result.get('created', 0)}، موجود مسبقًا {result.get('already_existed', 0)}، "
-        f"أخطاء {result.get('errors', 0)}.",
-    )
-
-
-async def _reply_set_status(client: TelegramClient, chat_id: int, customer_id: int, new_status: str) -> None:
-    try:
-        result = await customers_api.update_customer_status(
-            customer_id, customers_api.CustomerStatusRequest(status=new_status)
-        )
-    except HTTPException as exc:
-        await client.send_message(chat_id, f"⚠️ {exc.detail}")
-        return
-    label = "مُفعّل ▶️" if new_status == "active" else "مُوقف ⏸️"
-    await client.send_message(chat_id, f"✅ تم تحديث حالة العميل #{result['customer_id']} إلى {label}.")
-
-
-async def _reply_extend_subscription(client: TelegramClient, chat_id: int, customer_id: int, days: int) -> None:
-    """يمدّد أحدث اشتراك فعّال للعميل بعدد أيام محدّد — لا نقطة نهاية HTTP
-    جاهزة لهذا حاليًا بالمستودع، فيُنفذ هنا مباشرة (SQL بسيط، نفس نمط
-    الملفات الأخرى: UPDATE محمي بشرط status='active' فلا يُمدّد اشتراك
-    مُغلَق سهوًا)."""
-    engine = get_engine()
-    with engine.begin() as conn:
-        row = conn.execute(
-            sql_text(
-                """
-                UPDATE subscriptions SET ends_at = ends_at + make_interval(days => :days)
-                WHERE id = (
-                    SELECT id FROM subscriptions
-                    WHERE customer_id = :cid AND status = 'active'
-                    ORDER BY id DESC LIMIT 1
-                )
-                RETURNING id, ends_at
-                """
-            ),
-            {"cid": customer_id, "days": days},
-        ).first()
-    if not row:
-        await client.send_message(chat_id, f"⚠️ لا يوجد اشتراك فعّال للعميل #{customer_id} لتمديده.")
-        return
-    await client.send_message(
-        chat_id, f"✅ تم تمديد اشتراك العميل #{customer_id} بـ{days} يومًا — ينتهي الآن: {row[1]}."
-    )
-
-
-async def _reply_guarantees(client: TelegramClient, chat_id: int) -> None:
-    result = await guarantee_api.pending_guarantees()
-    items = result["items"]
-    if not items:
-        await client.send_message(chat_id, "لا توجد ضمانات بانتظار التسوية الآن.")
-        return
-    lines = [f"💰 ضمانات بانتظار التسوية ({len(items)}):"]
-    lines.extend(
-        f"#{g['id']} — {g.get('customer_name') or ('عميل ' + str(g['customer_id']))} — "
-        f"العجز {g['shortfall']} — المبلغ {g.get('refund_amount') if g.get('refund_amount') is not None else 'غير محدد'}"
-        for g in items
-    )
-    buttons = [[{"text": f"✅ تسوية #{g['id']}", "callback_data": f"settle:{g['id']}"}] for g in items[:20]]
-    buttons.extend(nav_rows(None, "admin:menu"))
-    await client.send_message(chat_id, "\n".join(lines), buttons=buttons)
-
-
-async def _reply_settle_guarantee(client: TelegramClient, chat_id: int, ledger_id: int) -> None:
-    try:
-        result = await guarantee_api.settle_guarantee(ledger_id)
-    except HTTPException as exc:
-        await client.send_message(chat_id, f"⚠️ {exc.detail}")
-        return
-    suffix = " (كانت مُسوّاة مسبقًا)" if result.get("already_settled") else ""
-    await client.send_message(chat_id, f"✅ تمت تسوية الضمان #{result['id']}{suffix}.")
-
-
 # B9/B2: منطق المفوّضين (ربط تلقائي، قائمة، إضافة، إزالة) بملف منفصل
-# app.telegram_admin_delegates (مُستورَد أعلاه كـ`delegates`) — راجع docstring
+# app.telegram_admin_delegates (مستورَد أعلاه كـ`delegates`) — راجع docstring
 # ذلك الملف لسبب الفصل (حجم repo_write لكل ملف).
