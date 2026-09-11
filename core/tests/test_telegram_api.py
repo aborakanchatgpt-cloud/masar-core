@@ -1,5 +1,5 @@
 """اختبارات core/app/telegram_api.py (POST /telegram/webhook/{token}/{bot_kind})
-— لم يكن لهذا الراوتر أي اختبار آلي قبل الدمج (تقرير تيار الوارد اكتفى بتحقّق
+— لم يكن لهذا الراوتر أي اختبار آلي قبل الدمج (تقرير تيار الوارد اكتفى بتحقق
 يدوي عبر TestClient، راجع REPORT.md الأصلي). يُضاف هنا كجزء من الدمج،
 خصوصًا لتغطية الوصلة الجديدة بين التيارين: ضغطة تغذية راجعة (fb:...) التي
 يُرفقها تيار الصادر (telegram_notify.build_feedback_keyboard) ويعالجها هذا
@@ -8,13 +8,19 @@
 كما يغطي التوجيه حسب bot_kind بمقطع المسار (بدل chat_id وحده، راجع
 docstring رأس telegram_api.py): مسار /customer يعامل أي chat_id — بما فيه
 صاحب MASAR_OWNER_CHAT_ID نفسه — كعميل عادي (هذا ما يتيح لأحمد تجربة بوت
-العملاء من حسابه الشخصي)، ومسار /admin يرفض بصمت أي chat_id غير صاحب
-MASAR_OWNER_CHAT_ID حتى لو عرف رابطه السرّي.
+العملاء من حسابه الشخصي).
+
+B9/B2: مسار /admin لم يعد يحمل أي بوابة هوية عند هذا الراوتر — كل تحديث
+لمسار /admin يصل الآن دومًا إلى app.telegram_admin.handle_update بلا قيد
+chat_id هنا (البوابة الوحيدة الآن هي is_admin_chat + try_link_delegate
+داخل telegram_admin.py نفسه، لأن البوابة القديمة هنا كانت تصدّ أي مفوّض
+غير مربوط بعد قبل وصوله لمنطق الربط أصلًا — راجع docstring رأس
+telegram_admin.py لتفصيل كامل لهذا القرار المعماري).
 
 نفس أسلوب بقية اختبارات core/tests (استدعاء دالة الراوتر مباشرة عبر
 asyncio.run بدل TestClient — لا حاجة لإقلاع app.main كاملة ولا اتصال شبكة/
 قاعدة بيانات حقيقي؛ راجع test_telegram_client.py:_run لنفس النمط). كل
-استدعاء Bot API حقيقي (TelegramClient) مموَّه.
+استدعاء Bot API حقيقي (TelegramClient) مموّه.
 """
 from __future__ import annotations
 
@@ -216,24 +222,26 @@ def test_webhook_owner_chat_on_customer_bot_kind_is_treated_as_customer(monkeypa
     assert called == {"handler": "customer", "chat_id": 677475661}
 
 
-def test_webhook_non_owner_chat_on_admin_bot_kind_is_silently_ignored(monkeypatch):
-    """بوابة الأمان الثانوية على مسار /admin: غير صاحب MASAR_OWNER_CHAT_ID
-    لا يُعامَل كأدمن حتى لو وصل مسار بوت الأدمن (السرّي أصلًا بتوكن المسار)
-    — رفض بصمت، بلا استدعاء أي معالج."""
+def test_webhook_admin_bot_kind_always_dispatches_to_handle_update_regardless_of_chat_id(monkeypatch):
+    """B9/B2: لا بوابة هوية عند هذا الراوتر بعد الآن — حتى chat_id ليس
+    صاحب MASAR_OWNER_CHAT_ID يصل لـtelegram_admin.handle_update (الذي هو
+    من يقرر لاحقًا: مالك؟ مفوّض مربوط؟ محاولة ربط؟ صمت تام؟ — كل ذلك
+    مغطّى بـtest_telegram_admin_db.py/test_telegram_admin.py، لا هنا)."""
     monkeypatch.setenv("TELEGRAM_ADMIN_BOT_TOKEN", "ADMINTOKEN")
     monkeypatch.setenv("MASAR_OWNER_CHAT_ID", "999")
 
-    called = {"handler": None}
+    called = {}
 
     async def fake_admin_handle_update(update, event, client):
         called["handler"] = "admin"
+        called["chat_id"] = event.chat_id
 
     monkeypatch.setattr(telegram_api.telegram_admin, "handle_update", fake_admin_handle_update)
 
     update = {"message": {"chat": {"id": 555}, "from": {"id": 555}, "text": "hi"}}
     resp = _run(telegram_webhook(WEBHOOK_SECRET, "admin", _FakeRequest(update)))
     assert resp.status_code == 200
-    assert called["handler"] is None
+    assert called == {"handler": "admin", "chat_id": 555}
 
 
 # ---------------------------------------------------------------------------
@@ -400,16 +408,16 @@ def test_feedback_callback_http_exception_shows_alert(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# REVIEW.md البند 8.1 [blocker] — انتحال هوية عبر customer_id مزيَّف
+# REVIEW.md البند 8.1 [blocker] — انتحال هوية عبر customer_id مزيّف
 # بـcallback_data: customer_id المكتوب بالزر رقم مكشوف/قابل للتخمين، ولا
-# يجوز الوثوق به بلا تحقّق ضد chat_id الفعلي الذي أرسل الضغطة (عبر
+# يجوز الوثوق به بلا تحقق ضد chat_id الفعلي الذي أرسل الضغطة (عبر
 # customers_api.get_customer_by_telegram).
 # ---------------------------------------------------------------------------
 
 
 def test_feedback_callback_spoofed_customer_id_is_rejected_without_submitting(monkeypatch):
     """chat_id=12345 عميل حقيقي (customer_id=7 فعليًا) لكنه يرسل callback_data
-    بـcustomer_id=42 (عميل آخر مختلف تمامًا، خمَّن رقمًا تسلسليًا آخر) —
+    بـcustomer_id=42 (عميل آخر مختلف تمامًا، خمّن رقمًا تسلسليًا آخر) —
     يجب الرفض الصامت بلا استدعاء submit_feedback إطلاقًا."""
     monkeypatch.setenv("TELEGRAM_CUSTOMER_BOT_TOKEN", "CUSTTOKEN")
     _mock_get_customer_by_telegram(monkeypatch, {12345: 7})
@@ -443,12 +451,12 @@ def test_feedback_callback_spoofed_customer_id_is_rejected_without_submitting(mo
     )
 
     assert resp.status_code == 200
-    assert submit_called["called"] is False  # لم يُسجَّل أي تقييم كاذب باسم العميل 42
+    assert submit_called["called"] is False  # لم يُسجّل أي تقييم كاذب باسم العميل 42
     assert len(answered) == 1
     text = answered[0]["text"]
     assert text is not None
     # لا كشف للسبب الحقيقي بنص الرد — لا "mismatch"، لا رقم customer_id،
-    # لا أي ما يفيد بأن الزر مزوَّر أو أن هناك عميلًا آخر بالمرة
+    # لا أي ما يفيد بأن الزر مزوّر أو أن هناك عميلًا آخر بالمرة
     for leak in ("mismatch", "7", "42", "customer_id"):
         assert leak not in text
     assert len(edited) == 0  # لا إزالة لوحة أزرار — لا تفاعل أبعد من الرفض
@@ -456,7 +464,7 @@ def test_feedback_callback_spoofed_customer_id_is_rejected_without_submitting(mo
 
 def test_feedback_callback_unlinked_chat_is_rejected_without_submitting(monkeypatch):
     """chat_id غير مربوط بأي عميل إطلاقًا (لا سجلّ بـcustomers.telegram_chat_id)
-    يحاول ضغطة تغذية راجعة بـcustomer_id مخمَّن — نفس الرفض الصامت."""
+    يحاول ضغطة تغذية راجعة بـcustomer_id مخمّن — نفس الرفض الصامت."""
     monkeypatch.setenv("TELEGRAM_CUSTOMER_BOT_TOKEN", "CUSTTOKEN")
     _mock_get_customer_by_telegram(monkeypatch, {})  # لا أحد مربوط
 
