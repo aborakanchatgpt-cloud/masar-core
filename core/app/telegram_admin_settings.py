@@ -7,17 +7,29 @@
 بهذا الملف). لا إدارة جلسة هنا أيضًا — نفس السبب، راجع docstring
 `telegram_admin_search.py`.
 
-`support_whatsapp()` هنا هي نقطة القراءة الموحَّدة الجديدة التي يحلّ بها
+`support_whatsapp()` هنا هي نقطة القراءة الموحّدة الجديدة التي يحلّ بها
 الدليل رقم الواتساب المكتوب بالكود مباشرة بعدة ملفات (B4/B6 القادمتين
-ستستوردانها بدل التكرار).
+ستستوردانها بدل التكرار.
 
 **B3-متابعة (دعم أكثر من بنك واحد):** بيانات التحويل انتقلت من ثلاثة مفاتيح
 أحادية بـ`app_settings` (bank_name/account_holder/iban — تبقى بجدولها بلا
 استخدام، لا حذف) إلى جدول `bank_accounts` (ترحيلة 0018) — قائمة حسابات،
 كل واحد بحالة نشط/متوقف (`active`، soft-delete نفس نمط `admin_delegates`،
-لا حذف فعلي). `active_bank_accounts()` هي نقطة القراءة الموحَّدة الجديدة
+لا حذف فعلي). `active_bank_accounts()` هي نقطة القراءة الموحّدة الجديدة
 التي يستخدمها `telegram_payments.py` لعرض كل الحسابات النشطة للعميل دفعة
 واحدة عند الدفع.
+
+**B3-متابعة٢ (رقم الحساب + لغة الاسم، ترحيلة 0019):** بطلب أحمد — أُضيف
+عمود `account_number` (رقم حساب عادي، بجانب الآيبان لا بدلًا عنه)، وعمود
+`name_language` (ar/en، **لعرض/تنظيم داخلي للأدمن فقط** — لا يُعرض اسم
+البنك للعميل بلغتين معًا إطلاقًا، هذا العمود لا يُستخدَم بأي رسالة عميل).
+كلا `account_number`/`iban` أصبحا اختياريَّين (nullable) — يكفي تعبئة واحد
+منهما، بقيد CHECK على مستوى القاعدة (`ck_bank_accounts_number_or_iban`)
+يمنع حفظ حساب بكلا الحقلين فارغَين معًا (دفاع بالعمق فوق تحقّق التدفّق هنا).
+تدفّق ➕ إضافة بنك جديد أصبح 4 خطوات نصّية + خطوة أزرار لللغة، مع أزرار
+"⏭️ تخطي" باختياريّة رقم الحساب/الآيبان — راجع `handle_bank_step_text`/
+`handle_bank_callback` أدناه لتفصيل التحقّق (رفض تخطي الآيبان لو رقم
+الحساب أيضًا فارغ، والعكس غير ممكن أصلًا لأن رقم الحساب يُسأل أولًا).
 """
 from __future__ import annotations
 
@@ -32,16 +44,20 @@ from app.telegram_nav import nav_rows
 BANK_FIELD_LABELS = {
     "bank_name": "اسم البنك",
     "account_holder": "اسم صاحب الحساب",
+    "account_number": "رقم الحساب",
     "iban": "رقم الآيبان (IBAN)",
 }
-# ملاحظة أمان: هذا القاموس هو القائمة البيضاء الوحيدة لأسماء أعمدة products
-# القابلة للتعديل عبر الإعدادات — f-string بناء SQL أدناه يعتمد عليه حصرًا
-# (لا مدخل مستخدم يصل لاسم عمود مباشرة).
+# ملاحظة أمان: هذا القاموس هو القائمة البيضاء الوحيدة لأسماء أعمدة bank_accounts
+# القابلة للتعديل عبر الإعدادات — f-string بناء SQL بـ`apply_bank_field` أدناه
+# يعتمد عليه حصرًا (لا مدخل مستخدم يصل لاسم عمود مباشرة). `name_language` ليست
+# هنا عمدًا — لها مسار تعديل خاص (`toggle_bank_language`، تبديل لا كتابة حرّة).
 PKG_FIELD_LABELS = {
     "price_sar": "السعر (ريال)",
     "days": "عدد الأيام",
     "applications_included": "عدد التقديمات",
 }
+
+BANK_LANG_LABELS = {"ar": "عربي", "en": "English"}
 
 _DEFAULT_SUPPORT_WHATSAPP = "+966544161255"
 
@@ -70,10 +86,10 @@ def support_whatsapp() -> str:
     return get_setting("support_whatsapp") or _DEFAULT_SUPPORT_WHATSAPP
 
 
-def _mask_iban(iban: str | None) -> str:
-    if not iban:
+def _mask_value(value: str | None) -> str:
+    if not value:
         return "غير محدَّد"
-    digits = iban.strip()
+    digits = value.strip()
     if len(digits) <= 6:
         return digits
     return f"{digits[:4]} **** **** {digits[-4:]}"
@@ -107,7 +123,7 @@ def _fetch_bank_accounts() -> list[dict[str, Any]]:
 
 
 def active_bank_accounts() -> list[dict[str, Any]]:
-    """نقطة القراءة الموحَّدة التي يستخدمها `telegram_payments.py` لعرض كل
+    """نقطة القراءة الموحّدة التي يستخدمها `telegram_payments.py` لعرض كل
     الحسابات النشطة (`active = true`) دفعة واحدة على العميل وقت الدفع."""
     engine = get_engine()
     with engine.connect() as conn:
@@ -150,16 +166,26 @@ async def reply_bank_account_detail(client: TelegramClient, chat_id: int, accoun
     if not a:
         await client.send_message(chat_id, "⚠️ حساب بنكي غير موجود.", buttons=nav_rows("settings:bank", "admin:menu"))
         return
+    lang = a.get("name_language")
+    lang_suffix = f" ({BANK_LANG_LABELS[lang]})" if lang in BANK_LANG_LABELS else ""
     lines = [
-        f"🏦 {a['bank_name']}",
+        f"🏦 {a['bank_name']}{lang_suffix}",
         f"صاحب الحساب: {a['account_holder']}",
-        f"IBAN: {_mask_iban(a['iban'])}",
+        f"رقم الحساب: {_mask_value(a.get('account_number'))}",
+        f"IBAN: {_mask_value(a['iban'])}",
         f"الحالة: {'نشط 🟢 — يظهر للعميل' if a['active'] else 'متوقف ⚪️ — لا يظهر للعميل'}",
     ]
     buttons = [
         [{"text": "✏️ اسم البنك", "callback_data": f"settings:bank_edit:{account_id}:bank_name"}],
         [{"text": "✏️ صاحب الحساب", "callback_data": f"settings:bank_edit:{account_id}:account_holder"}],
+        [{"text": "✏️ رقم الحساب", "callback_data": f"settings:bank_edit:{account_id}:account_number"}],
         [{"text": "✏️ IBAN", "callback_data": f"settings:bank_edit:{account_id}:iban"}],
+        [
+            {
+                "text": f"🔤 لغة الاسم: {BANK_LANG_LABELS.get(lang, 'غير محدّدة')}",
+                "callback_data": f"settings:bank_lang_toggle:{account_id}",
+            }
+        ],
         [{"text": "⚪️ إيقاف" if a["active"] else "🟢 تفعيل", "callback_data": f"settings:bank_toggle:{account_id}"}],
     ]
     buttons.extend(nav_rows("settings:bank", "admin:menu"))
@@ -168,7 +194,12 @@ async def reply_bank_account_detail(client: TelegramClient, chat_id: int, accoun
 
 async def apply_bank_field(client: TelegramClient, chat_id: int, account_id: int, field: str, value: str) -> None:
     """`field` من `BANK_FIELD_LABELS` حصرًا (قائمة بيضاء) — نفس نمط
-    `apply_package_field` أدناه، f-string بناء SQL يعتمد عليها حصرًا."""
+    `apply_package_field` أدناه، f-string بناء SQL يعتمد عليها حصرًا.
+
+    ملاحظة: يرفض قيمة فارغة دومًا (نفس السلوك قبل B3-متابعة٢) — تفريغ
+    account_number/iban لحساب موجود مسبقًا غير مدعوم من هنا عمدًا (قد
+    يخالف قيد CHECK لو كان الحقل الآخر فارغًا أيضًا وقتها)؛ لو احتاج أحمد
+    تفريغ أحدهما مستقبلًا، ذلك تحسين منفصل يتحقّق من الحقل الآخر أولًا."""
     value = value.strip()
     if field not in BANK_FIELD_LABELS or not value:
         await client.send_message(chat_id, "⚠️ قيمة غير صالحة — لم يُحفَظ شيء.")
@@ -200,14 +231,51 @@ async def toggle_bank_active(client: TelegramClient, chat_id: int, account_id: i
     await reply_bank_account_detail(client, chat_id, account_id)
 
 
-def create_bank_account(bank_name: str, account_holder: str, iban: str) -> int:
+async def toggle_bank_language(client: TelegramClient, chat_id: int, account_id: int) -> None:
+    """B3-متابعة٢: تبديل ar↔en (لا كتابة حرّة — نفس فلسفة toggle_bank_active).
+    حساب بلا لغة محدَّدة بعد (`NULL`) يُعامَل كـ'en' فيتحوّل لـ'ar' أول ضغطة."""
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
             sql_text(
-                "INSERT INTO bank_accounts (bank_name, account_holder, iban) VALUES (:b, :h, :i) RETURNING id"
+                "UPDATE bank_accounts SET name_language = "
+                "CASE WHEN name_language = 'ar' THEN 'en' ELSE 'ar' END "
+                "WHERE id = :id RETURNING name_language"
             ),
-            {"b": bank_name.strip(), "h": account_holder.strip(), "i": iban.strip()},
+            {"id": account_id},
+        ).first()
+    if not row:
+        await client.send_message(chat_id, "⚠️ حساب بنكي غير موجود.", buttons=nav_rows("settings:bank", "admin:menu"))
+        return
+    await reply_bank_account_detail(client, chat_id, account_id)
+
+
+def create_bank_account(
+    bank_name: str,
+    account_holder: str,
+    *,
+    account_number: str | None = None,
+    iban: str | None = None,
+    name_language: str | None = None,
+) -> int:
+    """B3-متابعة٢: `account_number`/`iban` أصبحا اختياريَّين — يكفي واحد
+    منهما (قيد CHECK `ck_bank_accounts_number_or_iban` بترحيلة 0019 يرفض
+    الاثنين فارغَين معًا كدفاع بالعمق، حتى لو استُدعيت هذه الدالة من مسار
+    آخر مستقبلًا بلا مرور بتحقّق `handle_bank_step_text` أدناه)."""
+    engine = get_engine()
+    with engine.begin() as conn:
+        row = conn.execute(
+            sql_text(
+                "INSERT INTO bank_accounts (bank_name, account_holder, account_number, iban, name_language) "
+                "VALUES (:b, :h, :n, :i, :l) RETURNING id"
+            ),
+            {
+                "b": bank_name.strip(),
+                "h": account_holder.strip(),
+                "n": account_number.strip() if account_number else None,
+                "i": iban.strip() if iban else None,
+                "l": name_language if name_language in BANK_LANG_LABELS else None,
+            },
         ).first()
     return row[0]
 
@@ -216,17 +284,67 @@ def create_bank_account(bank_name: str, account_holder: str, iban: str) -> int:
 # توجيه callback_data/خطوات النصّ الخاصة بـ🏦 بيانات التحويل — منقول من
 # telegram_admin.py بسبب حجم repo_write فقط (نفس نمط فصل telegram_admin_*
 # الأخرى، راجع الدليل §0) لا لتغيير معماري: فحص is_owner_chat وحفظ/مسح
-# الجلسة يبقيان مسؤولية المستدعي (نُمرَّر save_session/clear_session).
+# الجلسة يبقيان مسؤولية المستدعي (نُمرّر save_session/get_session/clear_session).
 # -------------------------------------------------------------------------
 
 
-async def handle_bank_callback(data: str, chat_id: int, client: TelegramClient, save_session) -> None:
+async def handle_bank_callback(
+    data: str, chat_id: int, client: TelegramClient, save_session, get_session, clear_session
+) -> None:
     if data == "settings:bank":
         await reply_bank_list(client, chat_id)
         return
     if data == "settings:bank_add":
         save_session(chat_id, "bank_add_name", {})
         await client.send_message(chat_id, "اكتب اسم البنك:", buttons=nav_rows("settings:bank", "admin:menu"))
+        return
+    if data.startswith("settings:bank_lang_toggle:"):
+        account_id = int(data[len("settings:bank_lang_toggle:") :])
+        await toggle_bank_language(client, chat_id, account_id)
+        return
+    # اختيار لغة اسم البنك بتدفّق الإضافة (خطوة "bank_add_lang" — أزرار لا نص).
+    if data.startswith("settings:bank_lang:"):
+        step, sess_data = get_session(chat_id)
+        if step != "bank_add_lang":
+            return
+        lang = data[len("settings:bank_lang:") :]
+        if lang not in BANK_LANG_LABELS:
+            return
+        save_session(chat_id, "bank_add_holder", {**sess_data, "name_language": lang})
+        await client.send_message(
+            chat_id, "تمام. الآن اكتب اسم صاحب الحساب:", buttons=nav_rows("settings:bank", "admin:menu")
+        )
+        return
+    # "⏭️ تخطي" باختياريّة رقم الحساب/الآيبان بتدفّق الإضافة — راجع docstring
+    # الملف: تخطي الآيبان مرفوض لو رقم الحساب أيضًا فارغ (يجب واحد على الأقل).
+    if data.startswith("settings:bank_skip:"):
+        which = data[len("settings:bank_skip:") :]
+        step, sess_data = get_session(chat_id)
+        if which == "number" and step == "bank_add_number":
+            save_session(chat_id, "bank_add_iban", {**sess_data, "account_number": None})
+            buttons = [[{"text": "⏭️ تخطي", "callback_data": "settings:bank_skip:iban"}]]
+            buttons.extend(nav_rows("settings:bank", "admin:menu"))
+            await client.send_message(
+                chat_id, "وأخيرًا اكتب رقم الآيبان (IBAN) — أو تخطَّ إذا اكتفيت برقم الحساب:", buttons=buttons
+            )
+            return
+        if which == "iban" and step == "bank_add_iban":
+            if not sess_data.get("account_number"):
+                await client.send_message(
+                    chat_id, "⚠️ يجب إدخال رقم الحساب أو الآيبان على الأقل — اكتب رقم الآيبان:"
+                )
+                return
+            clear_session(chat_id)
+            account_id = create_bank_account(
+                sess_data.get("bank_name", ""),
+                sess_data.get("account_holder", ""),
+                account_number=sess_data.get("account_number"),
+                iban=None,
+                name_language=sess_data.get("name_language"),
+            )
+            await client.send_message(chat_id, "✅ تمت إضافة الحساب البنكي.")
+            await reply_bank_account_detail(client, chat_id, account_id)
+            return
         return
     if data.startswith("settings:bank_toggle:"):
         account_id = int(data[len("settings:bank_toggle:") :])
@@ -241,14 +359,21 @@ async def handle_bank_callback(data: str, chat_id: int, client: TelegramClient, 
         )
         return
     # "settings:bank:{id}" — فتح تفاصيل حساب (الحرف التالي لـ"settings:bank"
-    # هنا ":" لا "_"، فلا تصادم مع الفروع الثلاثة أعلاه).
+    # هنا ":" لا "_"، فلا تصادم مع الفروع أعلاه.
     if data.startswith("settings:bank:"):
         account_id = int(data[len("settings:bank:") :])
         await reply_bank_account_detail(client, chat_id, account_id)
         return
 
 
-BANK_STEP_NAMES = {"bank_add_name", "bank_add_holder", "bank_add_iban", "settings_bank_edit"}
+BANK_STEP_NAMES = {
+    "bank_add_name",
+    "bank_add_lang",
+    "bank_add_holder",
+    "bank_add_number",
+    "bank_add_iban",
+    "settings_bank_edit",
+}
 
 
 async def handle_bank_step_text(
@@ -256,20 +381,56 @@ async def handle_bank_step_text(
 ) -> None:
     """يُستدعى فقط لخطوة ضمن `BANK_STEP_NAMES` (المستدعي يتحقّق أولًا)."""
     if step == "bank_add_name":
-        save_session(chat_id, "bank_add_holder", {"bank_name": text})
+        save_session(chat_id, "bank_add_lang", {"bank_name": text})
+        buttons = [
+            [
+                {"text": "🇸🇦 عربي", "callback_data": "settings:bank_lang:ar"},
+                {"text": "🇬🇧 English", "callback_data": "settings:bank_lang:en"},
+            ]
+        ]
+        buttons.extend(nav_rows("settings:bank", "admin:menu"))
         await client.send_message(
-            chat_id, "تمام. الآن اكتب اسم صاحب الحساب:", buttons=nav_rows("settings:bank", "admin:menu")
+            chat_id,
+            "تمام. اسم البنك — تنظيم داخلي فقط (ما يظهر للعميل أبدًا بلغتين معًا)، اختر لغته:",
+            buttons=buttons,
         )
         return
+    if step == "bank_add_lang":
+        # وصل نص بدل ضغط زر — أعد عرض الأزرار بدل قبول نص حرّ باسم "لغة".
+        buttons = [
+            [
+                {"text": "🇸🇦 عربي", "callback_data": "settings:bank_lang:ar"},
+                {"text": "🇬🇧 English", "callback_data": "settings:bank_lang:en"},
+            ]
+        ]
+        buttons.extend(nav_rows("settings:bank", "admin:menu"))
+        await client.send_message(chat_id, "اختر عبر الأزرار 👇", buttons=buttons)
+        return
     if step == "bank_add_holder":
-        save_session(chat_id, "bank_add_iban", {**data, "account_holder": text})
+        save_session(chat_id, "bank_add_number", {**data, "account_holder": text})
+        buttons = [[{"text": "⏭️ تخطي", "callback_data": "settings:bank_skip:number"}]]
+        buttons.extend(nav_rows("settings:bank", "admin:menu"))
         await client.send_message(
-            chat_id, "وأخيرًا اكتب رقم الآيبان (IBAN):", buttons=nav_rows("settings:bank", "admin:menu")
+            chat_id, "اكتب رقم الحساب (أو تخطَّ هذي الخطوة إذا بتكتفي بالآيبان):", buttons=buttons
+        )
+        return
+    if step == "bank_add_number":
+        save_session(chat_id, "bank_add_iban", {**data, "account_number": text})
+        buttons = [[{"text": "⏭️ تخطي", "callback_data": "settings:bank_skip:iban"}]]
+        buttons.extend(nav_rows("settings:bank", "admin:menu"))
+        await client.send_message(
+            chat_id, "وأخيرًا اكتب رقم الآيبان (IBAN) — أو تخطَّ إذا اكتفيت برقم الحساب:", buttons=buttons
         )
         return
     if step == "bank_add_iban":
         clear_session(chat_id)
-        account_id = create_bank_account(data.get("bank_name", ""), data.get("account_holder", ""), text)
+        account_id = create_bank_account(
+            data.get("bank_name", ""),
+            data.get("account_holder", ""),
+            account_number=data.get("account_number"),
+            iban=text,
+            name_language=data.get("name_language"),
+        )
         await client.send_message(chat_id, "✅ تمت إضافة الحساب البنكي.")
         await reply_bank_account_detail(client, chat_id, account_id)
         return
