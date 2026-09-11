@@ -60,7 +60,7 @@ class _FakeResponse:
             return
         # نبني httpx.Response/HTTPStatusError حقيقيّين (نفس مسار الكود
         # الفعلي بمكتبة httpx، لا استثناء مُصطنَع يدويًا) — هذا يضمن أن
-        # str(exc) يتضمّن الرابط الكامل (بما فيه التوكن إن مُرّر بـ
+        # str(exc) يتضمّن الرابط الكامل (بما فيه التوكن إن مُرّ بـ
         # raise_error_url) تمامًا كما يحدث فعليًا، ما يجعل اختبار عدم
         # التسريب أدناه (test_download_file_bytes_...) واقعيًا لا مصطنَعًا.
         request = httpx.Request("GET", self._raise_error_url or "https://api.telegram.org/x")
@@ -194,7 +194,7 @@ def test_send_message_splits_long_text_into_multiple_calls(monkeypatch):
     _run(client.send_message(1, long_text))
     assert len(_FakeAsyncClient.calls) > 1
     sent_texts = [c["json"]["text"] for c in _FakeAsyncClient.calls]
-    assert "".join(sent_texts).replace("\n\n", "") != ""  # لم تُرسَل رسالة فارغة بالخطأ
+    assert "".join(sent_texts).replace("\n\n", "") != ""  # لم تُرسل رسالة فارغة بالخطأ
 
 
 def test_send_message_attaches_buttons_only_to_last_chunk(monkeypatch):
@@ -293,7 +293,7 @@ def test_download_file_bytes_rejects_oversized_content():
 # ---------------------------------------------------------------------------
 # REVIEW.md البند 8.2 [blocker] — تسريب توكن البوت عبر رسالة/سجلّ
 # httpx.HTTPStatusError الخام (رابط تنزيل الملف يتضمّن التوكن بالرابط نفسه:
-# `.../file/bot<TOKEN>/...`؛ raise_for_status() الخام يُضمّنه بنص رسالته).
+# `.../file/bot<TOKEN>/...`؛ raise_for_status() الخام يُضمّنه بنص رسالتها).
 # ---------------------------------------------------------------------------
 
 
@@ -313,15 +313,15 @@ def test_download_file_bytes_http_status_error_message_excludes_token_and_includ
     assert "404" in str(exc)
     assert file_path in str(exc)
     # from None عمدًا بالتنفيذ — لا يبقى httpx.HTTPStatusError الأصلي (وتوكنه
-    # الكامل بالرابط) مُتسلسلًا بـ__cause__ خلف الاستثناء الآمن
+    # الكامل بالرابط) مُتسلسلًا بـ__cause__ خلف الاستثناء الآمن رغم الرسالة الآمنة
     assert exc.__cause__ is None
     assert exc.__suppress_context__ is True
 
 
 def test_download_file_bytes_http_status_error_does_not_leak_token_via_exc_info_logging(caplog):
     """يُحاكي حرفيًا نمط telegram_onboarding.py._step_cv (`except
-    TelegramAPIError: logger.warning(..., exc_info=True)`) — التوكن يجب ألا
-    يظهر حتى بالـtraceback الكامل المُسجّل، لا فقط بنص رسالة الاستثناء."""
+    TelegramAPIError: logger.warning(..., exc_info=True)`) — التوكن يجب ألا يظهر حتى بالـ
+traceback الكامل المُسجّل، لا فقط بنص رسالة الاستثناء."""
     token = "987654321:ANOTHER-SECRET-TOKEN-VALUE"
     file_path = "documents/cv_customer_7.pdf"
     url = f"https://api.telegram.org/file/bot{token}/{file_path}"
@@ -416,6 +416,43 @@ def test_extract_chat_event_document_and_contact():
 def test_extract_chat_event_returns_none_for_unsupported_update():
     assert extract_chat_event({"my_chat_member": {}}) is None
     assert extract_chat_event({"message": {"chat": {}}}) is None
+
+
+# ---------------------------------------------------------------------------
+# B9/B2: from_username — يحتاجه ربط مفوّضي بوت الأدمن بـ@username
+# (app.telegram_admin_delegates.try_link_delegate)
+# ---------------------------------------------------------------------------
+
+
+def test_extract_chat_event_captures_from_username_on_message():
+    update = {
+        "message": {
+            "chat": {"id": 444},
+            "from": {"id": 444, "username": "SomeDelegate"},
+            "text": "hi",
+        }
+    }
+    event = extract_chat_event(update)
+    assert event.from_username == "SomeDelegate"
+
+
+def test_extract_chat_event_captures_from_username_on_callback():
+    update = {
+        "callback_query": {
+            "id": "cbid2",
+            "data": "admin:menu",
+            "from": {"id": 555, "username": "another_deleg"},
+            "message": {"message_id": 1, "chat": {"id": 555}},
+        }
+    }
+    event = extract_chat_event(update)
+    assert event.from_username == "another_deleg"
+
+
+def test_extract_chat_event_from_username_none_when_absent():
+    update = {"message": {"chat": {"id": 666}, "from": {"id": 666}, "text": "hi"}}
+    event = extract_chat_event(update)
+    assert event.from_username is None
 
 
 # ---------------------------------------------------------------------------
