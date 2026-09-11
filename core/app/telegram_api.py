@@ -29,13 +29,17 @@ MASAR_OWNER_CHAT_ID) يتواصل *دومًا* عبر بوت الأدمن فقط
     bot_kind == "admin"    ⇐ بوت الأدمن الخاص (telegram_admin.handle_update)
     bot_kind == "customer" ⇐ بوت "مسار" العام (telegram_onboarding.handle_update)
 
-**chat_id == MASAR_OWNER_CHAT_ID يبقى بوابة أمان ثانوية على مسار admin فقط**
-(لا على التوجيه نفسه): أي محادثة تصل مسار /admin بمعرّف دردشة غير أحمد
-تُرفَض بصمت (200، بلا استدعاء أي معالج) — حتى لو خمّن أحد ما رابط بوت
-الأدمن (سرّي أصلًا بتوكن المسار)، فلن يُعامَل كأدمن ما لم يكن فعليًا صاحب
-MASAR_OWNER_CHAT_ID. مسار /customer بلا أي قيد على chat_id — أي أحد، أحمد
-نفسه ضمنًا، يُعامَل كعميل عادي عبره (هذا بالضبط ما يتيح لأحمد تجربة مسار
-العميل من حسابه الشخصي دون حساب تيليجرام ثانٍ).
+**B9/B2 — بوابة chat_id الثانوية على مسار /admin أُزيلت من هنا:** كانت نسخة
+سابقة ترفض بصمت هنا أي chat_id غير MASAR_OWNER_CHAT_ID قبل حتى الوصول
+لـtelegram_admin.handle_update — لكن هذا كان يمنع أي **مفوّض** (B9/B2:
+admin_delegates) من إتمام رسالته التعريفية الأولى (التي تُطابَق ضد الجدول
+لتُربَط تلقائيًا)، لأنها تصل بchat_id غير المالك بالضرورة. الحارس الوحيد
+الآن هو `telegram_admin.is_admin_chat`/`try_link_delegate` **داخل**
+handle_update نفسها (المالك، أو مفوّض نشط مربوط، أو محاولة ربط ثم صمت
+تام لأي شخص آخر) — كل تحديث لمسار /admin يصل لها دومًا. مسار /customer
+يبقى بلا أي قيد على chat_id كما كان — أي أحد، أحمد نفسه ضمنًا، يُعامَل
+كعميل عادي عبره (هذا بالضبط ما يتيح لأحمد تجربة مسار العميل من حسابه
+الشخصي دون حساب تيليجرام ثانِ).
 
 **الشقّ الصادر (B8، بعد الدمج مع تيار reports_relay.py/telegram_notify.py)**:
 كل رسالة تقرير يومي يُرفَق بها زرّا 👎/🎉 (app.telegram_notify.build_feedback_keyboard)
@@ -43,15 +47,15 @@ MASAR_OWNER_CHAT_ID. مسار /customer بلا أي قيد على chat_id — أ
 
     fb:<customer_id>:<send_queue_id>:<thumbs_down|celebrate>
 
-هذا التنسيق يُعتَرض هنا **قبل** التوجيه حسب bot_kind (قبل حتى تأكيد
+هذا التنسيق يُعتَرَض هنا **قبل** التوجيه حسب bot_kind (قبل حتى تأكيد
 الاستلام المركزي أدناه — _handle_feedback_callback يؤكّد بنص تأكيد
-مخصَّص بنفسه)، بصرف النظر عن bot_kind أو chat_id — عمليًا تصل دومًا عبر
+مخصّص بنفسه)، بصرف النظر عن bot_kind أو chat_id — عمليًا تصل دومًا عبر
 مسار /customer لأن التقرير يُرسَل عبر TELEGRAM_CUSTOMER_BOT_TOKEN حصرًا،
 لكن المعالجة هنا غير مشروطة بذلك تحسّبًا. يستدعي app.feedback_api.submit_feedback
 مباشرة (نفس نمط telegram_admin.py: استدعاء الدالة الأساسية بايثون مباشرة،
 لا طلب HTTP داخلي، متجاوزًا Depends(require_admin_token) على مستوى الراوتر
-عمدًا — البوت نفسه بوابة التحقق هنا، تمامًا كما تفعل بقية أوامر
-telegram_admin.py). **customer_id المُضمَّن بالزر مكشوف وقابل للتخمين (رقم
+عمدًا — البوت نفسه بوابة التحقق هنا، تمامًا كما تفعل بقية
+telegram_admin.py). **customer_id المُضمَّن بالزر مكشوف وقابل للتخمين (رقم
 تسلسلي)، فلا يُوثَق به بمفرده أبدًا** — _handle_feedback_callback يتحقّق
 أولًا عبر customers_api.get_customer_by_telegram(chat_id) أن صاحب chat_id
 الذي أرسل الضغطة فعليًا هو نفسه customer_id المكتوب بالزر، ويرفض بصمت (رد
@@ -67,7 +71,6 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from app import customers_api, feedback_api, telegram_admin, telegram_onboarding
-from app.telegram_admin import is_owner_chat
 from app.telegram_client import (
     ChatEvent,
     TelegramAPIError,
@@ -119,7 +122,7 @@ async def telegram_webhook(token: str, bot_kind: str, request: Request) -> JSONR
 
     try:
         update = await request.json()
-    except Exception:  # noqa: BLE001 — جسم غير صالح: نتجاهله بهدوء (200 يمنع إعادة محاولة عبثية من Telegram)
+    except Exception:  # noqa: BLE001 — جسم غير صالح (ليس JSON): نتجاهله بهدوء (200 يمنع إعادة محاولة عبثية من Telegram)
         logger.warning("جسم Update غير صالح (ليس JSON) — تجاهل")
         return JSONResponse(status_code=200, content={"ok": True})
 
@@ -131,13 +134,13 @@ async def telegram_webhook(token: str, bot_kind: str, request: Request) -> JSONR
         return JSONResponse(status_code=200, content={"ok": True})
 
     # الشقّ الصادر (B8، راجع docstring رأس الملف): ضغطة زر تغذية راجعة على
-    # تقرير يومي — تُعترَض هنا قبل أي توجيه حسب bot_kind، وقبل تأكيد
-    # الاستلام المركزي أدناه (لها تأكيدها المخصَّص الخاص).
+    # تقرير يومي — تُعتَرَض هنا قبل أي توجيه حسب bot_kind، وقبل تأكيد
+    # الاستلام المركزي أدناه (لها تأكيدها المخصص الخاص).
     if event.is_callback and event.callback_data.startswith(FEEDBACK_CALLBACK_PREFIX):
         feedback_client = get_customer_bot_client()
         if feedback_client is None:
             logger.warning(
-                "توكن بوت customer غير معرَّف بالبيئة — تعذّر معالجة ضغطة تغذية راجعة (chat_id=%s)",
+                "توكن بوت customer غير معرّف بالبيئة — تعذّر معالجة ضغطة تغذية راجعة (chat_id=%s)",
                 event.chat_id,
             )
             return JSONResponse(status_code=200, content={"ok": True})
@@ -148,15 +151,11 @@ async def telegram_webhook(token: str, bot_kind: str, request: Request) -> JSONR
         return JSONResponse(status_code=200, content={"ok": True})
 
     # التوجيه حسب bot_kind بالمسار (راجع docstring رأس الملف) — لا حسب
-    # chat_id. مسار /admin يحمل بوابة أمان ثانوية: غير صاحب
-    # MASAR_OWNER_CHAT_ID يُرفَض بصمت هنا (200، بلا استدعاء أي معالج) حتى لو
-    # عرف رابط بوت الأدمن السرّي بطريقة ما.
+    # chat_id. B9/B2: بوابة chat_id الثانوية أُزيلت من هنا — كل تحديث لمسار
+    # /admin يصل لـtelegram_admin.handle_update، الذي يحمل الآن الحارس
+    # الوحيد (is_admin_chat + محاولة ربط مفوّض ثم صمت تام، راجع docstring
+    # رأس هذا الملف أعلاه).
     if bot_kind == "admin":
-        if not is_owner_chat(event.chat_id):
-            logger.warning(
-                "محادثة غير مالكة وصلت مسار /admin — رفض بصمت (chat_id=%s)", event.chat_id
-            )
-            return JSONResponse(status_code=200, content={"ok": True})
         client = get_admin_bot_client()
         handler = telegram_admin.handle_update
         client_label = "admin"
@@ -166,10 +165,10 @@ async def telegram_webhook(token: str, bot_kind: str, request: Request) -> JSONR
         client_label = "customer"
 
     if client is None:
-        logger.warning("توكن بوت %s غير معرَّف بالبيئة — تجاهل تحديث وارد (chat_id=%s)", client_label, event.chat_id)
+        logger.warning("توكن بوت %s غير معرّف بالبيئة — تجاهل تحديث وارد (chat_id=%s)", client_label, event.chat_id)
         return JSONResponse(status_code=200, content={"ok": True})
 
-    # تأكيد استلام ضغطة الزر فورًا (Telegram يتوقّعه خلال ~30 ثانية من كل
+    # تأكيد استلام ضغطة الزر فورًا (Telegram يتوقعه خلال ~30 ثانية من كل
     # callback_query وإلا بقيت شارة "جاري التحميل" عالقة عند المستخدم) —
     # مركزيًا هنا قبل التوجيه، بدل تكراره بكل من telegram_admin/telegram_onboarding.
     if event.is_callback and event.callback_query_id:
@@ -180,7 +179,7 @@ async def telegram_webhook(token: str, bot_kind: str, request: Request) -> JSONR
 
     # أي فشل غير متوقّع أثناء معالجة تحديث واحد يجب ألا يُسقط الاستجابة
     # لتيليجرام (500 هنا يعني إعادة محاولة تلقائية متكررة من تيليجرام لنفس
-    # التحديث الفاشل) — يُسجَّل كاملًا (traceback) ونُرجع 200 دومًا.
+    # التحديث الفاشل) — يُسجّل كاملًا (traceback) ونُرجع 200 دومًا.
     try:
         await handler(update, event, client)
     except Exception:  # noqa: BLE001
@@ -212,7 +211,7 @@ async def _safe_answer_callback(
 
 async def _handle_feedback_callback(event: ChatEvent, client: TelegramClient) -> None:
     """يفكّك callback_data بصيغة `fb:<customer_id>:<send_queue_id>:<kind>`،
-    **يتحقّق أولًا أن customer_id المُضمَّن بالزر يخصّ فعليًا صاحب chat_id
+    **يتحقّق أولًا أن customer_id المُضمَّن بالزر يخصّ فعليًا صاحب chat_id
     الذي أرسل الضغطة** (راجع REVIEW.md البند 8.1 — customer_id مكشوف
     وقابل للتخمين بنص الزر نفسه، فلا يُوثَق به وحده أبدًا؛ التحقّق عبر
     customers_api.get_customer_by_telegram(chat_id) الموجودة أصلًا
@@ -220,7 +219,7 @@ async def _handle_feedback_callback(event: ChatEvent, client: TelegramClient) ->
     `POST /customers/{id}/feedback` حرفيًا — idempotent، راجع توثيق تلك
     الدالة)، يؤكّد الاستلام للعميل بنص عربي مختصر حسب kind عبر
     answerCallbackQuery، ثم يُزيل لوحة الأزرار من الرسالة الأصلية
-    (best-effort — فشل الإزالة لا يُسقط أي شيء، التقييم نفسه سُجِّل فعلًا
+    (best-effort — فشل الإزالة لا يُسقط أي شيء، التقييم نفسه سُجّل فعلاً
     بقاعدة البيانات بحلول هذه النقطة).
 
     عدم تطابق (أو محادثة غير مربوطة بأي عميل أصلًا) ⇐ رفض بصمت: تأكيد
@@ -254,7 +253,7 @@ async def _handle_feedback_callback(event: ChatEvent, client: TelegramClient) ->
         lookup = await customers_api.get_customer_by_telegram(event.chat_id)
     except HTTPException:
         logger.warning(
-            "ضغطة تغذية راجعة من محادثة غير مربوطة بأي عميل مسجَّل "
+            "ضغطة تغذية راجعة من محادثة غير مربوطة بأي عميل مسجّل "
             "(chat_id=%s, customer_id بالزر=%s, send_queue_id=%s) — رفض",
             event.chat_id, customer_id, send_queue_id,
         )
