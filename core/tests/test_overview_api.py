@@ -64,10 +64,17 @@ def test_overview_has_all_required_sections(engine, monkeypatch):
         "pending_guarantees",
         "discovery_freshness",
         "dry_run",
+        # B9/B5: حقول 📊 نظرة عامة المُنسَّقة الجديدة ببوت الأدمن
+        "sends_failed_today",
+        "pending_payment_requests",
+        "top_families",
+        "top_cities",
     ):
         assert key in result
 
     assert isinstance(result["customers_by_status"], dict)
+    assert isinstance(result["top_families"], list)
+    assert isinstance(result["top_cities"], list)
     assert isinstance(result["sends_today"], int)
     assert result["dry_run"] is True  # MAIL_LIVE=false → DRY_RUN فعّال
 
