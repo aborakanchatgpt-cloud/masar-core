@@ -5,7 +5,7 @@ Masar Core — بوت الأدمن الخاص على تيليجرام (B8: إز�
 Core مباشرة، بقائمة أزرار inline واحدة تُغطّي كل ما يحتاجه أحمد يوميًا.
 
 **بوابة وصول مغلقة افتراضيًا (fail-closed)** — نفس فلسفة app.auth تمامًا:
-لا رسالة تُعالَج ولا ردّ يُرسَل لأي محادثة غير MASAR_OWNER_CHAT_ID، وإن غاب
+لا رسالة تُعالَج ولا ردّ يُرسل لأي محادثة غير MASAR_OWNER_CHAT_ID، وإن غاب
 MASAR_OWNER_CHAT_ID من البيئة يتعطّل هذا البوت بالكامل (لا "يفتح" بالخطأ).
 هذا التحقق مكرّر هنا عمدًا فوق فحص app.telegram_api (دفاع بالعمق — لا
 نعتمد على طبقة توجيه واحدة فقط لحماية أوامر إدارية حسّاسة كالتفعيل/الإيقاف).
@@ -311,7 +311,10 @@ async def _reply_create_customer(client: TelegramClient, chat_id: int, name: str
         chat_id,
         f"✅ تم تسجيل العميل #{result['customer_id']} — {name}\n"
         f"الجوال: {phone_digits or 'غير محدّد'}\n\n"
-        "سيربط العميل حسابه بنفسه عند مراسلة بوت مسار ومشاركة رقم جواله.",
+        "سيربط العميل حسابه بنفسه عند مراسلة بوت مسار ومشاركة رقم جواله.\n"
+        # B9/B0: customers.status الافتراضي أصبح 'pending' (ترحيل
+        # 0017_b9_payments_delegates) — لم يعد العميل الجديد active فورًا.
+        "سيُفعّل عند تأكيد الدفع أو يدويًا من بطاقته.",
     )
 
 
@@ -429,15 +432,15 @@ async def _reply_set_status(client: TelegramClient, chat_id: int, customer_id: i
     except HTTPException as exc:
         await client.send_message(chat_id, f"⚠️ {exc.detail}")
         return
-    label = "مُفعّل ▶️" if new_status == "active" else "مُوقف ⏸️"
+    label = "مُفعّل ▶️" if new_status == "active" else "مُوقَف ⏸️"
     await client.send_message(chat_id, f"✅ تم تحديث حالة العميل #{result['customer_id']} إلى {label}.")
 
 
 async def _reply_extend_subscription(client: TelegramClient, chat_id: int, customer_id: int, days: int) -> None:
-    """يمدّد أحدث اشتراك فعّال للعميل بعدد أيام محدّد — لا نقطة نهاية HTTP
-    جاهزة لهذا حاليًا بالمستودع، فيُنفذ هنا مباشرة (SQL بسيط، نفس نمط
-    الملفات الأخرى: UPDATE محمي بشرط status='active' فلا يُمدّد اشتراك
-    مُغلَق سهوًا."""
+    """يمدّ أحدث اشتراك فعّال للعميل بعدد أيام محدّد — لا نقطة نهاية HTTP
+    جاهزة لهذا حاليًا بالمستودع، فيُنفّذ هنا مباشرة (SQL بسيط، نفس نمط
+    الملفات الأخرى: UPDATE محمي بشرط status='active' فلا يُمدّ اشتراك
+    مُغلَق سهوًا)."""
     engine = get_engine()
     with engine.begin() as conn:
         row = conn.execute(
