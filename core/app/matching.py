@@ -123,8 +123,28 @@ AGENCY_NAME_HINTS = [
 
 # مصادر تُعتبر عادةً صفحة توظيف الشركة نفسها مباشرة (ATS خاص بالشركة) —
 # نفس مفاتيح core/app/discovery.py:DISPATCH — جودة مصدر 1.0 حين لا يوجد
-# مؤشّر اسم وكالة بنفس الوقت.
+# مؤشّر اسم وكالة بنفس الوقت. لا تزال تُستخدم بـscore_source_quality (دالة
+# تشخيصية مستقلة تخدم /admin/matching/explain) رغم أن apply_mode='external_form'
+# أصبح يُستبعَد قطعيًا بـcheck_disqualifiers أدناه (B12.5) — القيمة هنا تبقى
+# مفيدة لعرض "لو كان بالإمكان إرساله لكانت جودته كذا" بشاشة التشخيص.
 DIRECT_EMPLOYER_APPLY_MODES = {"external_form"}
+
+# B12.5 (راجع claude/masar_build_brief_v4_2026-09-12.md): apply_mode='external_form'
+# يعني أن التقديم يتطلّب تعبئة نموذج على موقع الشركة/ATS، لا مجرّد إرسال
+# بريد — مسار غير قابل للتنفيذ إطلاقًا بمنصّة تُرسل نيابةً عن العميل من
+# بريده فقط. استبعادها هنا (لا فقط تخفيض درجتها) يمنع planner.py من إهدار
+# حصة الهدف اليومي على فرص لن تُرسَل أبدًا فعليًا (send_builder.py يكتشف
+# غياب apply_email لاحقًا ويُعلّمها 'skipped' — استبعاد مبكر هنا أرخص
+# ويُبقي إحصاءات "المخطَّط اليوم" صادقة). التفريغ الكامل (حذف
+# DIRECT_EMPLOYER_APPLY_MODES/تعديل score_source_quality) غير مطلوب — تلك
+# دالة تشخيصية مستقلة لا تتحكم بالاستبعاد.
+EXTERNAL_FORM_APPLY_MODE = "external_form"
+
+# B12.5 (تمريرة التوسيع widened_family=True فقط): تشترط حدًا أدنى لدرجة
+# تطابق المسمى الوظيفي (score_title) حتى لا تُقترَح على العميل وظيفة بعائلة
+# لم يخترها أصلًا بمسمى لا علاقة له فعليًا بخلفيته (التوسيع مُصمَّم ليلتقط
+# مسميات قريبة عبر عائلات مجاورة، لا أي وظيفة بأي مسمى لمجرد إكمال العدد).
+WIDENED_MIN_TITLE_SCORE = 0.15
 
 _TOKEN_RE = re.compile(r"[a-z0-9؀-ۿ]+")
 
@@ -302,11 +322,20 @@ def check_disqualifiers(
     if job.out_of_region:
         reasons.append("out_of_region")
 
+    # B12.5: نموذج خارجي (لا بريد) — استبعاد قطعي، راجع تعليق
+    # EXTERNAL_FORM_APPLY_MODE أعلى الملف.
+    if job.apply_mode == EXTERNAL_FORM_APPLY_MODE:
+        reasons.append("apply_mode_external_form")
+
     if job.family in EXCLUDED_FAMILY_NAMES:
         reasons.append("family_excluded")
     elif not widened_family:
         if job.family is None or job.family not in profile.families:
             reasons.append("family_not_selected")
+
+    # B12.5: تمريرة التوسيع فقط — مسمى ضعيف الصلة جدًا حتى مع عائلة موسّعة.
+    if widened_family and score_title(profile, job) < WIDENED_MIN_TITLE_SCORE:
+        reasons.append("widened_title_too_weak")
 
     if not city_allowed(job.city, profile.cities):
         reasons.append("city_not_selected")
