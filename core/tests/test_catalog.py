@@ -1,6 +1,6 @@
 """اختبارات B7: core/app/catalog.py (`GET /catalog`, `POST /admin/orders`,
 `GET /admin/orders`) — يبني فوق جداول products/orders/wallets/ledger/
-subscriptions الموجودة منذ B3 (migration 0004)، موسَّعة بـ0012_b7_catalog.
+subscriptions الموجودة منذ B3 (migration 0004)، موسّعة بـ0012_b7_catalog.
 
 يحتاج قاعدة بيانات Postgres حقيقية — يُتخطّى تلقائيًا (skip) إن تعذّر الاتصال
 (نفس نمط test_customers_api.py).
@@ -166,6 +166,89 @@ def test_create_order_subscription_leaves_customer_price_null_when_product_price
     with engine.connect() as conn:
         row = conn.execute(text("SELECT price_sar FROM customers WHERE id = :id"), {"id": customer_id}).first()
     assert row[0] is None
+
+
+# ---------------------------------------------------------------------------
+# B11.1: اشتراك جديد وعميل يملك اشتراكًا ساريًا أصلًا → يُمدَّد بلا صفّ جديد.
+# ---------------------------------------------------------------------------
+
+
+def test_create_order_subscription_early_renewal_merges_into_existing(engine, customer_id):
+    first = _run(catalog.create_order(catalog.AdminOrderCreateRequest(customer_id=customer_id, product_code="SUB30")))
+    assert first["merged_into_subscription_id"] is None
+    with engine.connect() as conn:
+        first_ends = conn.execute(
+            text("SELECT ends_at FROM subscriptions WHERE id = :id"), {"id": first["subscription_id"]}
+        ).scalar_one()
+
+    # تجديد مبكر (الفترة لا تزال سارية) — نفس المنتج مرة أخرى.
+    second = _run(catalog.create_order(catalog.AdminOrderCreateRequest(customer_id=customer_id, product_code="SUB30")))
+    assert second["merged_into_subscription_id"] == first["subscription_id"]
+    assert second["subscription_id"] == first["subscription_id"]
+
+    with engine.connect() as conn:
+        count = conn.execute(
+            text("SELECT count(*) FROM subscriptions WHERE customer_id = :cid"), {"cid": customer_id}
+        ).scalar_one()
+        new_ends = conn.execute(
+            text("SELECT ends_at, status FROM subscriptions WHERE id = :id"), {"id": first["subscription_id"]}
+        ).mappings().first()
+    assert count == 1  # بلا صفّ جديد
+    assert new_ends["status"] == "active"
+    assert (new_ends["ends_at"] - first_ends).days == 30  # مُدّد من ends_at القديم، لا من الآن
+
+
+def test_create_order_subscription_renewal_after_end_merges_when_status_still_active(engine, customer_id):
+    """اشتراك انتهت فترته زمنيًا (ends_at بالماضي) لكن لم تُشغَّل جولة
+    guarantee.py اليومية بعد لإغلاقه (status لا يزال 'active') — تجديد
+    العميل بهذه الأثناء يُمدَّد من الآن (starts_at) لا من ends_at الماضي،
+    بلا صفّ جديد."""
+    from datetime import datetime, timedelta, timezone
+
+    first = _run(catalog.create_order(catalog.AdminOrderCreateRequest(customer_id=customer_id, product_code="SUB30")))
+    past_ends = datetime.now(timezone.utc) - timedelta(days=5)
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE subscriptions SET ends_at = :ends WHERE id = :id"),
+            {"ends": past_ends, "id": first["subscription_id"]},
+        )
+
+    second = _run(catalog.create_order(catalog.AdminOrderCreateRequest(customer_id=customer_id, product_code="SUB30")))
+    assert second["merged_into_subscription_id"] == first["subscription_id"]
+
+    with engine.connect() as conn:
+        count = conn.execute(
+            text("SELECT count(*) FROM subscriptions WHERE customer_id = :cid"), {"cid": customer_id}
+        ).scalar_one()
+        row = conn.execute(
+            text("SELECT ends_at, status FROM subscriptions WHERE id = :id"), {"id": first["subscription_id"]}
+        ).mappings().first()
+    assert count == 1
+    assert row["status"] == "active"
+    assert row["ends_at"] > past_ends + timedelta(days=25)  # مُدّد من starts_at الحالي لا من الماضي
+
+
+def test_create_order_subscription_for_wallet_customer_switches_billing_mode(engine, customer_id):
+    """عميل billing_mode='wallet' يشتري اشتراكًا → يتحوّل لـ'subscription'،
+    ويبقى wallet_balance_sar محفوظًا كما هو تمامًا (B11.1)."""
+    from decimal import Decimal
+
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE customers SET billing_mode = 'wallet', wallet_balance_sar = 12.5 WHERE id = :id"),
+            {"id": customer_id},
+        )
+
+    result = _run(catalog.create_order(catalog.AdminOrderCreateRequest(customer_id=customer_id, product_code="SUB30")))
+    assert result["status"] == "active"
+    assert result["merged_into_subscription_id"] is None
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT billing_mode, wallet_balance_sar FROM customers WHERE id = :id"), {"id": customer_id}
+        ).mappings().first()
+    assert row["billing_mode"] == "subscription"
+    assert row["wallet_balance_sar"] == Decimal("12.500")  # لم يُمسّ إطلاقًا
 
 
 # ---------------------------------------------------------------------------
