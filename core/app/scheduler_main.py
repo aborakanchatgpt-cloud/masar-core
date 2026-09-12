@@ -37,6 +37,12 @@ B8 (إزالة n8n بالكامل من تفاعل تيليجرام — قرار 
     - skill_gap_round: نصيحة الجمعة الأسبوعية (skill_gap.py) — بديل
       n8n/workflows/job-bot-weekly-skill-gap-analysis-friday__VcTFiyUdB7FQDsmw.json،
       نفس توقيته (جمعة 2 ظهرًا الرياض).
+
+B12.1: telegram_channels_round — كل 30 دقيقة (نفس فاصل collector_round، لكن
+job منفصل تمامًا) يقرأ آخر رسائل قنوات data/telegram_channels.yaml عبر
+Telethon (core/app/collectors/telegram_channels.py) — fail-closed بصمت
+(`{"ok": true, "enabled": false}`, بلا استثناء) إن غابت أي TELEGRAM_READER_*
+أو حزمة telethon نفسها؛ نفس فلسفة try/except بقية jobs هذا الملف تمامًا.
 """
 from __future__ import annotations
 
@@ -59,6 +65,7 @@ from app import (
     sender,
     skill_gap,
 )
+from app.collectors import telegram_channels
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("masar-scheduler")
@@ -168,6 +175,18 @@ def run_skill_gap_round_job() -> None:
         logger.info("نتيجة جولة تحليل الفجوة المعرفية الأسبوعية: %s", result)
     except Exception:  # noqa: BLE001
         logger.exception("جولة تحليل الفجوة المعرفية فشلت بخطأ غير متوقع — ستُحاول مجددًا الجمعة القادمة")
+
+
+def run_telegram_channels_round_job() -> None:
+    """B12.1: جولة مجمّع قنوات تيليجرام — fail-closed بصمت عبر
+    telegram_channels.run_telegram_channel_round نفسها (لا ترفع أبدًا حتى بلا
+    try/except هنا)؛ الغلاف هنا لنفس سبب بقية دوال run_*_job أعلاه: حماية
+    إضافية تمنع أي استثناء غير متوقع من إيقاف BlockingScheduler كله."""
+    try:
+        result = telegram_channels.run_telegram_channel_round()
+        logger.info("نتيجة جولة مجمّع قنوات تيليجرام: %s", result)
+    except Exception:  # noqa: BLE001
+        logger.exception("جولة مجمّع قنوات تيليجرام فشلت بخطأ غير متوقع — ستُحاول مجددًا بالجولة القادمة")
 
 
 def main() -> None:
@@ -283,13 +302,23 @@ def main() -> None:
         max_instances=1,
         coalesce=True,
     )
+    # B12.1: جولة مجمّع قنوات تيليجرام كل 30 دقيقة — fail-closed بصمت إن غابت
+    # TELEGRAM_READER_* أو حزمة telethon (راجع توثيق الدالة أعلاه).
+    scheduler.add_job(
+        run_telegram_channels_round_job,
+        trigger=IntervalTrigger(minutes=30),
+        id="telegram_channels_round",
+        max_instances=1,
+        coalesce=True,
+    )
     logger.info(
         "Masar Core Scheduler بدأ التشغيل — جولة جامع فورًا ثم كل 30 دقيقة؛ "
         "جولة تخطيط 03:00-12:00 UTC (06:00-15:00 الرياض) كل ساعة؛ "
         "B4: بناء طابور كل 10 دقائق، إرسال كل دقيقة، وارد كل 15 دقيقة؛ "
         "B5a: تقرير يومي 16:00 UTC، تقييم ضمان 21:30 UTC؛ "
         "B8 (بديل n8n): تسليم تقارير تيليجرام 16:00-18:30 UTC كل 5 دقائق، "
-        "احتفاظ بالعملاء 06:00 UTC، نصيحة الجمعة 11:00 UTC (يوم الجمعة)."
+        "احتفاظ بالعملاء 06:00 UTC، نصيحة الجمعة 11:00 UTC (يوم الجمعة)؛ "
+        "B12.1: جولة مجمّع قنوات تيليجرام كل 30 دقيقة (fail-closed تلقائي)."
     )
     run_collector_round()
     scheduler.start()
