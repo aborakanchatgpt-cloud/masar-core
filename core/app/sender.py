@@ -420,7 +420,7 @@ def _existing_application(conn, row: dict) -> dict | None:
     وُجد فهذا يعني أن الرسالة **خرجت فعليًا عبر SMTP بدورة سابقة** (applications
     يُدرج فقط من `_mark_success` بعد نجاح `_smtp_send`) وأن الانهيار الذي
     ترك صفّ send_queue عالقًا بحالة 'sending' حدث *بعد* الإرسال الفعلي، لا
-    قبله — تجنّب اتصال SMTP جديد كليًا في هذه الحالة (لا يستهلك رصيدًا إضافيًا
+    قبله — تجنّب اتصال SMTP جديد كليًّا في هذه الحالة (لا يستهلك رصيدًا إضافيًا
     أصلًا، فقط يمنع رسالة مزدوجة فعلية لنفس الشركة). صفوف synthetic
     (job_id/opportunity_id فارغان دومًا) لا تُنشئ applications أبدًا فلا
     تتطابق هنا بأمان.
@@ -526,12 +526,16 @@ def _mark_success(conn, row: dict, message_id: str) -> None:
     company_name = job_row[0] if job_row else None
     ck = normalize_company_key(company_name)
 
-    conn.execute(
+    # P0.6: RETURNING id — يُمرَّر لـwallet.consume_application_conn أدناه
+    # (application_id) حتى يستطيع inbox.py لاحقًا (عند ارتداد مؤكّد) إيجاد
+    # هذا الخصم بالتحديد واسترداده عبر wallet.refund_bounce_conn.
+    application_row = conn.execute(
         text(
             """
             INSERT INTO applications (
                 customer_id, job_id, opportunity_id, sent_at, message_id, status, company_key, created_at
             ) VALUES (:cid, :jid, :oid, now(), :mid, 'sent', :ck, now())
+            RETURNING id
             """
         ),
         {
@@ -541,7 +545,8 @@ def _mark_success(conn, row: dict, message_id: str) -> None:
             "mid": message_id,
             "ck": ck,
         },
-    )
+    ).first()
+    application_id = application_row[0] if application_row else None
     if ck:
         conn.execute(
             text(
@@ -556,7 +561,7 @@ def _mark_success(conn, row: dict, message_id: str) -> None:
 
     # B10: نقطة الخصم الوحيدة لعملاء billing_mode='wallet' — بالضبط هنا،
     # بعد نجاح SMTP فعليًا وإدراج applications أعلاه مباشرة (نفس النقطة
-    # الحرفية التي "تُعلّم تطبيقًا كمُرسَل" — تعليمات هذه الدفعة). عملاء
+    # الحرفية التي "تُعلّم تطبيقًا كمُرسل" — تعليمات هذه الدفعة). عملاء
     # billing_mode='subscription' (الافتراضي، وكل عميل قبل B10) لا يمرّون
     # بهذا الشرط إطلاقًا — صفر تغيير سلوك لهم.
     billing_row = conn.execute(
@@ -564,7 +569,7 @@ def _mark_success(conn, row: dict, message_id: str) -> None:
         {"id": row["customer_id"]},
     ).mappings().first()
     if billing_row and billing_row["billing_mode"] == "wallet":
-        result = wallet.consume_application_conn(conn, row["customer_id"])
+        result = wallet.consume_application_conn(conn, row["customer_id"], application_id)
         if result["low_balance"]:
             _notify_wallet_low_balance(row["customer_id"], billing_row, result)
 
