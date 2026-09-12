@@ -17,3 +17,8 @@ python-multipart==0.0.9
 # pure-Python بالكامل (لا اعتماد نظام تشغيل خارجي كـpoppler) — يطابق فلسفة
 # "تبعية خفيفة" المطلوبة لطبقة تيليجرام.
 pypdf==4.3.1
+# B12.1: مجمّع قنوات تيليجرام للوظائف (core/app/collectors/telegram_channels.py)
+# — عميل MTProto (لا Bot API) لقراءة رسائل قنوات عامة بحساب قراءة مخصّص
+# (TELEGRAM_READER_* env، راجع docstring الوحدة). الاستيراد داخل try/except
+# بكل مكان يُستخدم فيه — غياب الحزمة لا يجب أن يُسقط core-scheduler أبدًا.
+telethon==1.36.0
