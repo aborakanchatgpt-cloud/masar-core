@@ -61,8 +61,9 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import text
 
-from app import discovery
+from app import company_directory, discovery
 from app.auth import require_admin_token
+from app.collectors import telegram_channels
 from app.collectors.field_extractor import compute_region, extract_cities
 from app.collectors.normalizer import company_key, dedup_key, normalize_apply_url, normalize_text
 
@@ -208,7 +209,7 @@ async def purge_source_jobs(source_id: int) -> dict:
 @router.post("/discovery/dedupe-cleanup")
 async def dedupe_cleanup() -> dict:
     """أداة يدوية لمرة واحدة (تاريخية — قبل R10) — استثناء موثّق آخر على مبدأ
-    "لا نحذف من jobs أبدًا" (كـ purge-jobs أعلاه): أصلحت تراكم صفوف مكرّرة
+    "لا نحذف من jobs أبدًا" (كـ purge-jobs أعلاه): أصلحت تراكم صفوف مكررة
     نتج عن تغيّر صيغة dedup_key من platform:external_id إلى sha1 بالمدينة
     المُستخرَجة عبر NLP، إلى sha1 بـlocation_text الخام (R6). معيار "نفس
     الوظيفة" هنا: (company_name, title, url) متطابقة حرفيًّا — يُبقي أقدم
@@ -474,8 +475,8 @@ async def stats() -> dict:
         # الكامل (total_n) لا (total_n − excluded_n) كما كانت الصيغة القديمة —
         # تلك الصيغة كانت تُخرج out_of_scope من المقام كليًا فتُخفي حجمها
         # الفعلي عن القارئ. الصيغة الجديدة تطابق هدف B2b حرفيًا:
-        #   family_classified_pct_in_region = (مصنَّف حقيقي + out_of_scope) / الكل  (الهدف ≥80%)
-        #   family_real_pct_in_region       = مصنَّف حقيقي فقط / الكل             (الهدف ≥70%)
+        #   family_classified_pct_in_region = (مصنَّف حقيقي + out_of_scope) / الكل  (الهدف ≥80%)
+        #   family_real_pct_in_region       = مصنَّف حقيقي فقط / الكل             (الهدف ≥70%)
         family_row = conn.execute(
             text(
                 f"""
@@ -615,6 +616,34 @@ async def seed_sources_now() -> dict:
     """يعيد قراءة data/sources_seed.csv ويطبّق upsert idempotent — مفيد
     للتحقق اليدوي بعد تحديث ملف البذر بلا انتظار إعادة تشغيل core-scheduler."""
     return discovery.seed_sources()
+
+
+# ---------------------------------------------------------------------------
+# B12.1 — تسجيل مجمّع قنوات تيليجرام (تشغيل يدوي/تشخيصي؛ الجدولة الفعلية كل
+# 30 دقيقة عبر core/app/scheduler_main.py، لا هنا.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/discovery/telegram-channels/run-now")
+async def telegram_channels_run_now(background_tasks: BackgroundTasks) -> dict:
+    """يُشغّل جولة مجمّع قنوات تيليجرام بالخلفية فورًا (تشخيص/تحقق يدوي بعد
+    تحديث data/telegram_channels.yaml أو تفعيل TELEGRAM_READER_* لأول مرة) —
+    fail-closed بصمت (`{"ok": true, "enabled": false}`) إن غابت أي متغيّر
+    بيئة مطلوب أو حزمة telethon نفسها، بلا استثناء أبدًا."""
+    background_tasks.add_task(telegram_channels.run_telegram_channel_round)
+    return {"ok": True, "started": True, "enabled_now": telegram_channels.is_enabled()}
+
+
+# ---------------------------------------------------------------------------
+# B12.2 — دليل الشركات (تقديم مبادر)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/company-directory/stats")
+async def company_directory_stats() -> dict:
+    engine = discovery.get_engine()
+    with engine.connect() as conn:
+        return company_directory.stats(conn)
 
 
 def _reextract_location(source_type: str, raw: dict) -> str | None:
