@@ -15,16 +15,17 @@ B9/B5-hotfix (11 سبتمبر، بعد مراجعة أحمد): `reports_api.cust
 Query نفسه) → SQL يفشل بصمت (`cannot adapt type 'Query'`) والزر "لا
 يستجيب". الإصلاح: تمرير القيم صراحة بكل استدعاء مباشر (`date=None`،
 `limit=...، after_id=0`) + شبكة أمان `except Exception` تُخبر أحمد بخطأ
-داخلي بدل الصمت التام لأي عطل غير متوقع مستقبلي بنفس النمط.
+داخلي بدل الصمت التام لأي عطل غير متوقّع مستقبلي بنفس النمط.
 """
 from __future__ import annotations
 
 import logging
+from decimal import Decimal
 
 from fastapi import HTTPException
 from sqlalchemy import text as sql_text
 
-from app import customers_api, guarantee_api, overview_api, reports_api
+from app import customers_api, guarantee_api, overview_api, reports_api, wallet
 from app.discovery import get_engine
 from app.phone import canonical_phone
 from app.planner import now_riyadh
@@ -118,7 +119,7 @@ async def reply_segments(client: TelegramClient, chat_id: int) -> None:
             )
         ).all()
 
-    lines = ["🧭 تصنيف العملاء", "", f"حسب الحالة: {by_status}", "", "أكثر 10 مجالات مهنية:"]
+    lines = ["🫑 تصنيف العملاء", "", f"حسب الحالة: {by_status}", "", "أكثر 10 مجالات مهنية:"]
     if by_family:
         lines.extend(f"  {family}: {n}" for family, n in by_family)
     else:
@@ -145,7 +146,7 @@ async def reply_customer_report(client: TelegramClient, chat_id: int, text: str)
         await client.send_message(chat_id, f"⚠️ {exc.detail}")
         return
     except Exception:  # noqa: BLE001
-        logger.exception("خطأ غير متوقع بجلب تقرير العميل #%s", customer_id)
+        logger.exception("خطأ غير متوقّع بجلب تقرير العميل #%s", customer_id)
         await client.send_message(chat_id, "⚠️ تعذّر جلب التقرير الآن (خطأ داخلي) — سنراجعه.")
         return
     payload = result.get("payload") or {}
@@ -228,7 +229,7 @@ async def reply_guarantees(client: TelegramClient, chat_id: int) -> None:
         # B9/B5-hotfix: تمرير limit/after_id صراحة — راجع docstring الملف أعلاه.
         result = await guarantee_api.pending_guarantees(limit=guarantee_api.DEFAULT_PAGE_LIMIT, after_id=0)
     except Exception:  # noqa: BLE001
-        logger.exception("خطأ غير متوقع بجلب الضمانات المعلّقة")
+        logger.exception("خطأ غير متوقّع بجلب الضمانات المعلّقة")
         await client.send_message(chat_id, "⚠️ تعذّر جلب الضمانات الآن (خطأ داخلي) — سنراجعه.")
         return
     items = result["items"]
@@ -254,3 +255,39 @@ async def reply_settle_guarantee(client: TelegramClient, chat_id: int, ledger_id
         return
     suffix = " (كانت مُسوّاة مسبقًا)" if result.get("already_settled") else ""
     await client.send_message(chat_id, f"✅ تمت تسوية الضمان #{result['id']}{suffix}.")
+
+
+async def reply_wallet_adjust(
+    client: TelegramClient, chat_id: int, customer_id: int, amount: Decimal, reason: str
+) -> None:
+    """B10: تعديل رصيد محفظة يدوي من الأدمن (تعويض/تصحيح/هدية) — يُطبّق
+    فورًا (بلا إيصال/موافقة، الأدمن نفسه هو من يقرّر) ويُسجّل بسجلّ تدقيق
+    `wallet_transactions` (type='admin_adjustment') عبر `wallet.apply_wallet_delta`
+    — `telegram_admin.py` تحقّق مسبقًا من صحّة `amount` (رقم غير صفري) ومن
+    أن `reason` غير فارغ (إلزامي لهذا النوع تحديدًا من واجهة تيليجرام، لا
+    من قيد قاعدة بيانات — راجع docstring الترحيل 0021)."""
+    engine = get_engine()
+    try:
+        new_balance = wallet.apply_wallet_delta(
+            engine, customer_id, amount, "admin_adjustment", reason=reason, created_by=str(chat_id)
+        )
+    except ValueError as exc:
+        await client.send_message(chat_id, f"⚠️ {exc}")
+        return
+
+    sign = "+" if amount >= 0 else ""
+    await client.send_message(
+        chat_id,
+        f"✅ تم تعديل رصيد العميل #{customer_id} بمقدار {sign}{amount:.2f} ريال — "
+        f"الرصيد الحالي: {new_balance:.2f} ريال.",
+    )
+    # إشعار العميل best-effort (نفس نمط reply_set_status/reply_extend_subscription
+    # أعلاه) — نص عام بلا كشف سبب داخلي (تعويض/تصحيح) لا يخصّ العميل.
+    customer_chat_id = fetch_customer_chat_id(engine, customer_id)
+    if customer_chat_id is not None:
+        verb = "أُضيف" if amount >= 0 else "خُصم"
+        notify_customer(
+            customer_chat_id,
+            f"{verb} {abs(amount):.2f} ريال {'إلى' if amount >= 0 else 'من'} رصيد محفظتك في مسار — "
+            f"الرصيد الحالي: {new_balance:.2f} ريال 🤍",
+        )
