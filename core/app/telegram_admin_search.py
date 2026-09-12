@@ -25,7 +25,7 @@ B9/B5-hotfix (11 سبتمبر، بعد مراجعة أحمد): `card_report` ك�
 FastAPI الافتراضي `Query(default=None)` لا يُحلّ لقيمته الفعلية عند
 الاستدعاء المباشر (بلا HTTP)، فيبقى كائن Query نفسه ويُمرّر لاستعلام SQL
 فيفشل بصمت. أُصلح بتمرير `date=None` صراحة + شبكة أمان `except Exception`
-تُخبر أحمد بخطأ داخلي بدل صمت تام لأي عطل غير متوقع مستقبلاً بنفس النمط.
+تُخبر أحمد بخطأ داخلي بدل صمت تام لأي عطل غير متوقّع مستقبلاً بنفس النمط.
 
 **B4 — قناة الشكاوى/الرسائل من العميل للأدمن:** `fetch_inbox_message` دالة
 جديدة تجلب رسالة واردة (direction='in') بمعرّفها ليستخدمها زرّ "↩️ رد" على
@@ -42,7 +42,7 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy import text as sql_text
 
-from app import customers_api, link_api, reports_api
+from app import customers_api, link_api, reports_api, wallet
 from app.discovery import get_engine
 from app.phone import canonical_phone
 from app.telegram_client import TelegramClient
@@ -182,7 +182,15 @@ async def reply_customer_card(client: TelegramClient, chat_id: int, customer_id:
     c = result["customer"]
     extra = _fetch_customer_extra(customer_id)
 
-    if extra["subscription"]:
+    # B10: عميل billing_mode='wallet' يُعرَض له رصيده الريالي (مصدر الحقيقة
+    # الوحيد) + عدد التقديمات المكافئ المحسوب ديناميكيًا — بدل سطر "رصيد:"
+    # القديم (عدد تقديمات wallets.balance، لا معنى له لعميل محفظة أصلًا).
+    if c.get("billing_mode") == "wallet":
+        balance_sar = c.get("wallet_balance_sar") or 0
+        rate = wallet.per_application_rate()
+        affordable = wallet.applications_affordable(balance_sar, rate)
+        package_line = f"محفظة: {float(balance_sar):.2f} ريال (~{affordable} تقديم متبقٍ)"
+    elif extra["subscription"]:
         package_line = f"{extra['subscription']['product_code']} — ينتهي {extra['subscription']['ends_at'].date()}"
     else:
         package_line = f"رصيد: {c.get('wallet_balance', 0)}"
@@ -219,6 +227,12 @@ async def reply_customer_card(client: TelegramClient, chat_id: int, customer_id:
         ]
     )
     action_rows.append([{"text": "🔗 رابط ربط بريد", "callback_data": f"admin:card_link:{customer_id}"}])
+    # B10: تعديل رصيد المحفظة يدويًا — متاح دومًا (لا فقط لعميل wallet
+    # فعليًا حاليًا): يسمح بمنح رصيد ابتدائي/هدية لعميل subscription أيضًا
+    # بلا اشتراط شرائه محفظة أولاً (نفس فلسفة "تعديل يدوي أساسي" بطلب أحمد).
+    action_rows.append(
+        [{"text": "💰 تعديل رصيد المحفظة", "callback_data": f"admin:wallet_adjust:{customer_id}"}]
+    )
     action_rows.extend(nav_rows(None, "admin:menu"))
     await client.send_message(chat_id, "\n".join(lines), buttons=action_rows)
 
@@ -244,7 +258,7 @@ async def card_report(client: TelegramClient, chat_id: int, customer_id: int) ->
         await client.send_message(chat_id, f"⚠️ {exc.detail}", buttons=nav_rows(None, "admin:menu"))
         return
     except Exception:  # noqa: BLE001
-        logger.exception("خطأ غير متوقع بتقرير اليوم للعميل #%s", customer_id)
+        logger.exception("خطأ غير متوقّع بتقرير اليوم للعميل #%s", customer_id)
         await client.send_message(
             chat_id, "⚠️ تعذّر جلب التقرير الآن (خطأ داخلي) — سنراجعه.", buttons=nav_rows(None, "admin:menu")
         )
