@@ -10,11 +10,11 @@ scripts/telegram_reader_login.py — B12.1: يولّد TELEGRAM_READER_SESSION
 بالخادم كقيمة TELEGRAM_READER_SESSION (راجع .env.example للتوثيق الكامل).
 
 **مهم:** هذا حساب Telegram شخصي عادي (رقم جوال + رمز تحقق) لا بوت — بوتات
-تيليجرام (Bot API) لا تستطيع قراءة رسائل قنوات عامة لم تُضاف كأدمن فيها؛
+تيليجرام (Bot API) لا تستطيع قراءة رسائل قنوات عامة لم تُضَف كأدمن فيها؛
 Telethon (MTProto) بحساب مستخدم عادي هو المسار الوحيد الممكن لقراءة قنوات
 لسنا أدمن فيها إطلاقًا.
 
-المتطلّبات المسبقة (يقوم بها أحمد مرة واحدة فقط قبل التشقيل):
+المتطلبات المسبقة (يقوم بها أحمد مرة واحدة فقط قبل التشغيل):
     1. api_id/api_hash من https://my.telegram.org (تسجيل دخول برقم جواله).
     2. pip install telethon (أو استخدام بيئة core الافتراضية إن توفّرت محليًا).
 
@@ -34,7 +34,7 @@ def main() -> int:
         from telethon.sync import TelegramClient
     except ImportError:
         print(
-            "خطأ: حزمة telethon गير مثبّتة. ثبّتها أولًا:\n    pip install telethon",
+            "خطأ: حزمة telethon غير مثبَّتة. ثبّتها أولًا:\n    pip install telethon",
             file=sys.stderr,
         )
         return 1
@@ -58,7 +58,7 @@ def main() -> int:
         "\nثم أضف أيضًا (إن لم تكن موجودة أصلًا):\n"
         f"TELEGRAM_READER_API_ID={api_id}\n"
         f"TELEGRAM_READER_API_HASH={api_hash}\n"
-        "\nوأعد إنشاء الحاوية (core-scheduler) حتى تُفعّل القيم الجديدة."
+        "\nوأعد إنشاء الحاوية (core-scheduler) حتى تُفعَّل القيم الجديدة."
     )
     return 0
 
