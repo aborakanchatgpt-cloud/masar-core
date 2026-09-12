@@ -38,9 +38,10 @@ from pathlib import Path
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from app import mail_crypto, pacing
+from app import mail_crypto, pacing, wallet
 from app.collectors.normalizer import company_key as normalize_company_key
 from app.discovery import get_engine
+from app.telegram_notify_admin import notify_admin, notify_customer
 
 logger = logging.getLogger("masar.sender")
 
@@ -344,7 +345,7 @@ def find_missing_attachments(attachments: list[dict]) -> list[str]:
     القرار (بموافقة أحمد الصريحة): الصفّ يجب أن **يفشل ويُعاد لاحقًا** (نفس
     منطق _mark_failure/backoff الموجود أصلًا لأي فشل SMTP)، لا أن يُرسَل
     ناقصًا بصمت — راجع _process_row أدناه لموضع الاستدعاء (قبل أي اتصال
-    SMTP فعلي، حتى لا يُستهلك throttle/رصيد على محاولة كانت ستُرسَل ناقصة).
+    SMTP فعلي، حتى لا يُستهلك throttle/رصيد على محاولة كانت ستُرسل ناقصة).
     """
     missing = []
     for att in attachments or []:
@@ -369,7 +370,7 @@ def _claim_due_batch(engine: Engine, limit: int) -> list[dict]:
     """يطالب بدفعة مستحقة عبر CTE بـFOR UPDATE SKIP LOCKED — يسمح بتشغيل
     عدة استدعاءات send_tick متوازية (SEND_WORKERS) بلا تصادم على نفس الصفوف،
     ويحدّد locked_until (LOCK_DURATION_MINUTES) كشبكة أمان ضد عملية تعطّلت
-    منتصف الإرسال (صف مقفول لن يُطالَب به مجددًا حتى تنتهي مهلة القفل).
+    منتصف الإرسال (صف مقفول لن يُطالب به مجددًا حتى تنتهي مهلة القفل).
 
     تصحيح Critical/High 1 (F1) بمراجعة B4 الأوفلاين (docs/reports/B4-offline-review.md):
     الشرط `status = 'queued'` وحده كان يمنع فعليًا استرداد صفّ عالق بحالة
@@ -378,7 +379,7 @@ def _claim_due_batch(engine: Engine, limit: int) -> list[dict]:
     انتهاء locked_until؛ الصفّ كان يبقى عالقًا للأبد بلا استرداد إطلاقًا (لا
     ازدواج، لكن فقدان فعلي للصفّ). الآن `status IN ('queued','sending')` مع
     نفس فحص `locked_until` يُطبّق فعليًا هذه الشبكة كما تصفها الوثائق —
-    والحماية من الازدواج الفعلي (رسالة SMTP خرجت فعلًا قبل الانهيار) تقع
+    والحماية من الازدواج الفعلي (رسالة SMTP خرجت فعلاً قبل الانهيار) تقع
     بعدها في `_process_row` (فحص idempotency ضد `applications` قبل أي اتصال
     SMTP جديد لصفّ استُعيد بهذا المسار)."""
     now = datetime.now(timezone.utc)
@@ -415,7 +416,7 @@ def _fetch_mail_link(conn, customer_id: int) -> dict | None:
 
 def _existing_application(conn, row: dict) -> dict | None:
     """تحقّق idempotency (تصحيح High/F1 بمراجعة B4 الأوفلاين): هل توجد أصلًا
-    صفّ `applications` ناجح لنفس (customer_id, job_id, opportunity_id)؟ إن
+    صفّ `applications` ناجحة لنفس (customer_id, job_id, opportunity_id)؟ إن
     وُجد فهذا يعني أن الرسالة **خرجت فعليًا عبر SMTP بدورة سابقة** (applications
     يُدرج فقط من `_mark_success` بعد نجاح `_smtp_send`) وأن الانهيار الذي
     ترك صفّ send_queue عالقًا بحالة 'sending' حدث *بعد* الإرسال الفعلي، لا
@@ -462,6 +463,38 @@ def _mark_already_sent(conn, row: dict, message_id: str) -> None:
             text("UPDATE opportunities SET status = 'sent' WHERE id = :id"),
             {"id": row["opportunity_id"]},
         )
+
+
+_WALLET_LOW_BALANCE_CUSTOMER_TEXT = (
+    "مرحبًا {name} 🌟\n\n"
+    "رصيد محفظتك في مسار ما عاد يكفي لتقديم جديد. رصيدك الحالي {balance:.3f} ريال "
+    "(سعر التقديم الواحد {rate:.3f} ريال).\n\n"
+    "اشحن رصيدك من القائمة الرئيسية 💰 لين نكمّل نقدّم لك بلا توقف 🤍"
+)
+
+
+def _notify_wallet_low_balance(customer_id: int, billing_row, result: dict) -> None:
+    """B10 — إشعار انخفاض رصيد المحفظة تحت سعر تقديم واحد: إشعار العميل
+    (best-effort عبر notify_customer، لا يرفع استثناءً أبدًا) + إشعار أحمد
+    اختياريًا (notify_admin، نفس ضمان best-effort) — لا تفاصيل تقنية للعميل
+    (لا 'wallet_transactions' ولا أي مصطلح داخلي)، فقط رصيده الحالي وسعر
+    التقديم. لا يوقف/يُعطّل أي شيء هنا — البوابة الفعلية (منع تقديمات
+    مستقبلية) تقع بـsend_builder.build_queue_for_customer (سقف target يصبح
+    صفرًا تلقائيًا في الدورة القادمة، `remaining <= 0`)."""
+    chat_id = billing_row.get("telegram_chat_id")
+    name = billing_row.get("name") or "عميلنا"
+    if chat_id:
+        notify_customer(
+            chat_id,
+            _WALLET_LOW_BALANCE_CUSTOMER_TEXT.format(
+                name=name, balance=result["new_balance"], rate=result["rate"]
+            ),
+        )
+    notify_admin(
+        f"💰 رصيد محفظة منخفض — العميل {name} (id={customer_id}) رصيده الآن "
+        f"{result['new_balance']:.3f} ريال (أقل من سعر تقديم واحد {result['rate']:.3f} ريال). "
+        "توقّف الإرسال له تلقائيًا حتى يشحن رصيده."
+    )
 
 
 def _mark_success(conn, row: dict, message_id: str) -> None:
@@ -521,6 +554,20 @@ def _mark_success(conn, row: dict, message_id: str) -> None:
             {"ck": ck, "cid": row["customer_id"]},
         )
 
+    # B10: نقطة الخصم الوحيدة لعملاء billing_mode='wallet' — بالضبط هنا،
+    # بعد نجاح SMTP فعليًا وإدراج applications أعلاه مباشرة (نفس النقطة
+    # الحرفية التي "تُعلّم تطبيقًا كمُرسَل" — تعليمات هذه الدفعة). عملاء
+    # billing_mode='subscription' (الافتراضي، وكل عميل قبل B10) لا يمرّون
+    # بهذا الشرط إطلاقًا — صفر تغيير سلوك لهم.
+    billing_row = conn.execute(
+        text("SELECT billing_mode, telegram_chat_id, name FROM customers WHERE id = :id"),
+        {"id": row["customer_id"]},
+    ).mappings().first()
+    if billing_row and billing_row["billing_mode"] == "wallet":
+        result = wallet.consume_application_conn(conn, row["customer_id"])
+        if result["low_balance"]:
+            _notify_wallet_low_balance(row["customer_id"], billing_row, result)
+
 
 def _mark_failure(conn, row: dict, error_text: str) -> None:
     attempts = (row.get("attempts") or 0) + 1
@@ -536,26 +583,34 @@ def _mark_failure(conn, row: dict, error_text: str) -> None:
             {"attempts": attempts, "err": error_text[:2000], "id": row["id"]},
         )
         if not row.get("synthetic"):
-            # استرداد الرصيد المخصوم مسبقًا (send_builder._debit_one_credit) —
-            # فشل نهائي بعد MAX_ATTEMPTS محاولات يعني عدم إرسال الرسالة إطلاقًا.
-            current = conn.execute(
-                text("SELECT balance FROM wallets WHERE customer_id = :id FOR UPDATE"),
-                {"id": row["customer_id"]},
+            # B10: عميل billing_mode='wallet' لا يُخصَم منه شيء وقت البناء
+            # إطلاقًا (راجع send_builder.py) — فلا استرداد هنا يخصّه أبدًا؛
+            # استرداد wallets/ledger القديم يبقى لعميل subscription فقط
+            # (صفر تغيير سلوك له).
+            billing_row = conn.execute(
+                text("SELECT billing_mode FROM customers WHERE id = :id"), {"id": row["customer_id"]}
             ).first()
-            new_balance = (current[0] if current else 0) + 1
-            conn.execute(
-                text("UPDATE wallets SET balance = :b, updated_at = now() WHERE customer_id = :id"),
-                {"b": new_balance, "id": row["customer_id"]},
-            )
-            conn.execute(
-                text(
-                    """
-                    INSERT INTO ledger (customer_id, delta, reason, ref_id, created_at)
-                    VALUES (:cid, 1, 'adjustment', :ref, now())
-                    """
-                ),
-                {"cid": row["customer_id"], "ref": f"send_queue_failed:{row['id']}"},
-            )
+            if not billing_row or billing_row[0] != "wallet":
+                # استرداد الرصيد المخصوم مسبقًا (send_builder._debit_one_credit) —
+                # فشل نهائي بعد MAX_ATTEMPTS محاولات يعني عدم إرسال الرسالة إطلاقًا.
+                current = conn.execute(
+                    text("SELECT balance FROM wallets WHERE customer_id = :id FOR UPDATE"),
+                    {"id": row["customer_id"]},
+                ).first()
+                new_balance = (current[0] if current else 0) + 1
+                conn.execute(
+                    text("UPDATE wallets SET balance = :b, updated_at = now() WHERE customer_id = :id"),
+                    {"b": new_balance, "id": row["customer_id"]},
+                )
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO ledger (customer_id, delta, reason, ref_id, created_at)
+                        VALUES (:cid, 1, 'adjustment', :ref, now())
+                        """
+                    ),
+                    {"cid": row["customer_id"], "ref": f"send_queue_failed:{row['id']}"},
+                )
         # تصحيح Critical/High 2 (نفس منطق _mark_success أعلاه بالاتجاه
         # المعاكس): فشل نهائي يعني أن التقديم لم يُرسَل فعليًا إطلاقًا —
         # opportunities.status='skipped' لا تبقى 'queued' للأبد (تُفسد أي
@@ -634,8 +689,8 @@ def _process_row(engine: Engine, row: dict) -> bool:
         _record_failed(str(exc))
         return False
 
-    # CC العميل دومًا (الدليل: "CC للعميل على كل تقديم") — بصرف النظر عن
-    # وضع النقل (sink/dry-run/حقيقي)، طالما cc_email موجود بالصفّ أصلًا.
+    # CC العميل دومًا (الدليل: "CC للعميل على كل تقديم") — بصرف النظر عن وضع
+    # النقل (sink/dry-run/حقيقي)، طالما cc_email موجود بالصفّ أصلًا.
     cc_email = row.get("cc_email")
     recipients = [actual_recipient] + ([cc_email] if cc_email else [])
 
@@ -676,7 +731,7 @@ def _process_row(engine: Engine, row: dict) -> bool:
 def get_queue_stats(engine: Engine | None = None) -> dict:
     """B6 — إحصاءات طابور الإرسال من قاعدة البيانات (لا تعتمد على عدّادات
     in-process فتبقى صحيحة عبر إعادة تشغيل العملية أو عدة عمليات): عمق
-    الطابور بكل حالة، عمر أقدم صفّ مستحق لم يُعالَج بعد، وعدد المُرسَل
+    الطابور بكل حالة، عمر أقدم صفّ مستحق لم يُعالَج بعد، وعدد المُرسل
     بآخر 60/300 ثانية (باستخدام send_queue.completed_at، ترحيل 0011 —
     يشمل صفوف synthetic اختبار التحميل)."""
     engine = engine or get_engine()
@@ -745,7 +800,7 @@ def send_tick(*, limit: int = CLAIM_BATCH_LIMIT_DEFAULT, ignore_window: bool = F
     # معالجة متوازية (حتى SEND_WORKERS مسارات) — كل صفّ اتصال SMTP مستقل
     # (اتصال جديد لكل رسالة أصلًا بـ_smtp_send) ومعاملة DB منفصلة به عبر
     # engine.begin() الخاصة بكل _process_row، فلا تشارك اتصالًا واحدًا بين
-    # الخيوط؛ هذا ما يحقّق معدّل الاستنزاف (drain rate) المطلوب باختبار التحميل.
+    # الخيوط؛ هذا ما يُحقّق معدّل الاستنزاف (drain rate) المطلوب باختبار التحميل.
     sent = 0
     failed = 0
     workers = min(SEND_WORKERS, len(batch))
@@ -760,7 +815,7 @@ def send_tick(*, limit: int = CLAIM_BATCH_LIMIT_DEFAULT, ignore_window: bool = F
                 else:
                     failed += 1
             except Exception:
-                logger.exception("خطأ غير متوقع أثناء معالجة send_queue #%s", row.get("id"))
+                logger.exception("خطأ غير متوقّع أثناء معالجة send_queue #%s", row.get("id"))
                 failed += 1
 
     result = {"ok": True, "claimed": len(batch), "sent": sent, "failed": failed}
