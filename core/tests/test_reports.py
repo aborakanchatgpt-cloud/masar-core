@@ -242,6 +242,15 @@ def test_progress_phrase_never_shows_fraction_or_cap_wording():
 
 def test_run_reports_round_covers_active_only_and_is_idempotent(engine, ctx):
     today = date.today()
+    day_start_utc, _ = reports._riyadh_day_bounds_utc(today)
+    # تطبيق فعلي مضمون بغضّ النظر عن يوم الأسبوع الفعلي وقت التشغيل (تفاديًا
+    # لتخطي B4/v2-B6 الجمعة/السبت — raجع الاختبارات المخصصة أدناه لهذا
+    # السلوك تحديدًا — إذا صادف تشغيل هذا الاختبار بيوم عطلة).
+    _insert_application(
+        engine, customer_id=ctx["active_customer_id"], job_id=ctx["job_id"],
+        status="sent", sent_at=day_start_utc + timedelta(hours=6),
+    )
+
     result1 = reports.run_reports_round(report_date=today, engine=engine)
     assert result1["ok"] is True
 
@@ -267,3 +276,86 @@ def test_run_reports_round_covers_active_only_and_is_idempotent(engine, ctx):
             {"cid": ctx["active_customer_id"], "d": today},
         ).scalar_one()
     assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# 4. B4/v2-B6 (12 سبتمبر): تخطي الجمعة/السبت لعميل بلا أي تقديم/ردّ فعلي ذلك
+#    اليوم — لا معنى لرسالة "لم نجد فرصًا" بيوم عطلة لا عمل فيه أصلًا. عميل
+#    حصل فعليًا على تقديم أو ردّ بيوم عطلة (نادر لكن ممكن تقنيًا) يحصل على
+#    تقريره كالمعتاد. نستخدم تاريخين ثابتين معروفَي يوم الأسبوع (بدل
+#    date.today()) حتى لا يعتمد الاختبار على يوم تشغيله الفعلي.
+# ---------------------------------------------------------------------------
+
+
+def test_run_reports_round_skips_weekend_customer_with_no_activity(engine, ctx):
+    friday = date(2026, 9, 11)  # جمعة معروفة — weekday() == 4
+    result = reports.run_reports_round(report_date=friday, engine=engine)
+    assert result["ok"] is True
+    assert result["skipped_weekend_empty"] >= 1
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id FROM daily_reports WHERE customer_id = :cid AND report_date = :d"),
+            {"cid": ctx["active_customer_id"], "d": friday},
+        ).first()
+    assert row is None  # لا تقرير — عطلة بلا أي نشاط فعلي
+
+
+def test_run_reports_round_still_reports_weekend_customer_with_real_application(engine, ctx):
+    saturday = date(2026, 9, 12)  # سبت معروف — weekday() == 5
+    day_start_utc, _ = reports._riyadh_day_bounds_utc(saturday)
+    _insert_application(
+        engine, customer_id=ctx["active_customer_id"], job_id=ctx["job_id"],
+        status="sent", sent_at=day_start_utc + timedelta(hours=6),
+    )
+
+    result = reports.run_reports_round(report_date=saturday, engine=engine)
+    assert result["ok"] is True
+
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT id FROM daily_reports WHERE customer_id = :cid AND report_date = :d"),
+            {"cid": ctx["active_customer_id"], "d": saturday},
+        ).first()
+    assert row is not None  # نشاط فعلي بيوم عطلة → تقرير كالمعتاد رغم أنه عطلة
+
+
+# ---------------------------------------------------------------------------
+# 5. _build_text (وحدة نقية بلا DB): سطر شرح أزرار 👎/🎉 يظهر فقط إذا وُجدت
+#    تقديمات فعلية اليوم (B4/v2-B6 — كانت الأزرار تصل بلا أي شرح لمعناها).
+# ---------------------------------------------------------------------------
+
+
+def test_build_text_includes_feedback_buttons_explanation_when_apps_exist():
+    rng = reports._seed_rng(1, date(2026, 9, 10))
+    text_body = reports._build_text(
+        customer_name="أحمد",
+        report_date=date(2026, 9, 10),
+        today_apps=[{"title": "مهندس جودة", "company": "شركة تجريبية", "city": "جدة"}],
+        period=None,
+        period_count=0,
+        all_time_count=1,
+        exclusions=[],
+        replies=[],
+        rng=rng,
+    )
+    assert "👎" in text_body
+    assert "🎉" in text_body
+    assert "اضغط 👎" in text_body
+
+
+def test_build_text_omits_feedback_buttons_explanation_when_no_apps_today():
+    rng = reports._seed_rng(1, date(2026, 9, 10))
+    text_body = reports._build_text(
+        customer_name="أحمد",
+        report_date=date(2026, 9, 10),
+        today_apps=[],
+        period=None,
+        period_count=0,
+        all_time_count=0,
+        exclusions=[],
+        replies=[],
+        rng=rng,
+    )
+    assert "👎" not in text_body
+    assert "🎉" not in text_body
