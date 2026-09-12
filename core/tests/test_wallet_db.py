@@ -513,7 +513,7 @@ def test_build_queue_for_customer_wallet_mode_capped_by_balance(engine, send_ctx
     كحد أقصى — حتى لو توفّرت أكثر من 4 فرصة مؤهّلة، ولا يُخصَم شيء من
     wallets/ledger القديمين (billing_mode='wallet' يتجاوزهما بالكامل).
 
-    يُموّه cv_builder.ensure_cv_variant (يحتاج Gotenberg حيًّا لتحويل HTML→PDF
+    يُموّه cv_builder.ensure_cv_variant (يحتاج Gotenberg حيًّا لتحويل HTML→PDF
     فعليًا — غير متاح ببيئة الاختبار المحلية هنا) حتى يبقى الاختبار مركّزًا
     على منطق سقف رصيد المحفظة وحده، لا على بنية تحتية خارجية غير ذات صلة —
     نفس مبرّر تمويه _smtp_send/resolve_transport بـtest_sender_idempotency.py."""
