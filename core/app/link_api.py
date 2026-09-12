@@ -1,6 +1,6 @@
 """
 Masar Core — صفحة ربط البريد الذاتي (B5a البند 5، الدليل §7 البند 2: "صندوق
-بريد الخدمة" — لكن كصفحة ويب مباشرة بدل خطوات تيليجرام مصوّرة، بلا أي سرّ
+briد الخدمة" — لكن كصفحة ويب مباشرة بدل خطوات تيليجرام مصوّرة، بلا أي سرّ
 يمر عبر محادثة إدارية).
 
     POST /admin/customers/{id}/link-token   → رمز مرّة واحدة (48 ساعة)، محمي
@@ -13,8 +13,8 @@ Masar Core — صفحة ربط البريد الذاتي (B5a البند 5، ا�
                                                الحقيقي)، محدود بـ5 محاولات
                                                لكل رمز.
 
-**لا كلمة مرور تُسجَّل أبدًا** — لا بسجلّ (logger) ولا بأي استجابة HTML (نفس
-قاعدة mail_api.py). الرمز نفسه لا يُخزَّن خامًا، فقط sha256(token) — فقدان
+**لا كلمة مرور تُسجّل أبدًا** — لا بسجلّ (logger) ولا بأي استجابة HTML (نفس
+قاعدة mail_api.py). الرمز نفسه لا يُخزّن خامًا، فقط sha256(token) — فقدان
 قاعدة البيانات لا يكشف أي رمز فعّال.
 """
 from __future__ import annotations
@@ -34,6 +34,8 @@ from sqlalchemy import text
 from app import mail_api, sender
 from app.auth import require_admin_token
 from app.discovery import get_engine
+from app.reports import fetch_customer_chat_id
+from app.telegram_notify_admin import notify_customer
 
 logger = logging.getLogger("masar.link_api")
 
@@ -44,10 +46,10 @@ public_router = APIRouter(prefix="/link", tags=["link-public"])
 TOKEN_TTL_HOURS = 48
 MAX_ATTEMPTS = 5
 
-# B9/A5: صفحة شروط الخدمة العامة (بنية فقط بهذه الدفعة — بلا أي ربط بتدفّق
-# onboarding الحالي، راجع migrations/versions/0016_terms_accepted.py).
+# B9/A5: صفحة شروط الخدمة العامة (بنية فقط بهذه الدفعة — بلا أي ربط
+# بتدفّق onboarding الحالي، راجع migrations/versions/0016_terms_accepted.py).
 # نفس نمط REPO_DIR بـapp/mcp_bridge.py: جذر المستودع مركّب للقراءة فقط
-# داخل حاوية core على /repo (راجع docker-compose.yml)، فـdocs/TERMS_AR.md
+# داخل حاوية core على /repo (راجع docker-compose.yml)، فdocs/TERMS_AR.md
 # مقروء دومًا بلا حاجة لنسخه بـDockerfile أو إعادة بناء الصورة عند تعديله.
 TERMS_MD_PATH = Path(os.environ.get("REPO_DIR", "/repo")) / "docs" / "TERMS_AR.md"
 
@@ -107,8 +109,8 @@ def _inline_md(text_: str) -> str:
 
 
 def _render_terms_html(markdown_text: str) -> str:
-    """محوّل Markdown→HTML يدوي مبسّط (بلا تبعية جديدة لصفحة واحدة نادرة
-    التغيّر — core/requirements.txt لا يحوي مكتبة markdown أصلًا). يدعم فقط
+    """محوّل Markdown→HTML يدوي مبسّط (بلا تبعية جديدة لصفحة واحدة
+    نادرة التغيّر — core/requirements.txt لا يحوي مكتبة markdown أصلًا). يدعم فقط
     ما يظهر فعليًا بـdocs/TERMS_AR.md: عناوين # و##، فقرات نصية، قوائم
     نقطية (-) ومرقّمة (1.)، وتشديد **نص** داخل أي سطر."""
     html_parts: list[str] = []
@@ -233,8 +235,8 @@ def _fetch_token_row(conn, token: str, *, lock: bool = False) -> dict | None:
 _FORM_BODY = """
 <h1>ربط بريدك الخاص بخدمة مسار</h1>
 <p class="sub">أنشئ بريد Gmail جديدًا باسمك خصّيصًا لهذه الخدمة، فعّل التحقق
-بخطوتين، ثم أنشئ "كلمة مرور تطبيق" من إعدادات Google والصقها هنا. لن نطّلع
-على بريدك الشخصي أبدًا — فقط هذا الصندوق الجديد.</p>
+بخطوتين، ثم أنشئ "كلمة مرور تطبيق" من إعدادات Google والصقها هنا. لن
+نطّلع على بريدك الشخصي أبدًا — فقط هذا الصندوق الجديد.</p>
 <form method="post" action="">
   <label for="gmail_address">عنوان البريد الإلكتروني</label>
   <input type="text" id="gmail_address" name="gmail_address" placeholder="name.career@gmail.com" required>
@@ -273,7 +275,7 @@ async def submit_link_form(token: str, request: Request, skip_verify: int = Quer
 
     with engine.begin() as conn:
         # FOR UPDATE: يمنع سباقًا بين طلبين متزامنين لنفس الرمز يقرآن نفس
-        # attempts قبل أن يزيدها أيّهما (كلاهما يمرّ فحص الحدّ خطأًا).
+        # attempts قبل أن يزيدها أيّهما (كلاهما يمر فحص الحدّ خطأًا).
         row = _fetch_token_row(conn, token, lock=True)
         if row is None:
             return _message_page("رابط غير صالح", "هذا الرابط غير صحيح. تواصل معنا للحصول على رابط جديد.", error=True)
@@ -324,19 +326,41 @@ async def submit_link_form(token: str, request: Request, skip_verify: int = Quer
         return _message_page("تعذّر الربط", "حدث خطأ غير متوقع، حاول مرة أخرى بعد قليل.", error=True)
 
     if not result.get("ok"):
+        # B4/v2 §تحديثات تلقائية: إشعار العميل بفشل الربط عبر بوت العميل
+        # (best-effort — لا يمنع/يؤخّر عرض صفحة الويب أعلاه بأي حال).
+        _notify_customer_mail_link_result(customer_id, ok=False)
         return _message_page(
             "تعذّر الربط",
-            "لم نتمكن من التحقق من بريدك. تأكد من صحة العنوان وكلمة مرور التطبيق (لا كلمة مرور حسابك العادية) وحاول مرة أخرى.",
+            "لم نتمكن من التحقق من بريدك. تأكد من صحة العنوان وكلمة مرور التطبيق (لا كلمة مرور حسابك العادي) وحاول مرة أخرى.",
             error=True,
         )
 
     with engine.begin() as conn:
         conn.execute(text("UPDATE link_tokens SET used_at = now() WHERE id = :id"), {"id": row["id"]})
 
+    _notify_customer_mail_link_result(customer_id, ok=True)
+
     return _message_page(
         "تم الربط بنجاح",
         "أحسنت! تم ربط بريدك بخدمة مسار بنجاح، وسنبدأ العمل على البحث عن الفرص المناسبة لك. وفّقك الله 🌿",
     )
+
+
+def _notify_customer_mail_link_result(customer_id: int, *, ok: bool) -> None:
+    """B4/v2: إشعار فوري للعميل عبر بوت العميل بنتيجة ربط بريده — بديل
+    انتظاره لتقرير الغد. best-effort بحت: عميل بلا chat_id (لم يربط
+    تيليجرام) يُتجاهَل بصمت (نفس منطق reply_set_status بـ
+telegram_admin_commands.py)."""
+    customer_chat_id = fetch_customer_chat_id(get_engine(), customer_id)
+    if customer_chat_id is None:
+        return
+    if ok:
+        notify_customer(customer_chat_id, "تم ربط بريدك بنجاح ✅ سنبدأ العمل على البحث عن الفرص المناسبة لك.")
+    else:
+        notify_customer(
+            customer_chat_id,
+            "تعذّر ربط بريدك — تأكد من كلمة مرور التطبيق (App Password) لا كلمة مرور حسابك العادي، وحاول مرة أخرى.",
+        )
 
 
 router.include_router(admin_router)
