@@ -34,6 +34,7 @@ from decimal import Decimal, ROUND_FLOOR, ROUND_HALF_UP
 
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
+from sqlalchemy.exc import IntegrityError
 
 from app.discovery import get_engine
 
@@ -45,7 +46,9 @@ RATE_SETTING_KEY = "wallet_rate_per_application_sar"
 DEFAULT_RATE_SAR = Decimal("0.235")
 
 WALLET_PRODUCT_CODE = "WALLET"
-WALLET_TRANSACTION_TYPES = {"topup", "consumption", "admin_adjustment"}
+# P0.6 (ترحيلة 0022): 'bounce_refund' جديد — استرداد تلقائي لخصم تقديم
+# ارتدّ (bounced) لعميل billing_mode='wallet'، راجع refund_bounce_conn أدناه.
+WALLET_TRANSACTION_TYPES = {"topup", "consumption", "admin_adjustment", "bounce_refund"}
 
 
 def _parse_rate(value: str | None) -> Decimal:
@@ -70,7 +73,7 @@ def per_application_rate_conn(conn: Connection) -> Decimal:
 
 
 def per_application_rate(engine: Engine | None = None) -> Decimal:
-    """نقطة القراءة المستقلة (تفتح اتصالها الخاص) — لطبقة تيليجرام
+    """نقطة القراءة المستقلة (تفتح اتصالها الخاص) — لطبقة تيليفرام
     (telegram_payments.py) التي لا معاملة مفتوحة لديها وقت العرض للعميل."""
     engine = engine or get_engine()
     with engine.connect() as conn:
@@ -87,7 +90,7 @@ def applications_affordable(balance: Decimal, rate: Decimal) -> int:
 
 def amount_for_count(count: int, rate: Decimal) -> Decimal:
     """يحوّل عدد تقديمات مطلوب (المسار الأول: "أبي N تقديم") لمبلغ ريال
-    فعلي يُطلب من العميل تحويله بنكيًا — يُقرَّب لأقرب هللة (0.01) بخلاف
+    فعلي يُطلب من العميل تحويله بنكيًا — يُقرّب لأقرب هللة (0.01) بخلاف
     رصيد المحفظة الداخلي (الذي يبقى بدقّة كاملة بلا تقريب): هذا مبلغ حقيقي
     يُكتب على إيصال تحويل بنكي، والبنوك لا تتعامل بكسور الهللة."""
     if count is None or count <= 0:
@@ -104,13 +107,22 @@ def apply_wallet_delta_conn(
     *,
     reason: str | None = None,
     created_by: str | None = None,
+    application_id: int | None = None,
 ) -> Decimal:
     """يحدّث `customers.wallet_balance_sar` ويُدرج صفّ `wallet_transactions`
     **بنفس المعاملة المفتوحة أصلًا** لدى المستدعي — قفل صف `FOR UPDATE`
     أولًا (نفس نمط `customers_api.wallet_credit`)، فيُدرأ سباق بين خصمين
     متزامنين (مثال: خصم استهلاك من sender.py وتعديل يدوي من الأدمن بنفس
-    اللحظة تقريبًا). `amount` موجب للإضافة (شحن/تعديل ائتمان) أو سالب
-    للخصم (استهلاك/تعديل مدين). يرجع الرصيد الجديد."""
+    اللحظة تقريبًا). `amount` موجب للإضافة (شحن/تعديل ائتمان/استرداد ارتداد)
+    أو سالب للخصم (استهلاك/تعديل مدين). `application_id` (P0.6، ترحيلة
+    0022) يُسجّل فقط لحركتي 'consumption'/'bounce_refund' — يربط الحركة
+    بتطبيق مُرسَل محدّد حتى يستطيع `refund_bounce_conn` إيجاد الخصم الأصلي
+    عند ارتداد لاحق. يرجع الرصيد الجديد.
+
+    P0.6: **فشل مغلق على رصيد سالب** — أي خصم يُنزل الرصيد تحت الصفر يُرفَض
+    بـ`ValueError("insufficient_wallet_balance")` قبل أي كتابة (يطابق قيد
+    قاعدة البيانات `ck_customers_wallet_balance_nonneg` بترحيلة 0022 —
+    دفاع بالعمق على مستوى التطبيق أيضًا، لا اعتمادًا على القيد وحده)."""
     if type_ not in WALLET_TRANSACTION_TYPES:
         raise ValueError(f"نوع حركة محفظة غير معروف: {type_}")
 
@@ -122,6 +134,8 @@ def apply_wallet_delta_conn(
         raise ValueError(f"عميل غير موجود: {customer_id}")
 
     new_balance = row[0] + amount
+    if new_balance < 0:
+        raise ValueError("insufficient_wallet_balance")
     conn.execute(
         text("UPDATE customers SET wallet_balance_sar = :b, updated_at = now() WHERE id = :id"),
         {"b": new_balance, "id": customer_id},
@@ -129,11 +143,19 @@ def apply_wallet_delta_conn(
     conn.execute(
         text(
             """
-            INSERT INTO wallet_transactions (customer_id, amount, type, reason, created_at, created_by)
-            VALUES (:cid, :amount, :type, :reason, now(), :created_by)
+            INSERT INTO wallet_transactions
+                (customer_id, amount, type, reason, application_id, created_at, created_by)
+            VALUES (:cid, :amount, :type, :reason, :application_id, now(), :created_by)
             """
         ),
-        {"cid": customer_id, "amount": amount, "type": type_, "reason": reason, "created_by": created_by},
+        {
+            "cid": customer_id,
+            "amount": amount,
+            "type": type_,
+            "reason": reason,
+            "application_id": application_id,
+            "created_by": created_by,
+        },
     )
     return new_balance
 
@@ -162,7 +184,7 @@ def get_wallet_balance(customer_id: int, engine: Engine | None = None) -> Decima
     return value if value is not None else Decimal("0")
 
 
-def consume_application_conn(conn: Connection, customer_id: int) -> dict:
+def consume_application_conn(conn: Connection, customer_id: int, application_id: int | None = None) -> dict:
     """B10 — نقطة الخصم الوحيدة، عند الإرسال الفعلي الناجح **فقط** (تُستدعى
     من `sender._mark_success` بعد نجاح SMTP فعليًا مباشرة — نفس النقطة
     الحرفية التي تُدرج صفّ `applications` — لا مكان آخر بالكود يخصم من
@@ -170,9 +192,51 @@ def consume_application_conn(conn: Connection, customer_id: int) -> dict:
     `billing_mode == 'wallet'` قبل الاستدعاء (بوابة صريحة، لا تخمين هنا).
 
     خلاف نظام `wallets`/`ledger` القديم (خصم وقت بناء الطابور + استرداد
-    عند فشل نهائي): هنا لا خصم إطلاقًا إلا بعد تأكيد الإرسال فعليًا، فلا
-    حاجة لأي منطق استرداد على الإطلاق (فشل الإرسال لا يخصم شيئًا من
-    الأساس) — أبسط وأدق مطابقةً لصياغة أحمد."""
+    عند فشل نهائي): هنا لا خصم إطلاقًا إلا بعد تأكيد الإرسال فعليًا. لكن
+    **الارتداد لاحقًا** (البريد يرتدّ بعد قبول SMTP الأولي — يُكتشَف لاحقًا
+    عبر inbox.py) يستدعي استردادًا تلقائيًا (P0.6، راجع `refund_bounce_conn`
+    أدناه) — لذا نُمرّر `application_id` هنا (إن وُجد) ليكون قابلًا للربط
+    عند ذلك الاسترداد لاحقًا."""
     rate = per_application_rate_conn(conn)
-    new_balance = apply_wallet_delta_conn(conn, customer_id, -rate, "consumption")
+    new_balance = apply_wallet_delta_conn(conn, customer_id, -rate, "consumption", application_id=application_id)
     return {"new_balance": new_balance, "rate": rate, "low_balance": new_balance < rate}
+
+
+def refund_bounce_conn(conn: Connection, application_id: int) -> dict | None:
+    """P0.6: يُستدعى من `inbox.py` عند تعليم تطبيق عميل `billing_mode='wallet'`
+    كـ`bounced` — يبحث عن صفّ الخصم الأصلي (`consumption`) المرتبط بهذا
+    `application_id` ويُعيد **نفس المبلغ** لمحفظة العميل كحركة `bounce_refund`.
+
+    **Idempotent**: الفهرس الفريد الجزئي `(application_id) WHERE
+    type='bounce_refund'` (ترحيلة 0022) يمنع استردادًا مضاعفًا لنفس
+    application_id (مثال: إعادة معالجة نفس بريد ارتداد بالخطأ) — يُستخدَم
+    savepoint (`begin_nested`) لالتقاط `IntegrityError` بأمان بلا إفساد أي
+    معاملة أكبر مفتوحة لدى المستدعي، ويُتجاهل الاسترداد المكرر بصمت (يرجع
+    None، لا استثناء). يرجع None أيضًا إن لم يوجد خصم أصلي مسجّل لهذا
+    `application_id` (عميل غير محفظة، أو تطبيق سابق لإضافة هذا العمود)."""
+    consumption = conn.execute(
+        text(
+            "SELECT customer_id, amount FROM wallet_transactions "
+            "WHERE application_id = :aid AND type = 'consumption' LIMIT 1"
+        ),
+        {"aid": application_id},
+    ).mappings().first()
+    if consumption is None:
+        return None
+
+    refund_amount = -consumption["amount"]  # amount الأصلي سالب (خصم) → الاسترداد موجب
+    savepoint = conn.begin_nested()
+    try:
+        new_balance = apply_wallet_delta_conn(
+            conn,
+            consumption["customer_id"],
+            refund_amount,
+            "bounce_refund",
+            reason="ارتداد رسالة — استرداد تلقائي",
+            application_id=application_id,
+        )
+    except IntegrityError:
+        savepoint.rollback()
+        return None
+    savepoint.commit()
+    return {"customer_id": consumption["customer_id"], "amount": refund_amount, "new_balance": new_balance}
