@@ -16,34 +16,45 @@ Masar Core — كتالوج المنتجات وطلبات الأدمن (B7، ا�
                                     cv_standalone → يسجّل الطلب بحالة 'pending'
                                     مع note ("بانتظار توليد السيرة الذاتية") —
                                     التوليد الفعلي عبر cv_builder.ensure_cv_variant
-                                    يحدث لاحقًا (يحتاج ملفًا مؤكَّدًا + Gotenberg
-                                    حيّ، خارج نطاق هذه النقطة المتزامنة عمدًا).
+                                    يحدث لاحقًا (يحتاج ملفًا مؤكّدًا + Gotenberg
+                                    حيًّا، خارج نطاق هذه النقطة المتزامنة عمدًا).
     GET  /admin/orders?customer_id=  طلبات عميل واحد، الأحدث أولًا
 
 **PRICE_TBD (قاعدة B7 غير قابلة للتفاوض):** الأسعار مؤقتة حتى يقرر أحمد —
 مكانها الوحيد بالكود هو الثابت `PRICE_TBD` أدناه (يُستخدم فقط للعرض/التوثيق؛
-القاعدة الفعلية هي `products.price_sar IS NULL` = "لم يُحدَّد بعد"). لا يظهر
+القاعدة الفعلية هي `products.price_sar IS NULL` = "لم يُحدّد بعد". لا يظهر
 أي سعر/سقف/تقدير لأي عميل من أي نقطة هنا — هذه كلها نقاط أدمن محمية بالتوكن.
-"""
+
+**B10 — wallet_topup (شحن محفظة):** نوع منتج جديد (`products.type='wallet_topup'`،
+صفّ وحيد بترحيلة 0021 برمز `WALLET`) — خلاف subscription/credits، مبلغه
+متغيّر يحدّده العميل وقت الطلب لا سعر ثابت بـ`products.price_sar` (يبقى
+NULL لهذا الصفّ دومًا)؛ لذلك `AdminOrderCreateRequest.amount_sar` مطلوب
+لهذا النوع تحديدًا (يمرّره `telegram_admin_payments.decide_payment` من
+`payment_requests.declared_amount` المؤكّد). التفعيل هنا لا يمنح رصيد
+`wallets`/`ledger` التقليدي ولا ينشئ `subscriptions` — يضيف المبلغ مباشرة
+لـ`customers.wallet_balance_sar` عبر `app.wallet.apply_wallet_delta_conn`
+(نفس معاملة إنشاء الطلب) ويضبط `customers.billing_mode='wallet'` (أول شحن
+محفظة يحوّل العميل لهذا النظام دائمًا — راجع docstring `app.wallet`)."""
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
-from app import planner
+from app import planner, wallet
 from app.auth import require_admin_token
 from app.discovery import get_engine
 from sqlalchemy import text
 
 router = APIRouter(tags=["catalog"], dependencies=[Depends(require_admin_token)])
 
-# المكان الوحيد بالكود لثابت "السعر لم يُحدَّد بعد" (قاعدة B7 غير قابلة
+# المكان الوحيد بالكود لثابت "السعر لم يُحدّد بعد" (قاعدة B7 غير قابلة
 # للتفاوض) — لا تُكتب "TBD"/"قريبًا" في أي مكان آخر؛ الاستعلام دائمًا عبر
 # `price_sar IS NULL` على مستوى القاعدة، وهذا الثابت للعرض النصي فقط.
 PRICE_TBD = None
-PRICE_TBD_LABEL_AR = "يُحدَّد لاحقًا"
+PRICE_TBD_LABEL_AR = "يُحدّد لاحقًا"
 
 DEFAULT_SUBSCRIPTION_DAYS = 30
 ORDER_STATUS_VALUES = {"pending", "active", "fulfilled", "cancelled"}
@@ -92,6 +103,9 @@ class AdminOrderCreateRequest(BaseModel):
     customer_id: int
     product_code: str
     starts_at: datetime | None = None
+    # B10: مطلوب فقط لـproduct.type == 'wallet_topup' (مبلغ متغيّر، لا سعر
+    # ثابت بـproducts.price_sar) — يُتجاهَل تمامًا لأي نوع منتج آخر.
+    amount_sar: float | None = None
 
 
 def _fetch_customer(conn, customer_id: int) -> dict | None:
@@ -156,6 +170,13 @@ async def create_order(body: AdminOrderCreateRequest) -> dict:
         if starts_at.tzinfo is None:
             starts_at = starts_at.replace(tzinfo=timezone.utc)
 
+        if product["kind"] == "wallet_topup":
+            if body.amount_sar is None or body.amount_sar <= 0:
+                raise HTTPException(status_code=400, detail="amount_sar مطلوب وموجب لطلبات شحن المحفظة")
+            order_amount = body.amount_sar
+        else:
+            order_amount = product["price_sar"]
+
         order_row = conn.execute(
             text(
                 """
@@ -167,7 +188,7 @@ async def create_order(body: AdminOrderCreateRequest) -> dict:
             {
                 "cid": body.customer_id,
                 "code": product["code"],
-                "amount": product["price_sar"],
+                "amount": order_amount,
                 "starts": starts_at,
                 "note": None,
             },
@@ -176,6 +197,7 @@ async def create_order(body: AdminOrderCreateRequest) -> dict:
 
         subscription_id: int | None = None
         wallet_balance: int | None = None
+        wallet_balance_sar: Decimal | None = None
         credits_granted: int | None = None
         ends_at: datetime | None = None
         note: str | None = None
@@ -227,6 +249,21 @@ async def create_order(body: AdminOrderCreateRequest) -> dict:
                 )
             new_status = "fulfilled"
 
+        elif product["kind"] == "wallet_topup":
+            # B10: يضيف المبلغ المؤكّد مباشرة لـwallet_balance_sar (سجلّ
+            # تدقيق wallet_transactions بنفس المعاملة عبر apply_wallet_delta_conn)
+            # ويحوّل العميل لـbilling_mode='wallet' — أول شحن محفظة يُفعّل هذا
+            # النظام دائمًا (idempotent: تحديث بلا شرط، لا أثر لو كان مفعّلًا
+            # أصلًا). لا صلة إطلاقًا بـwallets/ledger التقليديين أعلاه.
+            wallet_balance_sar = wallet.apply_wallet_delta_conn(
+                conn, body.customer_id, Decimal(str(order_amount)), "topup", reason=f"order:{order_id}"
+            )
+            conn.execute(
+                text("UPDATE customers SET billing_mode = 'wallet', updated_at = now() WHERE id = :id"),
+                {"id": body.customer_id},
+            )
+            new_status = "fulfilled"
+
         else:  # standalone_cv
             note = "بانتظار توليد السيرة الذاتية"
             new_status = "pending"
@@ -256,6 +293,7 @@ async def create_order(body: AdminOrderCreateRequest) -> dict:
         "subscription_id": subscription_id,
         "credits_granted": credits_granted,
         "wallet_balance": wallet_balance,
+        "wallet_balance_sar": float(wallet_balance_sar) if wallet_balance_sar is not None else None,
         "note": note,
     }
 
