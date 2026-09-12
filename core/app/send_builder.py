@@ -62,7 +62,7 @@ def _to_list(value) -> list:
 
 def _fetch_active_customers_with_mail(conn: Connection, customer_ids: list[int] | None) -> list[dict]:
     # B10: billing_mode/wallet_balance_sar مُضافان هنا فقط للقراءة — تحديد
-    # أي سقف رصيد يُطبَّق (wallets.balance القديم مقابل floor(wallet_balance_sar/rate)
+    # أي سقف رصيد يُطبّق (wallets.balance القديم مقابل floor(wallet_balance_sar/rate)
     # الجديد) يقع لاحقًا بـbuild_queue_for_customer، لا هنا.
     sql = """
         SELECT c.id, c.name, c.phone, c.cities, c.target_daily, c.billing_mode, c.wallet_balance_sar,
@@ -95,7 +95,7 @@ def _fetch_candidate_opportunities(conn: Connection, customer_id: int, today: da
     غير 'cancelled' لنفس opportunity_id يمنع إعادة إدراجها).
 
     `LIMIT MAX_CANDIDATES_PER_CUSTOMER` (تصحيح Low 3 بمراجعة B4 الأوفلاين،
-    docs/reports/B4-offline-review.md): بلا حدّ أعلى، عميل مُعلّق طويلاً ثم
+    docs/reports/B4-offline-review.md): بلا حدّ أعلى، عميل مُعلّق طويلًا ثم
     أُعيد تفعيله بتراكم كبير من فرص planned قديمة قد يُحمّل آلاف الصفوف
     بالذاكرة لعميل واحد رغم أن الحلقة المستدعية تتوقف مبكرًا عند بلوغ الهدف
     اليومي (remaining) — الترتيب `score DESC` أصلًا يضمن مرور أفضل المرشّحين
@@ -113,7 +113,7 @@ def _fetch_candidate_opportunities(conn: Connection, customer_id: int, today: da
                   WHERE sq.opportunity_id = o.id AND sq.status != 'cancelled'
               )
               -- B5a البند 2 (customer_company_exclusions، ترحيل 0008): عميل
-              -- استبعد هذه الشركة (👎 عبر feedback_api.py) — تُستبعَد فورًا
+              -- استبعد هذه الشركة (👎 عبر feedback_api.py) — تُستبعد فورًا
               -- من طابور الإرسال حتى لو كانت مخطّطة أصلًا قبل الاستبعاد
               -- (لا يلمس opportunities.status نفسه — يبقى 'planned' بصمت،
               -- planner.py يملك المسؤولية الوحيدة لتعديل تلك الصفوف).
@@ -222,7 +222,8 @@ def _debit_one_credit(conn: Connection, customer_id: int) -> tuple[int, int]:
         conn.execute(text("INSERT INTO wallets (customer_id, balance) VALUES (:id, 0)"), {"id": customer_id})
     new_balance = current - 1
     if new_balance < 0:
-        raise ValueError(f"رصيد غير كافِِِِِِِِِِِِِِِِِِ للعميل {customer_id}")
+        # B11.8: تصحيح نص الخطأ (كان يحمل تشكيلًا متكررًا خاطئًا بالخطأ).
+        raise ValueError(f"رصيد غير كافِ للعميل {customer_id}")
     conn.execute(
         text("UPDATE wallets SET balance = :b, updated_at = now() WHERE customer_id = :id"),
         {"b": new_balance, "id": customer_id},
@@ -254,8 +255,22 @@ def _mark_skipped(conn: Connection, opportunity_id: int, reason: str) -> None:
     )
 
 
-def build_queue_for_customer(conn: Connection, customer: dict, today: date, rng: random.Random) -> dict:
-    """المنطق الكامل لعميل واحد — يرجع إحصائيات هذه الدورة (queued/skipped)."""
+def build_queue_for_customer(
+    conn: Connection,
+    customer: dict,
+    today: date,
+    rng: random.Random,
+    cooldown_pairs: set[tuple[int, str]] | None = None,
+    weekly_cap_companies: set[str] | None = None,
+) -> dict:
+    """المنطق الكامل لعميل واحد — يرجع إحصائيات هذه الدورة (queued/skipped).
+
+    B11.4: `cooldown_pairs`/`weekly_cap_companies` معاملان اختياريان — إن
+    مُرّا (الحالة المعتادة الآن من `build_queue_round` أدناه، الذي يجلبهما
+    مرة واحدة **خارج** حلقة العملاء بدل استعلام مكرر لكل عميل) يُستخدمان
+    مباشرة بلا أي استعلام إضافي هنا. تبقيان None افتراضيًا (يُجلبان محليًا
+    كسابقًا) للتوافق الخلفي مع أي استدعاء مباشر لهذه الدالة (مثل اختبارات
+    قائمة تستدعيها منفردة بمعزل عن build_queue_round)."""
     customer_id = customer["id"]
     now_utc = pacing.utc_now()
     riyadh_now_naive = pacing.to_riyadh_naive(now_utc)
@@ -291,8 +306,10 @@ def build_queue_for_customer(conn: Connection, customer: dict, today: date, rng:
         return {"customer_id": customer_id, "queued": 0, "skipped": 0, "reason": "target_reached_or_no_credit"}
 
     generic_used = _count_generic_today(conn, customer_id, today_utc_start, today_utc_end)
-    cooldown_pairs = fetch_cooldown_pairs(conn, now_utc)
-    weekly_cap_companies = fetch_weekly_cap_companies(conn, now_utc)
+    if cooldown_pairs is None:
+        cooldown_pairs = fetch_cooldown_pairs(conn, now_utc)
+    if weekly_cap_companies is None:
+        weekly_cap_companies = fetch_weekly_cap_companies(conn, now_utc)
 
     candidates = _fetch_candidate_opportunities(conn, customer_id, today)
     if not candidates:
@@ -471,10 +488,17 @@ def build_queue_round(customer_ids: list[int] | None = None, engine: Engine | No
     """نقطة الدخول الرئيسية — عزل كامل بين العملاء (خطأ عميل واحد لا يوقف
     بقية الدورة، بنفس فلسفة discovery.run_round/planner.run_plan_round)."""
     engine = engine or get_engine()
-    today = pacing.to_riyadh_naive(pacing.utc_now()).date()
+    now_utc = pacing.utc_now()
+    today = pacing.to_riyadh_naive(now_utc).date()
 
     with engine.connect() as conn:
         customers = _fetch_active_customers_with_mail(conn, customer_ids)
+        # B11.4: تُجلَب مرة واحدة هنا (خارج حلقة العملاء أدناه) لا داخل
+        # build_queue_for_customer لكل عميل على حدة — كانت نفس الاستعلامين
+        # (فحص كل applications المرسلة خلال 60/7 يومًا) يتكرران بلا داعٍ لكل
+        # عميل بجولة واحدة رغم أن نتيجتهما مستقلة تمامًا عن العميل نفسه.
+        cooldown_pairs = fetch_cooldown_pairs(conn, now_utc)
+        weekly_cap_companies = fetch_weekly_cap_companies(conn, now_utc)
 
     total_queued = 0
     total_skipped = 0
@@ -487,7 +511,9 @@ def build_queue_round(customer_ids: list[int] | None = None, engine: Engine | No
         rng = pacing.deterministic_rng(seed_text)
         try:
             with engine.begin() as conn:
-                result = build_queue_for_customer(conn, customer, today, rng)
+                result = build_queue_for_customer(
+                    conn, customer, today, rng, cooldown_pairs, weekly_cap_companies
+                )
             total_queued += result.get("queued", 0)
             total_skipped += result.get("skipped", 0)
         except Exception:
