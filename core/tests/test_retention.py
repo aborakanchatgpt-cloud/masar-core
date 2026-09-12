@@ -17,7 +17,7 @@ from app import retention
 
 class _FakeConn:
     """بديل بسيط لـConnection — يُسجّل كل استدعاء execute() (خصوصًا
-    UPDATE ...) دون تنفيذ SQL فعلي؛ subscriptions/customers نفسها تُقدَّم
+    UPDATE ...) دون تنفيذ SQL فعلي، subscriptions/customers نفسها تُقدّم
     عبر monkeypatch على _fetch_reminder_candidates/_fetch_expiry_candidates/
     _fetch_customer (راجع الاختبارات أدناه) لا عبر هذا الكائن."""
 
@@ -78,7 +78,10 @@ def test_send_reminders_sends_within_window_and_marks_sent(monkeypatch: pytest.M
     )
 
     sent_msgs = []
-    monkeypatch.setattr(retention, "send_message", lambda chat_id, text, **kw: sent_msgs.append((chat_id, text)))
+    monkeypatch.setattr(
+        retention, "send_message", lambda chat_id, text, **kw: sent_msgs.append((chat_id, text, kw))
+    )
+    monkeypatch.setattr(retention, "support_whatsapp", lambda: "+966500000000")
     admin_msgs = []
     monkeypatch.setattr(retention, "notify_admin", lambda text: admin_msgs.append(text) or True)
 
@@ -91,6 +94,9 @@ def test_send_reminders_sends_within_window_and_marks_sent(monkeypatch: pytest.M
     assert len(sent_msgs) == 1
     assert sent_msgs[0][0] == 777
     assert "خلال 2 يوم" in sent_msgs[0][1]  # days_left محسوب صحيحًا (Sep12 - Sep10 = يومان)
+    assert "+966500000000" in sent_msgs[0][1]
+    # B4/v2-B6: زرّا التجديد/التواصل بدل نص واتساب فقط.
+    assert sent_msgs[0][2]["reply_markup"] == retention._ACTION_KEYBOARD
     assert len(admin_msgs) == 1
     # UPDATE ...reminder_sent_date تم تنفيذه فعليًا (سجل واحد فقط بهذا الاختبار).
     assert any("reminder_sent_date" in stmt for stmt, _ in engine.conn.executed)
@@ -154,7 +160,10 @@ def test_send_expiry_notices_sends_and_marks_notified(monkeypatch: pytest.Monkey
         lambda conn, cid: {"name": "منى", "phone": "0511111111", "telegram_chat_id": 55},
     )
     sent_msgs = []
-    monkeypatch.setattr(retention, "send_message", lambda chat_id, text, **kw: sent_msgs.append((chat_id, text)))
+    monkeypatch.setattr(
+        retention, "send_message", lambda chat_id, text, **kw: sent_msgs.append((chat_id, text, kw))
+    )
+    monkeypatch.setattr(retention, "support_whatsapp", lambda: "+966500000000")
     admin_msgs = []
     monkeypatch.setattr(retention, "notify_admin", lambda text: admin_msgs.append(text) or True)
 
@@ -163,6 +172,7 @@ def test_send_expiry_notices_sends_and_marks_notified(monkeypatch: pytest.Monkey
 
     assert result["expiry_sent"] == 1
     assert sent_msgs[0][0] == 55
+    assert sent_msgs[0][2]["reply_markup"] == retention._ACTION_KEYBOARD
     assert len(admin_msgs) == 1
     assert any("expiry_notified_at" in stmt for stmt, _ in engine.conn.executed)
 
