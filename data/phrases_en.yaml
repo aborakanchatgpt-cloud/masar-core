@@ -67,11 +67,60 @@ closings:
   - "I hope my application receives your kind consideration, and thank you for your time."
   - "I look forward to hearing from you, and wish you continued success."
 
+# B12.4: "speculative application" phrase bank — the customer is reaching
+# out to a company in their field with no advertised vacancy right now
+# (see docs/TERMS_AR.md, "التقديم المبادر", and core/app/planner.py).
+# {title} here holds the sector family label (e.g. "Quality", "Chemical
+# Engineering / Process") not a fabricated job title.
+openings_speculative:
+  - "Dear Hiring Manager,"
+  - "Hello,"
+  - "I am writing to you on a speculative basis, given your company's presence in {title}."
+  - "I would like to reach out proactively to express interest in joining your team."
+  - "Please accept this speculative application, in case a suitable opening arises."
+  - "I am contacting you directly, hoping a future opportunity in {title} may fit my background."
+  - "I would welcome the chance to join your team should a relevant vacancy come up."
+  - "Having learned about your company's work in {title}, I wanted to reach out proactively."
+  - "Dear Hiring Team, I am writing to you speculatively regarding future opportunities."
+  - "It is a pleasure to reach out with a speculative application, given your standing in this field."
+
+why_me_speculative:
+  - "With {years} years of experience across {skill_a} and {skill_b}, I believe my background could be valuable to your team in {title}."
+  - "Over the past {years} years, I have developed strong skills in {skill_a} and {skill_b}, and I would welcome the opportunity to contribute to your {title} work."
+  - "My hands-on experience in {skill_a}, combined with familiarity in {skill_b}, could make me a good fit for any future opening in {title}."
+  - "With approximately {years} years of experience, I have refined my skills in {skill_a} and {skill_b}, and hope to contribute to your {title} team."
+  - "I believe the combination of my {skill_a} experience and my ability in {skill_b} could add value to your team, should a suitable role arise."
+  - "Across {years} years of work, I have built a deep understanding of {skill_a}, alongside practical experience in {skill_b} — hence this speculative note regarding {title}."
+  - "I bring together technical knowledge of {skill_a} and applied experience in {skill_b}, and would welcome a future opportunity in {title}."
+  - "I have {years} years of experience in this field, with a particular focus on {skill_a} and {skill_b}, and am reaching out speculatively about {title} roles."
+  - "I am confident that my background in {skill_a}, supported by {years} years of experience, would suit any future vacancy in {title}."
+  - "Throughout my career, I have focused on developing my skills in {skill_a} and {skill_b}, and would like to explore joining your {title} team."
+
 signature_template: "{name}\n{phone}\n{city}"
 
 subject_templates:
   - "Application for {title} Position"
   - "Job Application - {title}"
   - "Applying for {title}"
+  - "Regarding Application for {title}"
+  - "CV Submission - {title}"
+  - "Candidacy for {title}"
+  - "Application - {title} Role"
+  - "Interested Candidate - {title}"
+  - "Job Application Submission - {title}"
+  - "My CV - Application for {title}"
+
+# B12.4: speculative-specific subject lines (never imply an advertised vacancy).
+subject_templates_speculative:
+  - "Speculative Application — {title}"
+  - "Proactive Application - {title}"
+  - "Expression of Interest — {title}"
+  - "Speculative CV Submission - {title}"
+  - "Interest in Future Opportunities - {title}"
+  - "Proactive Job Inquiry — {title}"
+  - "Inquiry About Future Openings - {title}"
+  - "CV Submission (Speculative) - {title}"
+  - "Speculative Application for {title} Opportunities"
+  - "Future Opportunities Inquiry - {title}"
 
 subject_generic_prefix: "Employment Inquiry"
