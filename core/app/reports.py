@@ -242,6 +242,15 @@ def _build_text(
             if city:
                 line += f" — {city}"
             lines.append(line)
+        # B4/v2-B6 (12 سبتمبر): سطر تعريفي واحد بلوحة أزرار 👎/🎉 المرفَقة
+        # فعليًا بآخر رسالة (reports_relay.build_feedback_keyboard) — كانت
+        # الأزرار تصل بلا أي شرح لمعناها. يظهر فقط عند وجود تقديمات فعلية
+        # (لا معنى له برسالة "لم نجد فرصًا").
+        lines.append("")
+        lines.append(
+            "اضغط 👎 تحت أي فرصة إذا ما تبي نقدّم لهذه الشركة مرة ثانية، "
+            "و🎉 إذا وصلك منها خبر حلو 🤍"
+        )
     else:
         lines.append(rng.choice(_NO_APPS_LINES))
     lines.append("")
@@ -349,14 +358,26 @@ def _upsert_report(conn: Connection, customer_id: int, report_date: date, payloa
     return result is not None
 
 
+# B4/v2-B6 (12 سبتمبر): الجمعة والسبت (توقيت الرياض، عطلة نهاية الأسبوع
+# السعودية) — date.weekday(): الاثنين=0 ... الجمعة=4، السبت=5.
+_WEEKEND_WEEKDAYS = {4, 5}
+
+
 def run_reports_round(report_date: date | None = None, engine: Engine | None = None) -> dict:
     """نقطة الدخول الرئيسية — صفًّ واحد لكل عميل **نشط فقط** (status='active'،
     الدليل: التقرير خدمة للمشترك الفعّال). عميل موقوف/منتهٍ لا يحصل على
     تقرير اليوم (لا خطأ — يُتخطّى بصمت، محسوب بـ`customers_skipped`).
     idempotent بالكامل (لا يرفع استثناءً لخطأ عميل واحد، بنفس فلسفة
-    discovery.run_round/planner.run_plan_round)."""
+    discovery.run_round/planner.run_plan_round).
+
+    **B4/v2-B6:** الجمعة/السبت — لا تقرير لعميل لم يحصل على أي تقديم فعلي
+    ولا أي ردّ وارد ذلك اليوم (لا معنى لرسالة "لم نجد فرصًا" بيوم عطلة لا
+    عمل فيه أصلًا). عميل حصل فعليًا على تقديم أو ردّ بيوم العطلة (نادر لكن
+    ممكن تقنيًا) يحصل على تقريره كالمعتاد. محسوب بـ`skipped_weekend_empty`
+    (منفصل عن `already_existed`/`errors`)."""
     engine = engine or get_engine()
     report_date = report_date or to_riyadh_naive(utc_now()).date()
+    is_weekend = report_date.weekday() in _WEEKEND_WEEKDAYS
 
     with engine.connect() as conn:
         customer_ids = [
@@ -365,11 +386,15 @@ def run_reports_round(report_date: date | None = None, engine: Engine | None = N
 
     created = 0
     already_existed = 0
+    skipped_weekend_empty = 0
     errors = 0
     for customer_id in customer_ids:
         try:
             payload = build_customer_report(customer_id, report_date, engine=engine)
             if payload is None:
+                continue
+            if is_weekend and not payload["today_applications"] and not payload["replies_today"]:
+                skipped_weekend_empty += 1
                 continue
             with engine.begin() as conn:
                 inserted = _upsert_report(conn, customer_id, report_date, payload)
@@ -387,6 +412,7 @@ def run_reports_round(report_date: date | None = None, engine: Engine | None = N
         "customers_active": len(customer_ids),
         "created": created,
         "already_existed": already_existed,
+        "skipped_weekend_empty": skipped_weekend_empty,
         "errors": errors,
     }
     logger.info("جولة التقارير اليومية انتهت: %s", result)
