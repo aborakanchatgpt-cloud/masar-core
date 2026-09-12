@@ -52,6 +52,11 @@ app = FastAPI(
     title="Masar Core",
     description="الخدمة الأساسية الجديدة لنظام مسار — تحل تدريجيًا محل منطق n8n/Claude Code Remote",
     version="0.3.0",
+    # P0.3: لا توثيق تفاعلي علني (Swagger/ReDoc/openapi.json) — الخدمة إدارية
+    # داخلية بالكامل ولا حاجة لسطح هجوم إضافي.
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 app.include_router(ops_router)
