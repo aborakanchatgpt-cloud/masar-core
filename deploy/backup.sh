@@ -36,7 +36,7 @@ docker compose exec -T postgres pg_dump -U "${POSTGRES_USER:-masar}" "${POSTGRES
 gpg --batch --yes --passphrase "$BACKUP_PASSPHRASE" --symmetric --cipher-algo AES256 -o "$ENC_FILE" "$DUMP_FILE"
 rm -f "$DUMP_FILE"
 
-# B9/A4: نسخة ملفات السيرة الذاتية المولَّدة (core/app/cv_builder.py،
+# B9/A4: نسخة ملفات السيرة الذاتية المولّدة (core/app/cv_builder.py،
 # CV_DATA_DIR=/data/cv داخل حاوية core، volume مُسمّى cv_data مشترك مع
 # core-scheduler — راجع docker-compose.yml). غيابها من النسخ الاحتياطية
 # يعني فقدانها الفعلي عند أي كارثة تمسح الـvolume رغم بقاء سجلّها بقاعدة
@@ -86,3 +86,18 @@ find "$BACKUP_DIR" -name "n8n_*.sql.gpg" -mtime "+${KEEP_DAYS}" -delete
 find "$BACKUP_DIR" -name "n8n_config_*.json.gpg" -mtime "+${KEEP_DAYS}" -delete
 
 echo "$(date -u +%FT%TZ) — نسخة احتياطية مشفّرة: $ENC_FILE"
+
+# B11.7: نسخ خارج الخادم (offsite) — نسخة الخادم المحلية وحدها لا تنجو من
+# كارثة تمسح الخادم نفسه (VPS مفقود/تلف قرص). BACKUP_REMOTE (من .env، مسار
+# rclone جاهز مسبقًا مثل "storagebox:masar") + وجود أمر rclone فعليًا كلاهما
+# شرط؛ غياب أيّهما → "offsite skipped" بصمت بلا فشل السكربت (النسخة المحلية
+# المشفّرة أعلاه اكتملت بالفعل بغضّ النظر عن هذا المتغيّر — هذا فقط طبقة حماية إضافية).
+if [ -n "${BACKUP_REMOTE:-}" ] && command -v rclone >/dev/null 2>&1; then
+  if rclone copy "$BACKUP_DIR" "$BACKUP_REMOTE" --include "*.gpg" --min-age 0s; then
+    echo "$(date -u +%FT%TZ) — نسخ خارجي (offsite) اكتمل إلى: $BACKUP_REMOTE"
+  else
+    echo "$(date -u +%FT%TZ) — تنبيه: فشل النسخ الخارجي (offsite) إلى $BACKUP_REMOTE — النسخة المحلية سليمة رغم ذلك"
+  fi
+else
+  echo "$(date -u +%FT%TZ) — offsite skipped"
+fi
