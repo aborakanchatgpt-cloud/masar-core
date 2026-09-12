@@ -2,10 +2,10 @@
 Masar Core — بوت الأدمن الخاص على تيليجرام (B8: إزالة n8n نهائيًا من مسار
 الدخول الوارد). يُعيد بناء منطق ورشتي عمل n8n القديمتين
 (`n8n/workflows/masar_admin_bot.json` + `masar_admin_bot_part2.json`) داخل
-Core مباشرة، بقائمة أزرار inline واحدة تُغطّي كل ما يحتاجه أحمد يوميًا.
+Core مباشرة، بقائمة أزرار inline واحدة تغطّي كل ما يحتاجه أحمد يوميًا.
 
 **بوابة وصول مغلقة افتراضيًا (fail-closed)** — نفس فلسفة app.auth تمامًا:
-لا رسالة تُعالَج ولا ردّ يُرسل لأي محادثة غير `is_admin_chat` (المالك، أو
+لا رسالة تُعالَج ولا رديُرسل لأي محادثة غير `is_admin_chat` (المالك، أو
 مفوّض نشط مربوط — B9/B2). إن غاب MASAR_OWNER_CHAT_ID من البيئة يتعطّل هذا
 البوت بالكامل للمالك (لا "يفتح" بالخطأ)؛ محادثات المفوّضين تبقى معطّلة
 تلقائيًا أيضًا (بلا مالك مُعرّف، القائمة الرئيسية بلا معنى تشغيليًا).
@@ -23,13 +23,13 @@ app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، �
 نتيجة كل استدعاء (نفس ما كانت تفعله عقد "تنسيق ..." بـn8n).
 
 **B9/B5 — القائمة الموسّعة + البحث والإعدادات:** أُضيفت 🔍 بحث عن عميل
-(يقبل الآن رقم/جوال/اسم جزئيًا، لا مُعرّفًا رقميًا فقط) ببطاقة عميل موسّعة
+(يقبل الآن رقم/جواله/اسمًا جزئيًا، لا مُعرّفًا رقميًا فقط) ببطاقة عميل موسّعة
 وأزرار إجراء (تفعيل/إيقاف/تمديد/تقرير/رسالة/رابط ربط بريد) بملف منفصل
 `app.telegram_admin_search` (مستورَد كـ`search_mod`)، و✉️ رسالة لعميل (تعيد
 استخدام نفس البحث)، و⚙️ الإعدادات (بيانات التحويل/الباقات/واتساب الدعم)
 بملف منفصل `app.telegram_admin_settings` (مستورَد كـ`settings_mod`) —
 للمالك حصرًا، نفس نمط فحص `is_owner_chat` المُستخدَم أصلًا مع 👥 المفوّضون.
-🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا مستقلًّا بالقائمة،
+🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا مستقلًا بالقائمة،
 لكن `admin:segments` يبقى مسارًا فعّالًا لأي مرجع قديم).
 
 **B9/B3 — 💳 طلبات الدفع:** أصبحت زرًا فعليًا بالقائمة الرئيسية (ملف منفصل
@@ -48,8 +48,8 @@ app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، �
 الجماعية الثلاث تمرّ بخطوة معاينة وتأكيد صريح (`msgbulk:send`) قبل الإرسال
 الفعلي لعدّة عملاء دفعة واحدة، لأنها لا تُراجَع فرديًا كالمسار المحدد.
 
-**B3-متابعة٢ (رقم الحساب + لغة الاسم):** تدفّق ➕ إضافة بنك جديد صار
-يمرّ بخطوة أزرار للغة اسم البنك (`settings:bank_lang:ar|en`) بعد الاسم
+**B3-متابعة² (رقم الحساب + لغة الاسم):** تدفّق ➕ إضافة بنك جديد صار
+يمر بخطوة أزرار للغة اسم البنك (`settings:bank_lang:ar|en`) بعد الاسم
 مباشرة، ثم رقم الحساب والآيبان باختياريّة (كلاهما قابل للتخطي بزر
 `settings:bank_skip:number|iban`، بشرط عدم تخطي الاثنين معًا) — كل هذا
 موجّه لـ`handle_bank_callback` بتمرير `_get_session` أيضًا (لا `_save_session`
@@ -60,7 +60,7 @@ app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، �
 ملاحظة، `customer_messages.direction='in'`) — يفتح خطوة نصّية `inbox_reply`
 تحفظ `customer_id` بالجلسة، وعند كتابة الأدمن الردّ يُعاد استخدام
 `search_mod.send_customer_message_and_log` الموجودة بلا أي تعديل بمنطقها
-(نفس دالة "✉️ رسالة لعميل" الفردية بالضبط — تُرسل فعليًا وتُسجَّل `direction='out'`).
+(نفس دالة "✉️ رسالة لعميل" الفردية بالضبط — تُرسل فعليًا وتُسجّل `direction='out'`).
 """
 from __future__ import annotations
 
@@ -75,6 +75,7 @@ from sqlalchemy import text as sql_text
 from app import telegram_admin_commands as commands
 from app import telegram_admin_delegates as delegates
 from app import telegram_admin_payments as payments_mod
+from app import telegram_admin_reports_summary as summary_mod
 from app import telegram_admin_search as search_mod
 from app import telegram_admin_settings as settings_mod
 from app.discovery import get_engine
@@ -177,7 +178,10 @@ def _main_menu_buttons(is_owner: bool) -> list[list[dict[str, str]]]:
             {"text": "📨 تقرير عميل", "callback_data": "admin:report"},
         ],
         [{"text": "💳 طلبات الدفع", "callback_data": "admin:payments"}],
-        [{"text": "📊 نظرة عامة", "callback_data": "admin:overview"}],
+        [
+            {"text": "📊 نظرة عامة", "callback_data": "admin:overview"},
+            {"text": "📊 تقرير شامل", "callback_data": "admin:summary"},
+        ],
         [{"text": "▶️ تشغيل كل التقارير الآن", "callback_data": "admin:run_reports"}],
         [
             {"text": "⏯️ تفعيل/إيقاف عميل", "callback_data": "admin:status"},
@@ -230,7 +234,7 @@ async def handle_update(update: dict[str, Any], event: ChatEvent, client: Telegr
     if delegate_name:
         logger.info("تم ربط مفوّض جديد بمحادثة أدمن (الاسم=%s, chat_id=%s)", delegate_name, event.chat_id)
         await _send_main_menu(
-            client, event.chat_id, prefix=f"أهلًا بك {delegate_name} 👋 تم ربطك كمفوّض بلوحة تحكّم مسار."
+            client, event.chat_id, prefix=f"أهلاً بك {delegate_name} 👋 تم ربطك كمفوّض بلوحة تحكّم مسار."
         )
         return
 
@@ -263,6 +267,23 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
 
     if data == "admin:segments":
         await commands.reply_segments(client, event.chat_id)
+        return
+
+    # B6/v3: 📊 تقرير شامل — متاح للمالك والمفوّض النشط (بلا فحص إضافي هنا،
+    # نفس نمط 📊 نظرة عامة/📨 تقرير عميل أعلاه — راجع docstring
+    # telegram_admin_reports_summary.py لتفصيل التدفّق).
+    if data == "admin:summary":
+        _clear_session(event.chat_id)
+        await summary_mod.reply_summary_menu(client, event.chat_id)
+        return
+
+    if data.startswith("summary:period:"):
+        period = data[len("summary:period:") :]
+        await summary_mod.send_period_report(client, event.chat_id, period)
+        return
+
+    if data == "summary:custom":
+        await summary_mod.start_custom_range(client, event.chat_id, _save_session)
         return
 
     if data == "admin:lookup":
@@ -560,7 +581,7 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
 
     if step == "msg_text":
         # B3-متابعة: فئة جماعية (target) تمرّ بمعاينة وتأكيد صريح قبل
-        # الإرسال الفعلي — عميل محدد (customer_id) يُرسَل مباشرة كالسابق
+        # الإرسال الفعلي — عميل محدد (customer_id) يُرسل مباشرة كالسابق
         # (مراجعة فردية أصلًا عبر البحث قبل الوصول لهذه الخطوة).
         target = data.get("target")
         if target:
@@ -576,6 +597,13 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
     # بـ`telegram_admin_settings.py` (نفس سبب نقل `settings:bank*` أعلاه).
     if step in settings_mod.BANK_STEP_NAMES:
         await settings_mod.handle_bank_step_text(step, event.chat_id, client, data, text, _save_session, _clear_session)
+        return
+
+    # B6/v3: خطوتَا المدى المخصَّص لـ📊 تقرير شامل (تاريخ بداية/نهاية).
+    if step in summary_mod.CUSTOM_STEP_NAMES:
+        await summary_mod.handle_custom_step_text(
+            step, event.chat_id, client, data, text, _save_session, _clear_session
+        )
         return
 
     if step == "settings_whatsapp_edit":
@@ -641,7 +669,7 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
         return
 
     if step == "extend_days":
-        # B9/A6: كان أي إدخال غير رقمي هنا (خطأ كتابة، مثلًا) يُمرّر بصمت
+        # B9/A6: كان أي إدخال غير رقمي هنا (خطأ كتابة، مثلاً) يُمرّر بصمت
         # كـEXTEND_DEFAULT_DAYS (30 يومًا) بلا أي إشعار — قد يُمدّد اشتراك
         # عميل بعدد أيام لم يقصده أحمد إطلاقًا. الآن: نفس نمط إعادة الطلب
         # المُستخدَم بكل خطوة رقمية أخرى بهذا الملف (extend_id/status_id/...)
