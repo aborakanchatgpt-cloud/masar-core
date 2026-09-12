@@ -43,7 +43,7 @@ from datetime import date, datetime, timedelta, timezone
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app import matching
+from app import company_directory, matching
 from app.collectors.normalizer import company_key as normalize_company_key
 from app.discovery import get_engine
 
@@ -101,7 +101,7 @@ def _to_list(value) -> list:
 
 def _fetch_active_customers(conn: Connection, customer_ids: list[int] | None) -> list[dict]:
     sql = """
-        SELECT c.id, c.target_daily, c.cities, c.families,
+        SELECT c.id, c.target_daily, c.cities, c.families, c.speculative_enabled,
                p.years_exp, p.seniority, p.nationality_saudi, p.titles, p.skills, p.degree,
                COALESCE(w.balance, 0) AS wallet_balance
         FROM customers c
@@ -199,7 +199,7 @@ def fetch_weekly_cap_companies(conn: Connection, now: datetime) -> set[str]:
 
 
 # ---------------------------------------------------------------------------
-# مرشِّح المرشّحين بمجموعات (SQL) — أساسي (عائلات العميل) وموسّع (باقي
+# مرشّح المرشّحين بمجموعات (SQL) — أساسي (عائلات العميل) وموسّع (باقي
 # العائلات، للعملاء القصيرين فقط)
 # ---------------------------------------------------------------------------
 
@@ -255,7 +255,7 @@ def _fetch_widened_candidates(conn: Connection, customer_ids: list[int], years_s
         return []
     # لا DISTINCT هنا: JOIN مباشر (بلا LATERAL/fan-out) بين customers وjobs —
     # كل زوج (c.id, j.id) يظهر مرة واحدة على الأكثر ببنية الاستعلام نفسها،
-    # فلا داعٍ لأي إزالة تكرار (وبالتالي لا خطر مقارنة عمود json — راجع
+    # فلا داعي لأي إزالة تكرار (وبالتالي لا خطر مقارنة عمود json — راجع
     # تعليق _fetch_primary_candidates أعلاه لتفصيل المشكلة الأصلية).
     excluded = ",".join(f"'{name}'" for name in sorted(matching.EXCLUDED_FAMILY_NAMES))
     rows = conn.execute(
@@ -419,7 +419,7 @@ def run_plan_round(
 ) -> dict:
     """جولة تخطيط واحدة كاملة — idempotent (يُعاد استدعاؤها كل ساعة/يدويًا
     بلا أثر جانبي غير المرغوب: العملاء الذين بلغوا هدفهم اليومي أصلًا
-    يُتخطَّون، ومن لم يبلغه يُكمَّل الباقي فقط)."""
+    يُتخطَّون، ومن لم يبلغه يُكمّل الباقي فقط)."""
     engine = engine or get_engine()
     started = time.monotonic()
     now = now_riyadh()
@@ -489,6 +489,10 @@ def run_plan_round(
         if still_short > 0:
             short_targets[cid] = still_short
 
+    # B12.3: نتتبّع الباقي بعد تمريرة التوسيع لكل عميل — يُغذّي تمريرة
+    # التقديم المبادر أدناه (تعمل فقط للعملاء الذين لم يكفهم حتى التوسيع).
+    remaining_after_widened: dict[int, int] = {}
+
     if short_targets:
         short_ids = list(short_targets.keys())
         with engine.connect() as conn:
@@ -513,10 +517,50 @@ def run_plan_round(
                 customers_with_selection.add(cid)
             for result, row in sel:
                 to_insert.append(_result_to_insert_row(cid, result, planned_for))
+                # B12.3: يجب تحديث المجموعتين هنا أيضًا (لم يكن ضروريًا قبل
+                # وجود تمريرة إضافية بعد التوسيع — التقديم المبادر أدناه
+                # يعتمد عليهما لتفادي اختيار شركة استُخدمت أصلًا بهذه الجولة).
+                planned_job_ids.setdefault(cid, set()).add(result.job_id)
+                ck = normalize_company_key(row.get("company_name"))
+                if ck:
+                    planned_companies.setdefault(cid, set()).add(ck)
+            leftover = remaining - len(sel)
+            if leftover > 0:
+                remaining_after_widened[cid] = leftover
+
+    # -----------------------------------------------------------------
+    # B12.3: التقديم المبادر — يُكمّل من company_directory فقط للعملاء
+    # الذين لم يبلغوا هدفهم اليومي حتى بعد التوسيع، وفعّلوا الميزة
+    # (customers.speculative_enabled، افتراضي true). بحد أقصى
+    # MAX_SPECULATIVE_PER_CUSTOMER_PER_DAY/يوم/عميل، بنفس تبريد 60 يومًا
+    # وسقف 3 عملاء/شركة/أسبوع المُجلَبين أصلًا أعلى الدالة (company_key
+    # الشركة الحقيقية — راجع docstring company_directory.ensure_company_and_job).
+    # -----------------------------------------------------------------
+    to_insert_speculative: list[dict] = []
+    if remaining_after_widened:
+        customers_by_id = {c["id"]: c for c in customers}
+        with engine.begin() as conn:
+            _set_schema(conn, schema)
+            for cid, remaining in remaining_after_widened.items():
+                customer_row = customers_by_id.get(cid) or {}
+                sel = _select_speculative_for_customer(
+                    conn,
+                    customer_row,
+                    profiles_by_id[cid],
+                    remaining,
+                    cooldown_pairs=cooldown_pairs,
+                    weekly_cap_companies=weekly_cap_companies,
+                    already_planned_companies=planned_companies.setdefault(cid, set()),
+                )
+                if sel:
+                    customers_with_selection.add(cid)
+                for item in sel:
+                    to_insert_speculative.append(_speculative_insert_row(cid, item, planned_for))
 
     with engine.begin() as conn:
         _set_schema(conn, schema)
         _insert_opportunities(conn, to_insert)
+        _insert_speculative_opportunities(conn, to_insert_speculative)
 
     elapsed = round(time.monotonic() - started, 3)
     result = {
@@ -524,6 +568,7 @@ def run_plan_round(
         "customers_active": len(customers),
         "customers_planned": len(customers_with_selection),
         "opportunities_planned": len(to_insert),
+        "opportunities_speculative": len(to_insert_speculative),
         "seconds": elapsed,
         "planned_for": planned_for.isoformat(),
     }
@@ -540,3 +585,89 @@ def _result_to_insert_row(customer_id: int, result: matching.MatchResult, planne
         "reasons": json.dumps(result.score_parts, ensure_ascii=False),
         "planned_for": planned_for,
     }
+
+
+# ---------------------------------------------------------------------------
+# B12.3: التقديم المبادر — اختيار من company_directory (بلا درجة/مطابقة،
+# فلترة مباشرة بالعائلة/المدينة فقط) وإدراجه بعلامة speculative=true.
+# ---------------------------------------------------------------------------
+
+
+def _select_speculative_for_customer(
+    conn: Connection,
+    customer_row: dict,
+    profile: matching.CustomerProfile,
+    remaining: int,
+    *,
+    cooldown_pairs: set[tuple[int, str]],
+    weekly_cap_companies: set[str],
+    already_planned_companies: set[str],
+) -> list[dict]:
+    if remaining <= 0:
+        return []
+    if not customer_row.get("speculative_enabled", True):
+        return []
+    families = [f for f in profile.families if f]
+    if not families:
+        return []
+
+    cap = min(remaining, company_directory.MAX_SPECULATIVE_PER_CUSTOMER_PER_DAY)
+    flexible = company_directory.is_flexible_cities(profile.cities)
+    # نجلب أكثر من cap مرشّحًا (×5) لأن جزءًا منهم سيُستبعَد بالتبريد/السقف/
+    # التكرار بنفس الجولة — احتياط رخيص بدل استعلامات متكررة لكل استبعاد.
+    candidates = company_directory.fetch_candidates_for_customer(
+        conn, families, profile.cities, flexible, cap * 5
+    )
+
+    selected: list[dict] = []
+    for cand in candidates:
+        if len(selected) >= cap:
+            break
+        ck = normalize_company_key(cand.get("name"))
+        if not ck or ck in already_planned_companies:
+            continue
+        if (profile.customer_id, ck) in cooldown_pairs:
+            continue
+        if ck in weekly_cap_companies:
+            continue
+        job_id = company_directory.ensure_company_and_job(conn, cand)
+        already_planned_companies.add(ck)
+        selected.append(
+            {
+                "job_id": job_id,
+                "company_directory_id": cand["id"],
+                "sector_family": cand["sector_family"],
+            }
+        )
+    return selected
+
+
+def _speculative_insert_row(customer_id: int, item: dict, planned_for: date) -> dict:
+    return {
+        "customer_id": customer_id,
+        "job_id": item["job_id"],
+        "reasons": json.dumps(
+            {"speculative": True, "company_directory_id": item["company_directory_id"], "sector_family": item["sector_family"]},
+            ensure_ascii=False,
+        ),
+        "planned_for": planned_for,
+    }
+
+
+def _insert_speculative_opportunities(conn: Connection, rows: list[dict]) -> None:
+    if not rows:
+        return
+    # DO NOTHING عمدًا (لا DO UPDATE كـ_insert_opportunities العادية): مرة
+    # واحدة تكفي لكل زوج (عميل، شركة دليل) — لا داعٍ لتحديث `score`/`tier`
+    # الثابتين هنا بكل جولة، ولا لإعادة لمس صفّ ربما تقدّم حالته فعليًا
+    # (queued/sent) بجولة سابقة.
+    conn.execute(
+        text(
+            """
+            INSERT INTO opportunities (customer_id, job_id, score, tier, reasons, planned_for, status, speculative, created_at)
+            VALUES (:customer_id, :job_id, 0.5, 'C', :reasons, :planned_for, 'planned', true, now())
+            ON CONFLICT (customer_id, job_id) DO NOTHING
+            """
+        ),
+        rows,
+    )
