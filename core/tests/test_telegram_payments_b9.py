@@ -440,3 +440,55 @@ def test_start_with_no_priced_products_notifies_admin_and_holds(engine, monkeypa
     step, _data = ob._get_session(chat_id)
     assert step == "await_package"
     ob._clear_session(chat_id)
+
+
+def test_create_payment_request_updates_existing_pending_instead_of_duplicating(engine):
+    """B11.2: طلب pending موجود للعميل → المكالمة الثانية تُحدِّثه (نفس id،
+    منتج/مبلغ جديدان، وتُصفَّر حقول الإيصال) بدل إدراج صفّ ثانٍ يتيم."""
+    tag = uuid.uuid4().hex[:10]
+    with engine.begin() as conn:
+        customer_id = conn.execute(
+            text(
+                "INSERT INTO customers (name, email_service, status, target_daily) "
+                "VALUES (:n, :e, 'active', 17) RETURNING id"
+            ),
+            {"n": f"Pay Merge Test {tag}", "e": f"pay-merge-{tag}@masar.invalid"},
+        ).scalar_one()
+
+    try:
+        request_id_1, updated_1 = pay._create_payment_request(customer_id, "CR100", 60.0)
+        assert updated_1 is False
+
+        # نُثبت أن الطلب الأول يحمل بيانات إيصال قبل المحاولة الثانية،
+        # لنتأكد أن التحديث يُصفّرها فعليًا لا يُبقيها كما هي.
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "UPDATE payment_requests SET receipt_path = 'x.jpg', receipt_kind = 'photo', "
+                    "declared_amount = 60, sender_name = 'فلان' WHERE id = :id"
+                ),
+                {"id": request_id_1},
+            )
+
+        request_id_2, updated_2 = pay._create_payment_request(customer_id, "CR300", 150.0)
+        assert updated_2 is True
+        assert request_id_2 == request_id_1
+
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT product_code, expected_amount, receipt_path, receipt_kind, declared_amount, sender_name "
+                     "FROM payment_requests WHERE customer_id = :cid"),
+                {"cid": customer_id},
+            ).mappings().all()
+        assert len(rows) == 1  # لا تراكم — صفّ واحد فقط لهذا العميل
+        row = rows[0]
+        assert row["product_code"] == "CR300"
+        assert float(row["expected_amount"]) == 150.0
+        assert row["receipt_path"] is None
+        assert row["receipt_kind"] is None
+        assert row["declared_amount"] is None
+        assert row["sender_name"] is None
+    finally:
+        with engine.begin() as conn:
+            conn.execute(text("DELETE FROM payment_requests WHERE customer_id = :cid"), {"cid": customer_id})
+            conn.execute(text("DELETE FROM customers WHERE id = :cid"), {"cid": customer_id})
