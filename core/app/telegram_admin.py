@@ -29,7 +29,7 @@ app.guarantee_api) — لا إعادة تطبيق لأي منطق أعمال، �
 استخدام نفس البحث)، و⚙️ الإعدادات (بيانات التحويل/الباقات/واتساب الدعم)
 بملف منفصل `app.telegram_admin_settings` (مستورَد كـ`settings_mod`) —
 للمالك حصرًا، نفس نمط فحص `is_owner_chat` المُستخدَم أصلًا مع 👥 المفوّضون.
-🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا مستقلًا بالقائمة،
+🧭 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا مستقلًا بالقائمة،
 لكن `admin:segments` يبقى مسارًا فعّالًا لأي مرجع قديم).
 
 **B9/B3 — 💳 طلبات الدفع:** أصبحت زرًا فعليًا بالقائمة الرئيسية (ملف منفصل
@@ -67,6 +67,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fastapi import HTTPException
@@ -78,6 +79,7 @@ from app import telegram_admin_payments as payments_mod
 from app import telegram_admin_reports_summary as summary_mod
 from app import telegram_admin_search as search_mod
 from app import telegram_admin_settings as settings_mod
+from app import wallet
 from app.discovery import get_engine
 from app.telegram_client import ChatEvent, TelegramClient
 from app.telegram_nav import nav_rows
@@ -146,7 +148,7 @@ def is_admin_chat(chat_id: int) -> bool:
     """B9/B2: المالك دومًا، أو مفوّض نشط مربوط فعليًا بهذا chat_id
     (`admin_delegates.active AND telegram_chat_id = chat_id`).
 
-    فحص المالك أولًا **بلا أي استعلام قاعدة بيانات** — المسار الشائع لكل
+    فحص المالك أولاً **بلا أي استعلام قاعدة بيانات** — المسار الشائع لكل
     رسالة من أحمد نفسه (الاستخدام الغالب فعليًا)، واستعلام admin_delegates
     يقع فقط لو لم يكن chat_id هو المالك (خطوة إضافية نادرة الحدوث نسبيًا)."""
     if is_owner_chat(chat_id):
@@ -168,7 +170,7 @@ def is_admin_chat(chat_id: int) -> bool:
 
 
 def _main_menu_buttons(is_owner: bool) -> list[list[dict[str, str]]]:
-    # B9/B5: 🧩 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا
+    # B9/B5: 🫑 تصنيف العملاء أُدمِجت بنهاية 📊 نظرة عامة (لم تعد زرًا
     # مستقلًا). ⏯️/⏳ تبقيان أيضًا هنا للوصول السريع (الدليل: "لا مانع")
     # فوق كونهما أزرار إجراء تحت بطاقة نتيجة البحث الآن.
     rows: list[list[dict[str, str]]] = [
@@ -323,6 +325,19 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
     if data.startswith("admin:card_link:"):
         customer_id = int(data[len("admin:card_link:") :])
         await search_mod.card_link(client, event.chat_id, customer_id)
+        return
+
+    # B10 — 💰 تعديل رصيد المحفظة يدويًا: مبلغ (+/-) ثم سبب إلزامي.
+    if data.startswith("admin:wallet_adjust:"):
+        customer_id = int(data[len("admin:wallet_adjust:") :])
+        current = wallet.get_wallet_balance(customer_id)
+        _save_session(event.chat_id, "wallet_adjust_amount", {"customer_id": customer_id})
+        await client.send_message(
+            event.chat_id,
+            f"الرصيد الحالي: {float(current):.2f} ريال.\n"
+            "اكتب المبلغ (ريال) — رقم موجب للإضافة، أو بإشارة سالبة للخصم (مثال: 25 أو -10):",
+            buttons=nav_rows(None, "admin:menu"),
+        )
         return
 
     if data == "admin:msg":
@@ -599,7 +614,7 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
         await settings_mod.handle_bank_step_text(step, event.chat_id, client, data, text, _save_session, _clear_session)
         return
 
-    # B6/v3: خطوتَا المدى المخصَّص لـ📊 تقرير شامل (تاريخ بداية/نهاية).
+    # B6/v3: خطوتَا المدى المخصّص ل📊 تقرير شامل (تاريخ بداية/نهاية).
     if step in summary_mod.CUSTOM_STEP_NAMES:
         await summary_mod.handle_custom_step_text(
             step, event.chat_id, client, data, text, _save_session, _clear_session
@@ -628,6 +643,34 @@ async def _handle_step_text(event: ChatEvent, client: TelegramClient, step: str,
         customer_id = int(data.get("customer_id", 0))
         _clear_session(event.chat_id)
         await search_mod.send_customer_message_and_log(client, event.chat_id, customer_id, text)
+        return
+
+    # B10 — 💰 تعديل رصيد المحفظة: مبلغ (رقم موقّع) ثم سبب إلزامي.
+    if step == "wallet_adjust_amount":
+        try:
+            amount = Decimal(text.replace(",", "").strip())
+        except InvalidOperation:
+            await client.send_message(event.chat_id, "لم أفهم هذا كمبلغ. اكتب رقمًا (مثال: 25 أو -10):")
+            return
+        if amount == 0:
+            await client.send_message(event.chat_id, "المبلغ لازم يكون غير صفر. اكتب رقمًا (مثال: 25 أو -10):")
+            return
+        _save_session(event.chat_id, "wallet_adjust_reason", {**data, "amount": str(amount)})
+        await client.send_message(
+            event.chat_id, "اكتب سبب التعديل (إلزامي — تعويض/تصحيح/هدية...):", buttons=nav_rows(None, "admin:menu")
+        )
+        return
+
+    if step == "wallet_adjust_reason":
+        reason = text.strip()
+        if not reason:
+            await client.send_message(event.chat_id, "السبب إلزامي — اكتب سبب التعديل:")
+            return
+        customer_id = int(data.get("customer_id", 0))
+        amount = Decimal(data.get("amount", "0"))
+        _clear_session(event.chat_id)
+        await commands.reply_wallet_adjust(client, event.chat_id, customer_id, amount, reason)
+        await search_mod.reply_customer_card(client, event.chat_id, customer_id)
         return
 
     if step == "report_id":
