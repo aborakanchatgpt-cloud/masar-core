@@ -52,7 +52,7 @@ from email.message import Message
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from app import mail_crypto
+from app import mail_crypto, wallet
 from app.discovery import get_engine
 
 logger = logging.getLogger("masar.inbox")
@@ -77,7 +77,7 @@ INBOX_BACKOFF_MAX_MINUTES = int(os.environ.get("INBOX_BACKOFF_MAX_MINUTES", "240
 def current_partition(count: int, *, now_ts: float | None = None) -> int:
     """القسم الحالي (0..count-1) المُشتقّ حتميًا من الوقت الحالي (لا حالة
     مخزَّنة — كل عملية/تكة تحسبه بنفس الطريقة بلا تنسيق مركزي). عدد
-    الأقسام<=1 يعني "بلا تقسيم" (يرجع None يُترجَم لاحقًا لـ"كل الصناديق")."""
+    الأقسام<=1 يعني "بلا تقسيم" (يرجع None يُترجَم لاحقًا لـ"كل الصناديق")"""
     if count <= 1:
         return 0
     ts = now_ts if now_ts is not None else time.time()
@@ -317,24 +317,37 @@ def _process_mail_link(engine: Engine, mail_link: dict) -> dict:
                         text("UPDATE applications SET status = 'bounced' WHERE id = :id"),
                         {"id": app_row["id"]},
                     )
-                    current = conn.execute(
-                        text("SELECT balance FROM wallets WHERE customer_id = :id FOR UPDATE"),
-                        {"id": customer_id},
+                    # P0.6: عميل billing_mode='wallet' (B10) لا يلمس
+                    # wallets/ledger القديمين إطلاقًا — استرداده يقع فقط عبر
+                    # wallet.refund_bounce_conn (الرصيد الريالي الجديد،
+                    # يبحث عن الخصم الأصلي بـapplication_id ويردّه بنفس
+                    # المبلغ، idempotent). عميل subscription/credits
+                    # (الافتراضي) يستمر بنفس مسار wallets/ledger القديم
+                    # حرفيًا بلا أي تغيير — صفر تغيير سلوك له.
+                    billing_mode_row = conn.execute(
+                        text("SELECT billing_mode FROM customers WHERE id = :id"), {"id": customer_id}
                     ).first()
-                    new_balance = (current[0] if current else 0) + 1
-                    conn.execute(
-                        text("UPDATE wallets SET balance = :b, updated_at = now() WHERE customer_id = :id"),
-                        {"b": new_balance, "id": customer_id},
-                    )
-                    conn.execute(
-                        text(
-                            """
-                            INSERT INTO ledger (customer_id, delta, reason, ref_id, created_at)
-                            VALUES (:cid, 1, 'bounce_refund', :ref, now())
-                            """
-                        ),
-                        {"cid": customer_id, "ref": f"application:{app_row['id']}"},
-                    )
+                    if billing_mode_row and billing_mode_row[0] == "wallet":
+                        wallet.refund_bounce_conn(conn, app_row["id"])
+                    else:
+                        current = conn.execute(
+                            text("SELECT balance FROM wallets WHERE customer_id = :id FOR UPDATE"),
+                            {"id": customer_id},
+                        ).first()
+                        new_balance = (current[0] if current else 0) + 1
+                        conn.execute(
+                            text("UPDATE wallets SET balance = :b, updated_at = now() WHERE customer_id = :id"),
+                            {"b": new_balance, "id": customer_id},
+                        )
+                        conn.execute(
+                            text(
+                                """
+                                INSERT INTO ledger (customer_id, delta, reason, ref_id, created_at)
+                                VALUES (:cid, 1, 'bounce_refund', :ref, now())
+                                """
+                            ),
+                            {"cid": customer_id, "ref": f"application:{app_row['id']}"},
+                        )
                     bounces += 1
 
     # B6: تصفير عدّاد الأخطاء + next_check_at عند نجاح فعلي — صندوق كان
