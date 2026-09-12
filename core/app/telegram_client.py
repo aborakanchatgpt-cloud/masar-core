@@ -19,7 +19,7 @@ editMessageReplyMarkup، وgetFile/تنزيل ملف — إن احتاج لاح�
 الخطأ هنا أبدًا.
 
 **توحيد ما بعد الدمج (B8، تيّارا الوارد/الصادر)**: هذا الملف هو العميل
-الوحيد الذي يبني رابط/جسم/فحص `ok` لطلب Bot API خامّ بالمستودع كاملًا —
+الوحيد الذي يبني رابط/جسم/فحص `ok` لطلب Bot API خامّ بالمستودع كاملاً —
 لا مكان آخر يستدعي `httpx` مباشرة تجاه `api.telegram.org`. تيّار الوارد
 (الويب هوك، `telegram_onboarding.py`/`telegram_admin.py`) غير متزامن
 بطبيعته (مسار FastAPI) فيستخدم `TelegramClient` أعلاه مباشرة. تيّار
@@ -36,6 +36,7 @@ editMessageReplyMarkup، وgetFile/تنزيل ملف — إن احتاج لاح�
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -59,12 +60,17 @@ API_BASE_URL = "https://api.telegram.org"
 TELEGRAM_MESSAGE_LIMIT = 4096
 SAFE_SPLIT_LIMIT = 3500
 
-# أكواد حالة HTTP يُستحسَن إعادة المحاولة عندها (تحدّد المعدّل/فشل مؤقت من
+# أكواد حالة HTTP يُستحسَن إعادة المحاولة عندها (تحدّ المعدّل/فشل مؤقت من
 # طرف تيليجرام) — تُستخدَم فقط من send_message_sync (max_attempts>1)؛
 # TelegramClient._call غير المتزامنة أعلاه تُبقي محاولة واحدة فقط عمدًا
-# (تيار الويب هوك يُفضّل فشلًا سريعًا مُسجَّلًا على تعليق معالجة تحديث تيليجرام
+# (تيار الويب هوك يُفضّل فشلاً سريعًا مُسجَّلاً على تعليق معالجة تحديث تيليجرام
 # بإعادة محاولات — راجع ملاحظة التوحيد أعلى الملف).
 _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+# B11.5: سقف أعلى لمدّة انتظار 429 المقروءة من جسم ردّ تيليجرام
+# (parameters.retry_after) — قيمة نظرية قد تكون كبيرة جدًا وقت ضغط شديد؛
+# 60 ثانية سقف عملي معقول لتيّار الويب هوك (لا يُعلّق أطول من ذلك).
+MAX_429_RETRY_SLEEP_SECONDS = 60.0
 
 
 class TelegramAPIError(RuntimeError):
@@ -122,8 +128,8 @@ class TelegramClient:
     def _method_url(self, method: str) -> str:
         return f"{self.base_url}/bot{self.token}/{method}"
 
-    async def _call(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
-        # لا نُسجّل payload كاملًا بالسجلّ (قد يحوي نص رسالة عميل خاص) —
+    async def _call(self, method: str, payload: dict[str, Any], *, _retried_429: bool = False) -> dict[str, Any]:
+        # لا نُسجّل payload كاملاً بالسجلّ (قد يحوي نص رسالة عميل خاص) —
         # فقط اسم الطريقة ومعرّف الدردشة إن وُجد، للتشخيص بلا تسريب محتوى.
         chat_id = payload.get("chat_id")
         try:
@@ -132,6 +138,30 @@ class TelegramClient:
         except httpx.HTTPError as exc:
             logger.warning("telegram %s فشل اتصال (chat_id=%s): %s", method, chat_id, exc)
             raise TelegramAPIError(f"فشل اتصال Telegram ({method}): {exc}") from exc
+
+        # B11.5: 429 (تجاوز حدّ المعدّل) هو الاستثناء الوحيد الذي نُعيد
+        # المحاولة عنده هنا (محاولة واحدة إضافية فقط، بعكس بقية الأخطاء —
+        # راجع ملاحظة "محاولة واحدة فقط عمدًا" أعلى الملف): تيليجرام يُخبرنا
+        # صراحة بجسم الردّ (`parameters.retry_after`) كم ثانية ننتظر قبل أن
+        # يقبل طلبًا جديدًا؛ انتظار تلك المدّة (بسقف MAX_429_RETRY_SLEEP_SECONDS)
+        # ثم إعادة إرسال نفس الطلب أضمن من فشل فوري مُسجَّل بلا داعِّ.
+        if response.status_code == 429 and not _retried_429:
+            try:
+                body = response.json()
+            except ValueError:
+                body = {}
+            retry_after = (body.get("parameters") or {}).get("retry_after")
+            try:
+                delay = float(retry_after) if retry_after is not None else 1.0
+            except (TypeError, ValueError):
+                delay = 1.0
+            delay = max(0.0, min(delay, MAX_429_RETRY_SLEEP_SECONDS))
+            logger.warning(
+                "telegram %s تلقّى 429 (chat_id=%s) — إعادة محاولة واحدة بعد %.1f ثانية",
+                method, chat_id, delay,
+            )
+            await asyncio.sleep(delay)
+            return await self._call(method, payload, _retried_429=True)
 
         try:
             data = response.json()
@@ -159,7 +189,7 @@ class TelegramClient:
         disable_web_page_preview: bool = True,
     ) -> dict[str, Any]:
         """يرسل رسالة نصية. `buttons` (إن وُجدت) قائمة صفوف، كل صف قائمة
-        أزرار {"text": ..., "callback_data": ...} — تُبنى كـinline_keyboard
+        أزرار {"text": ...، "callback_data": ...} — تُبنى كـinline_keyboard
         مباشرة (معظم المحادثة الجديدة قائمة على أزرار inline؛ استثناء
         وحيد هو طلب رقم الجوال عبر send_contact_request أدناه، الذي يحتاج
         reply_keyboard حقيقية — Telegram لا يدعم "شارك رقمك" كزر inline).
@@ -184,9 +214,9 @@ class TelegramClient:
 
     async def send_contact_request(self, chat_id: int | str, text: str, button_text: str) -> dict[str, Any]:
         """يرسل رسالة مع زر لوحة ردّ واحد (reply_keyboard، لا inline) بخاصية
-        request_contact — الطريقة الوحيدة بواجهة Telegram لطلب رقم جوال
-        موثّق (مُتحقَّق من ملكيته عبر حساب Telegram نفسه، لا نصًا حرًّا قد
-        يكتبه أي شخص). يُستخدم فقط بخطوة ربط هوية تيليجرام بعميل مُسجَّل
+        request_contact — الطريقة الوحيدة بواجهة Telegram لطلب رقم جوال موثّق
+        (مُتحقّق من ملكيته عبر حساب Telegram نفسه، لا نصًا حرًّا قد
+        يكتبه أي شخص). يُستخدم فقط بخطوة ربط هوية تيليجرام بعميل مُسجّل
         مسبقًا (app.telegram_onboarding) — لا مكان آخر يحتاجه."""
         payload: dict[str, Any] = {
             "chat_id": chat_id,
@@ -476,7 +506,7 @@ def send_message_sync(
     sleep_fn: Callable[[int], None] | None = None,
 ) -> dict[str, Any]:
     """يرسل رسالة نصية عبر sendMessage بطلب httpx متزامن (لا AsyncClient) —
-    يرجع جسم رد تيليجرام الكامل (`{"ok": ..., "result": ...}`، بعكس
+    يرجع جسم رد تيليجرام الكامل (`{"ok": ...، "result": ...}`، بعكس
     TelegramClient._call التي تُرجع `result` فقط) حفاظًا على توافق عقد
     الإرجاع الذي كان يعتمده app.telegram_notify قبل التوحيد. يرفع
     TelegramAPIError عند ok:false، رد غير JSON صالح، أو استنفاد كل محاولات
