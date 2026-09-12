@@ -238,7 +238,9 @@ def pending_delegate(engine):
             conn.execute(text("DELETE FROM admin_delegates WHERE id = :id"), {"id": did})
 
 
-def test_delegate_links_via_username_match_on_first_message(engine, pending_delegate):
+def test_delegate_pending_link_stays_silent_until_owner_confirms(engine, pending_delegate):
+    """B11.3: أول رسالة من مفوّض مطابق تخزّن `pending_chat_id` فقط — لا رد
+    له إطلاقًا (يبقى غريبًا حتى يضغط المالك ✅ تأكيد)."""
     did = pending_delegate(username="somedeleg")
     client = RecordingTelegramClient()
     stranger_chat_id = 900111
@@ -249,13 +251,58 @@ def test_delegate_links_via_username_match_on_first_message(engine, pending_dele
         )
     )
 
-    assert any("تم ربطك كمفوّض" in m["text"] for m in client.sent)
+    assert client.sent == []
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT telegram_chat_id FROM admin_delegates WHERE id = :id"), {"id": did}
+            text("SELECT telegram_chat_id, pending_chat_id FROM admin_delegates WHERE id = :id"), {"id": did}
         ).first()
-    assert row[0] == stranger_chat_id
+    assert row[0] is None
+    assert row[1] == stranger_chat_id
+    assert admin.is_admin_chat(stranger_chat_id) is False
+
+    # المالك يؤكّد الربط بزر ✅ تأكيد (dlg:confirm:<id>).
+    client.sent.clear()
+    _run(
+        admin.handle_update(
+            {}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data=f"dlg:confirm:{did}"), client
+        )
+    )
+    assert any("تم تأكيد ربط المفوّض" in m["text"] for m in client.sent)
+    with engine.connect() as conn:
+        row2 = conn.execute(
+            text("SELECT telegram_chat_id, pending_chat_id FROM admin_delegates WHERE id = :id"), {"id": did}
+        ).first()
+    assert row2[0] == stranger_chat_id
+    assert row2[1] is None
     assert admin.is_admin_chat(stranger_chat_id) is True
+
+
+def test_delegate_pending_link_cleared_when_owner_rejects(engine, pending_delegate):
+    """B11.3: رفض المالك (زر ❌) يمسح pending_chat_id بلا أي ربط — الصفّ
+    يبقى نشطًا بانتظار محاولة لاحقة."""
+    did = pending_delegate(username="rejectme")
+    client = RecordingTelegramClient()
+    stranger_chat_id = 900199
+
+    _run(admin.handle_update({}, _make_event(stranger_chat_id, text="مرحبا", from_username="RejectMe"), client))
+    with engine.connect() as conn:
+        row = conn.execute(text("SELECT pending_chat_id FROM admin_delegates WHERE id = :id"), {"id": did}).first()
+    assert row[0] == stranger_chat_id
+
+    client.sent.clear()
+    _run(
+        admin.handle_update(
+            {}, _make_event(OWNER_CHAT_ID, is_callback=True, callback_data=f"dlg:reject:{did}"), client
+        )
+    )
+    assert any("تم رفض طلب ربط" in m["text"] for m in client.sent)
+    with engine.connect() as conn:
+        row2 = conn.execute(
+            text("SELECT telegram_chat_id, pending_chat_id FROM admin_delegates WHERE id = :id"), {"id": did}
+        ).first()
+    assert row2[0] is None
+    assert row2[1] is None
+    assert admin.is_admin_chat(stranger_chat_id) is False
 
 
 def test_delegate_links_via_shared_contact_match(engine, pending_delegate):
@@ -276,12 +323,14 @@ def test_delegate_links_via_shared_contact_match(engine, pending_delegate):
         )
     )
 
-    assert any("تم ربطك كمفوّض" in m["text"] for m in client.sent)
+    # B11.3: نفس مطابقة الرقم كسابقًا، لكن تخزين pending_chat_id فقط الآن.
+    assert client.sent == []
     with engine.connect() as conn:
         row = conn.execute(
-            text("SELECT telegram_chat_id FROM admin_delegates WHERE id = :id"), {"id": did}
+            text("SELECT telegram_chat_id, pending_chat_id FROM admin_delegates WHERE id = :id"), {"id": did}
         ).first()
-    assert row[0] == stranger_chat_id
+    assert row[0] is None
+    assert row[1] == stranger_chat_id
 
 
 def test_shared_contact_of_someone_elses_number_is_not_trusted_for_linking(engine, pending_delegate):
