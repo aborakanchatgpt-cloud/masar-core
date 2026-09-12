@@ -72,6 +72,9 @@ class _FakeAsyncClient:
     calls: list[dict[str, Any]] = []
     response: _FakeResponse = _FakeResponse(json_body={"ok": True, "result": {"message_id": 1}})
     raise_connect_error: bool = False
+    # B11.5: قائمة استجابات مُتتابعة اختيارية (أولوية على `response` أعلاه) —
+    # تُستهلَك واحدة تلو الأخرى، لاختبار سيناريو "429 ثم نجاح" بمكالمتين.
+    response_sequence: list[_FakeResponse] | None = None
 
     def __init__(self, *args, **kwargs):
         pass
@@ -86,6 +89,8 @@ class _FakeAsyncClient:
         type(self).calls.append({"method": "post", "url": url, "json": json})
         if type(self).raise_connect_error:
             raise httpx.ConnectError("boom")
+        if type(self).response_sequence:
+            return type(self).response_sequence.pop(0)
         return type(self).response
 
     async def get(self, url: str) -> _FakeResponse:
@@ -100,6 +105,7 @@ def _patch_httpx(monkeypatch):
     _FakeAsyncClient.calls = []
     _FakeAsyncClient.response = _FakeResponse(json_body={"ok": True, "result": {"message_id": 1}})
     _FakeAsyncClient.raise_connect_error = False
+    _FakeAsyncClient.response_sequence = None
     monkeypatch.setattr(telegram_client.httpx, "AsyncClient", _FakeAsyncClient)
     yield
 
@@ -148,6 +154,89 @@ def test_send_message_raises_on_invalid_json_response():
     client = TelegramClient(token="T")
     with pytest.raises(TelegramAPIError):
         _run(client.send_message(1, "hi"))
+
+
+# ---------------------------------------------------------------------------
+# B11.5: 429 → قراءة retry_after وإعادة محاولة واحدة بعد الانتظار
+# ---------------------------------------------------------------------------
+
+
+def test_send_message_retries_once_after_429_honoring_retry_after(monkeypatch):
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(telegram_client.asyncio, "sleep", _fake_sleep)
+    _FakeAsyncClient.response_sequence = [
+        _FakeResponse(
+            status_code=429,
+            json_body={"ok": False, "error_code": 429, "description": "Too Many Requests",
+                       "parameters": {"retry_after": 3}},
+        ),
+        _FakeResponse(json_body={"ok": True, "result": {"message_id": 42}}),
+    ]
+    client = TelegramClient(token="T")
+    result = _run(client.send_message(1, "hi"))
+
+    assert result == {"message_id": 42}
+    assert len(_FakeAsyncClient.calls) == 2  # محاولة أولى فشلت بـ429 + إعادة محاولة واحدة نجحت
+    assert sleeps == [3.0]
+
+
+def test_send_message_429_retry_delay_capped_at_60_seconds(monkeypatch):
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(telegram_client.asyncio, "sleep", _fake_sleep)
+    _FakeAsyncClient.response_sequence = [
+        _FakeResponse(
+            status_code=429,
+            json_body={"ok": False, "parameters": {"retry_after": 9999}},
+        ),
+        _FakeResponse(json_body={"ok": True, "result": {}}),
+    ]
+    client = TelegramClient(token="T")
+    _run(client.send_message(1, "hi"))
+    assert sleeps == [60.0]
+
+
+def test_send_message_429_without_retry_after_field_defaults_and_retries_once(monkeypatch):
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(telegram_client.asyncio, "sleep", _fake_sleep)
+    _FakeAsyncClient.response_sequence = [
+        _FakeResponse(status_code=429, json_body={"ok": False}),
+        _FakeResponse(json_body={"ok": True, "result": {}}),
+    ]
+    client = TelegramClient(token="T")
+    _run(client.send_message(1, "hi"))
+    assert sleeps == [1.0]
+    assert len(_FakeAsyncClient.calls) == 2
+
+
+def test_send_message_second_429_in_a_row_does_not_retry_forever(monkeypatch):
+    """B11.5: محاولة واحدة إضافية فقط — 429 مستمرّ بعد المحاولة الثانية
+    يُرفَع كخطأ عادي (بلا حلقة انتظار لا نهائية)."""
+    sleeps: list[float] = []
+
+    async def _fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    monkeypatch.setattr(telegram_client.asyncio, "sleep", _fake_sleep)
+    _FakeAsyncClient.response = _FakeResponse(
+        status_code=429, json_body={"ok": False, "description": "still limited", "parameters": {"retry_after": 2}}
+    )
+    client = TelegramClient(token="T")
+    with pytest.raises(TelegramAPIError, match="still limited"):
+        _run(client.send_message(1, "hi"))
+    assert sleeps == [2.0]
+    assert len(_FakeAsyncClient.calls) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +448,7 @@ def test_get_admin_bot_client_returns_client_with_env_token(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# extract_chat_event — تفكيك Update خام
+# extract_chat_event — تفكيك Update الخام
 # ---------------------------------------------------------------------------
 
 
