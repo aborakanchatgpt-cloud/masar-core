@@ -156,7 +156,7 @@ def test_target_met_marks_computed_no_refund(engine, cleanup):
 
 # ---------------------------------------------------------------------------
 # 2. المرتد لا يُحتسب أبدًا (bounce exclusion) — عجز رغم عدد صفوف applications
-#    الكلي مساوٍ للهدف، لأن نصفها مرتدّ.
+#    الكلي مساوِِ للهدف، لأن نصفها مرتدّ.
 # ---------------------------------------------------------------------------
 
 
@@ -180,7 +180,7 @@ def test_bounced_applications_excluded_from_counted_sent(engine, cleanup):
     result = guarantee.evaluate_period(customer_id, engine=engine, now=now)
     assert result["counted_sent"] == guarantee.MONTHLY_TARGET - 10
     assert result["bounced"] == 10
-    assert result["status"] == "extended"  # عجز → تمديد أولاً، لا تعويض فورًا
+    assert result["status"] == "extended"  # عجز → تمديد أولًا، لا تعويض فورًا
 
 
 # ---------------------------------------------------------------------------
@@ -214,11 +214,12 @@ def test_first_shortfall_grants_two_day_grace_extension(engine, cleanup):
 
 
 # ---------------------------------------------------------------------------
-# 4. لا يزال قاصرًا بعد التمديد (بريد سليم) → تعويض تناسبي (سعر معروف).
+# 4. لا يزال قاصرًا بعد التمديد (بريد سليم) → P0.5: تمديد إضافي تناسبي
+#    (ceil(shortfall/daily_target) يومًا)، لا تعويض نقدي أبدًا بعد الآن.
 # ---------------------------------------------------------------------------
 
 
-def test_still_short_after_grace_computes_proportional_refund(engine, cleanup):
+def test_still_short_after_grace_extends_further_instead_of_refund(engine, cleanup):
     created_customers, created_jobs = cleanup
     tag = uuid.uuid4().hex[:10]
     price = 90.0
@@ -231,29 +232,41 @@ def test_still_short_after_grace_computes_proportional_refund(engine, cleanup):
     starts = now - timedelta(days=35)
     ends = now - timedelta(hours=1)
     counted = 400
-    _make_subscription(engine, customer_id, starts_at=starts, ends_at=ends)
+    sub_id = _make_subscription(engine, customer_id, starts_at=starts, ends_at=ends)
     _insert_applications(engine, customer_id, job_id, sent_count=counted, bounced_count=0, within=starts + timedelta(days=1))
 
-    # التقييم الأول يمنح التمديد (extension_days=2)، لا تعويض بعد.
+    # التقييم الأول يمنح مهلة الأداء (extension_days=2)، لا تمديد إضافي بعد.
     first = guarantee.evaluate_period(customer_id, engine=engine, now=now)
     assert first["status"] == "extended"
 
-    # التقييم الثاني (بعد أن انتهت فترة التمديد فعليًا) — لا تقديمات جديدة،
-    # لا يزال قاصرًا بنفس العدّ، والتمديد استُهلِك أصلاً → تعويض.
+    # التقييم الثاني (بعد أن انتهت مهلة الأداء فعليًا) — لا تقديمات جديدة،
+    # لا يزال قاصرًا بنفس العدّ، مهلة الأداء استُهلِكت أصلاً → P0.5: تمديد
+    # إضافي (لا تعويض نقدي أبدًا بعد الآن).
     second = guarantee.evaluate_period(customer_id, engine=engine, now=now + timedelta(days=3))
-    assert second["status"] == "refund_pending"
-    assert second["shortfall"] == guarantee.MONTHLY_TARGET - counted
-    expected_refund = round((guarantee.MONTHLY_TARGET - counted) * price / guarantee.MONTHLY_TARGET, 2)
-    assert float(second["refund_amount"]) == expected_refund
+    shortfall = guarantee.MONTHLY_TARGET - counted
+    assert second["status"] == "extended"
+    assert second["reason"] == "shortfall_extension_granted"
+    assert second["shortfall"] == shortfall
+    assert second["refund_amount"] is None  # لا تحويل نقدي بأي مسار بعد الآن
+    import math
+
+    expected_grant_days = math.ceil(shortfall / 17)  # daily_target المبذور بـ_make_subscription
+    assert second["extension_days_total"] == guarantee.GRACE_EXTENSION_DAYS + expected_grant_days
+
+    with engine.connect() as conn:
+        sub_row = conn.execute(text("SELECT ends_at, status FROM subscriptions WHERE id = :id"), {"id": sub_id}).mappings().first()
+    assert sub_row["status"] == "extended"
+    assert sub_row["ends_at"] == ends + timedelta(days=guarantee.GRACE_EXTENSION_DAYS + expected_grant_days)
 
 
 # ---------------------------------------------------------------------------
-# 5. نفس حالة العجز بعد التمديد لكن **بلا** customers.price_sar محدّد →
-#    refund_amount=NULL، status='refund_pending' (ينتظر المالك يملأ السعر).
+# 5. نفس حالة العجز بعد التمديد لكن **بلا** customers.price_sar محدّد —
+#    P0.5: السعر لم يعد يؤثّر إطلاقًا (لا حساب تعويض أصلًا)، نفس سلوك التمديد
+#    تمامًا سواء كان السعر معروفًا أم لا.
 # ---------------------------------------------------------------------------
 
 
-def test_refund_pending_with_null_price_when_owner_has_not_set_price(engine, cleanup):
+def test_shortfall_extension_ignores_missing_price_sar(engine, cleanup):
     created_customers, created_jobs = cleanup
     tag = uuid.uuid4().hex[:10]
     customer_id = _make_customer(engine, price_sar=None, tag=tag)
@@ -267,10 +280,11 @@ def test_refund_pending_with_null_price_when_owner_has_not_set_price(engine, cle
     _make_subscription(engine, customer_id, starts_at=starts, ends_at=ends)
     _insert_applications(engine, customer_id, job_id, sent_count=300, bounced_count=0, within=starts + timedelta(days=1))
 
-    guarantee.evaluate_period(customer_id, engine=engine, now=now)  # يمنح التمديد
+    guarantee.evaluate_period(customer_id, engine=engine, now=now)  # يمنح مهلة الأداء
     second = guarantee.evaluate_period(customer_id, engine=engine, now=now + timedelta(days=3))
 
-    assert second["status"] == "refund_pending"
+    assert second["status"] == "extended"
+    assert second["reason"] == "shortfall_extension_granted"
     assert second["refund_amount"] is None
 
 
@@ -290,7 +304,7 @@ def test_customer_without_subscription_is_na(engine, cleanup):
 
 # ---------------------------------------------------------------------------
 # 7. انقطاع بسبب بريد العميل (mail_links.status != 'ok') → تمديد بدل تعويض،
-#    حتى لو كان التمديد العادي (2 يوم) قد استُهلِك أصلاً من قبل.
+#    حتى لو كان التمديد العادي (2 يوم) قد استُهلِك أصلًا من قبل.
 # ---------------------------------------------------------------------------
 
 
@@ -330,7 +344,7 @@ def test_customer_caused_mail_outage_extends_instead_of_refund(engine, cleanup):
 # 8. تصحيح B5c (docs/reports/B5a-B2b-review.md، القسم 3.2، عيب [major]):
 #    انقطاع بريد يتراكم ≥2 يوم (outage_extension_days) لا يجوز أن يُسقِط
 #    مهلة الأداء الإلزامية (grace_extension_days) — العميل يجب أن يحصل على
-#    مهلة الأداء الفعلية أولاً بعد إصلاح البريد، قبل أي refund_pending.
+#    مهلة الأداء الفعلية أولًا بعد إصلاح البريد، قبل أي refund_pending.
 # ---------------------------------------------------------------------------
 
 
@@ -380,7 +394,7 @@ def test_mail_outage_extension_does_not_consume_mandatory_grace_period(engine, c
     with engine.begin() as conn:
         conn.execute(text("UPDATE mail_links SET status = 'ok' WHERE customer_id = :cid"), {"cid": customer_id})
 
-    # التقييم التالي (بعد إصلاح البريد): يجب أن يحصل أولاً على مهلة الأداء
+    # التقييم التالي (بعد إصلاح البريد): يجب أن يحصل أولًا على مهلة الأداء
     # الفعلية (extended/grace_period_granted) — **ليس** refund_pending رغم
     # أن outage_extension_days المتراكم (2) كان سيجتاز فحص "extension_days
     # الكلي >= GRACE_EXTENSION_DAYS" بالكود القديم.
@@ -391,9 +405,96 @@ def test_mail_outage_extension_does_not_consume_mandatory_grace_period(engine, c
     assert third["outage_extension_days"] == 2 * guarantee.OUTAGE_EXTENSION_DAYS
 
     # التقييم الرابع (بعد استهلاك مهلة الأداء الفعلية أيضًا) — لا يزال
-    # قاصرًا، البريد سليم → تعويض تناسبي أخيرًا.
+    # قاصرًا، البريد سليم → P0.5: تمديد إضافي تناسبي أخيرًا، لا تعويض نقدي.
     fourth = guarantee.evaluate_period(customer_id, engine=engine, now=now + timedelta(days=25))
-    assert fourth["status"] == "refund_pending"
+    assert fourth["status"] == "extended"
+    assert fourth["reason"] == "shortfall_extension_granted"
     assert fourth["shortfall"] == guarantee.MONTHLY_TARGET - counted
-    expected_refund = round((guarantee.MONTHLY_TARGET - counted) * price / guarantee.MONTHLY_TARGET, 2)
-    assert float(fourth["refund_amount"]) == expected_refund
+    assert fourth["refund_amount"] is None
+
+
+# ---------------------------------------------------------------------------
+# 9. P0.5: سقف التمديدات التلقائية (30 يومًا لكل فترة) — عجز كبير يستهلك
+#    السقف بالكامل عبر تقييمات متتالية → 'extended_final'، بلا أي تعويض.
+# ---------------------------------------------------------------------------
+
+
+def test_extension_cap_closes_period_as_extended_final(engine, cleanup):
+    created_customers, created_jobs = cleanup
+    tag = uuid.uuid4().hex[:10]
+    customer_id = _make_customer(engine, price_sar=90.0, tag=tag)
+    created_customers.append(customer_id)
+    job_id, company_id = _make_job_and_company(engine, tag)
+    created_jobs.append((job_id, company_id))
+
+    now = datetime.now(timezone.utc)
+    starts = now - timedelta(days=40)
+    ends = now - timedelta(hours=1)
+    sub_id = _make_subscription(engine, customer_id, starts_at=starts, ends_at=ends)
+    # بلا أي تقديمات مُحتسَبة إطلاقًا — أقصى عجز ممكن (510).
+
+    first = guarantee.evaluate_period(customer_id, engine=engine, now=now)
+    assert first["status"] == "extended" and first["reason"] == "grace_period_granted"
+
+    second = guarantee.evaluate_period(customer_id, engine=engine, now=now + timedelta(days=3))
+    assert second["status"] == "extended"
+    assert second["extension_days_total"] == guarantee.MAX_AUTO_EXTENSION_DAYS  # 2 + 28 = السقف بالضبط
+
+    third = guarantee.evaluate_period(customer_id, engine=engine, now=now + timedelta(days=35))
+    assert third["status"] == "extended_final"
+    assert third["reason"] == "extension_cap_reached"
+    assert third["refund_amount"] is None
+    assert third["extension_days_total"] == guarantee.MAX_AUTO_EXTENSION_DAYS
+
+    with engine.connect() as conn:
+        sub_row = conn.execute(text("SELECT status FROM subscriptions WHERE id = :id"), {"id": sub_id}).mappings().first()
+    assert sub_row["status"] == "closed"
+
+
+# ---------------------------------------------------------------------------
+# 10. P0.5: إعادة تقييم ارتداد متأخر — سجلّ 'computed' هبط عدده تحت الهدف
+#     (ارتداد اكتُشف بعد إغلاق الفترة) يُعاد فتحه للتقييم.
+# ---------------------------------------------------------------------------
+
+
+def test_reassess_recent_computed_periods_reopens_when_late_bounce_drops_below_target(engine, cleanup):
+    created_customers, created_jobs = cleanup
+    tag = uuid.uuid4().hex[:10]
+    customer_id = _make_customer(engine, price_sar=90.0, tag=tag)
+    created_customers.append(customer_id)
+    job_id, company_id = _make_job_and_company(engine, tag)
+    created_jobs.append((job_id, company_id))
+
+    now = datetime.now(timezone.utc)
+    starts = now - timedelta(days=31)
+    ends = now - timedelta(hours=1)
+    sub_id = _make_subscription(engine, customer_id, starts_at=starts, ends_at=ends)
+    _insert_applications(
+        engine, customer_id, job_id, sent_count=guarantee.MONTHLY_TARGET, bounced_count=0, within=starts + timedelta(days=1)
+    )
+
+    first = guarantee.evaluate_period(customer_id, engine=engine, now=now)
+    assert first["status"] == "computed"
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT status FROM subscriptions WHERE id = :id"), {"id": sub_id}).scalar_one() == "closed"
+
+    # ارتداد متأخر يصل الآن (بعد إغلاق الفترة) — يُعلَّم تطبيق واحد كـ'bounced'.
+    with engine.begin() as conn:
+        app_id = conn.execute(
+            text("SELECT id FROM applications WHERE customer_id = :cid AND status != 'bounced' LIMIT 1"),
+            {"cid": customer_id},
+        ).scalar_one()
+        conn.execute(text("UPDATE applications SET status = 'bounced' WHERE id = :id"), {"id": app_id})
+
+    result = guarantee.reassess_recent_computed_periods(engine=engine, now=now)
+    assert result["checked"] >= 1
+    assert result["corrected"] >= 1
+    assert result["reopened"] >= 1
+
+    with engine.connect() as conn:
+        sub_status = conn.execute(text("SELECT status FROM subscriptions WHERE id = :id"), {"id": sub_id}).scalar_one()
+        ledger_counted = conn.execute(
+            text("SELECT counted_sent FROM guarantee_ledger WHERE customer_id = :cid"), {"cid": customer_id}
+        ).scalar_one()
+    assert sub_status == "active"
+    assert ledger_counted == guarantee.MONTHLY_TARGET - 1
