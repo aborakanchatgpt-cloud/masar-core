@@ -17,7 +17,7 @@
 `app.telegram_payments` لتفصيل لماذا هذا آمن من فخّ B9/B5-hotfix). تحديث
 `payment_requests.status` يقع بمعاملة منفصلة **قبل** استدعاء `create_order`
 (لا معاملة واحدة موحّدة بين الملفين — قرار عملي: `catalog.create_order`
-تدير معاملتها الخاصة أصلًا ولم نُرِد إعادة هيكلتها؛ عند فشلها نُعيد
+تدير معاملتها الخاصة أصلًا ولم نُرد إعادة هيكلتها؛ عند فشلها نُعيد
 `payment_requests.status` لـ'pending' ونُخبر أحمد بالخطأ الفعلي بدل ترك
 حالة متضاربة صامتة)."""
 from __future__ import annotations
@@ -87,7 +87,8 @@ def _fetch_request(request_id: int) -> dict | None:
         row = conn.execute(
             sql_text(
                 """
-                SELECT pr.id, pr.customer_id, pr.product_code, pr.status, p.name_ar AS product_name_ar,
+                SELECT pr.id, pr.customer_id, pr.product_code, pr.status, pr.declared_amount,
+                       p.name_ar AS product_name_ar, p.type AS product_kind,
                        c.name AS customer_name, c.telegram_chat_id, c.cv_pdf_path, c.cities, c.families
                 FROM payment_requests pr
                 JOIN products p ON p.code = pr.product_code
@@ -169,7 +170,7 @@ async def _notify_customer_confirmed(req: dict) -> None:
     elif not req.get("cv_pdf_path"):
         text = (
             f"تم تأكيد اشتراكك 🎉 {req['product_name_ar']}.\n\n"
-            "نكمل تجهيز ملفك — أرسل سيرتك الذاتية كملف PDF 📄"
+            "نكمّل تجهيز ملفك — أرسل سيرتك الذاتية كملف PDF 📄"
         )
     else:
         text = (
@@ -234,8 +235,14 @@ async def decide_payment(client: TelegramClient, chat_id: int, message_id: int |
         return
 
     try:
+        # B10: wallet_topup مبلغه متغيّر (لا سعر ثابت بـproducts.price_sar) —
+        # يُمرّر المبلغ المُعلَن المؤكّد من العميل صراحة؛ أي نوع منتج آخر
+        # يتجاهل amount_sar تمامًا (راجع docstring catalog.create_order).
+        amount_sar = float(req["declared_amount"]) if req.get("product_kind") == "wallet_topup" else None
         await catalog.create_order(
-            catalog.AdminOrderCreateRequest(customer_id=req["customer_id"], product_code=req["product_code"])
+            catalog.AdminOrderCreateRequest(
+                customer_id=req["customer_id"], product_code=req["product_code"], amount_sar=amount_sar
+            )
         )
     except Exception as exc:  # noqa: BLE001 — نعيد الحالة السابقة ونُخبر أحمد بالخطأ الفعلي بدل حالة متضاربة صامتة
         logger.exception("فشل تفعيل الطلب بعد تأكيد الدفع #%s", request_id)
