@@ -29,8 +29,10 @@ from app import customers_api, guarantee_api, overview_api, reports_api
 from app.discovery import get_engine
 from app.phone import canonical_phone
 from app.planner import now_riyadh
+from app.reports import fetch_customer_chat_id
 from app.telegram_client import TelegramClient
 from app.telegram_nav import nav_rows
+from app.telegram_notify_admin import notify_customer
 
 logger = logging.getLogger("masar.telegram_admin_commands")
 
@@ -173,6 +175,18 @@ async def reply_set_status(client: TelegramClient, chat_id: int, customer_id: in
         return
     label = "مُفعَّل ▶️" if new_status == "active" else "مُوقَف ⏸️"
     await client.send_message(chat_id, f"✅ تم تحديث حالة العميل #{result['customer_id']} إلى {label}.")
+    # B4/v2 §تحديثات تلقائية: نُشعر العميل نفسه فور تغيير حالته — best-effort
+    # (notify_customer لا يرفع استثناءً أبدًا)؛ عميل بلا chat_id (لم يربط
+    # حسابه بعد عبر تيليجرام) يُتجاهَل بصمت هنا، لا خطأ للأدمن.
+    customer_chat_id = fetch_customer_chat_id(get_engine(), customer_id)
+    if customer_chat_id is not None:
+        if new_status == "active":
+            notify_customer(customer_chat_id, "تم تفعيل حسابك ✅ يمكنك الآن استخدام خدمات مسار بالكامل.")
+        elif new_status == "paused":
+            notify_customer(
+                customer_chat_id,
+                "تم إيقاف حسابك مؤقتًا 🙏 لأي استفسار تواصل معنا من القائمة الرئيسية.",
+            )
 
 
 async def reply_extend_subscription(client: TelegramClient, chat_id: int, customer_id: int, days: int) -> None:
@@ -202,6 +216,11 @@ async def reply_extend_subscription(client: TelegramClient, chat_id: int, custom
     await client.send_message(
         chat_id, f"✅ تم تمديد اشتراك العميل #{customer_id} بـ{days} يومًا — ينتهي الآن: {row[1]}."
     )
+    # B4/v2 §تحديثات تلقائية: إشعار العميل بالتمديد (best-effort، راجع
+    # التعليق بـreply_set_status أعلاه لنفس منطق التجاهل الصامت بلا chat_id).
+    customer_chat_id = fetch_customer_chat_id(engine, customer_id)
+    if customer_chat_id is not None:
+        notify_customer(customer_chat_id, f"تم تمديد اشتراكك {days} يومًا ✅ ينتهي الآن: {row[1]}.")
 
 
 async def reply_guarantees(client: TelegramClient, chat_id: int) -> None:
