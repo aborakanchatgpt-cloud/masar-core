@@ -30,7 +30,7 @@ from datetime import time as dt_time
 from sqlalchemy import text
 from sqlalchemy.engine import Connection, Engine
 
-from app import apply_email, composer, cv_builder, pacing
+from app import apply_email, composer, cv_builder, pacing, wallet
 from app.collectors.normalizer import company_key as normalize_company_key
 from app.discovery import get_engine
 
@@ -61,8 +61,11 @@ def _to_list(value) -> list:
 
 
 def _fetch_active_customers_with_mail(conn: Connection, customer_ids: list[int] | None) -> list[dict]:
+    # B10: billing_mode/wallet_balance_sar مُضافان هنا فقط للقراءة — تحديد
+    # أي سقف رصيد يُطبَّق (wallets.balance القديم مقابل floor(wallet_balance_sar/rate)
+    # الجديد) يقع لاحقًا بـbuild_queue_for_customer، لا هنا.
     sql = """
-        SELECT c.id, c.name, c.phone, c.cities, c.target_daily,
+        SELECT c.id, c.name, c.phone, c.cities, c.target_daily, c.billing_mode, c.wallet_balance_sar,
                p.years_exp, p.skills, p.cv_text, p.seniority, p.degree, p.certs, p.titles, p.languages,
                COALESCE(w.balance, 0) AS wallet_balance,
                ml.id AS mail_link_id, ml.address AS mail_address, ml.created_at AS mail_created_at,
@@ -263,11 +266,23 @@ def build_queue_for_customer(conn: Connection, customer: dict, today: date, rng:
     today_utc_end = pacing.riyadh_naive_to_utc(day_end_riyadh) + timedelta(seconds=1)
 
     ramp = pacing.ramp_cap(customer.get("mail_created_at"), today)
+    # B10: عميل billing_mode='wallet' يُحسَب سقف رصيده من wallet_balance_sar
+    # (رصيد ريالي) لا من wallets.balance القديم (عدد تقديمات — يبقى صفرًا
+    # دومًا لعميل لم يشترِ قط رصيد "credits" التقليدي، فلو استُخدم هنا لعميل
+    # محفظة لكان سقفه صفرًا دائمًا). عميل subscription (الافتراضي، وكل
+    # عميل حالي قبل B10) يسلك نفس المسار القديم حرفيًا — صفر تغيير سلوك.
+    billing_mode = customer.get("billing_mode") or "subscription"
+    if billing_mode == "wallet":
+        wallet_rate = wallet.per_application_rate_conn(conn)
+        wallet_cap = wallet.applications_affordable(customer.get("wallet_balance_sar"), wallet_rate)
+    else:
+        wallet_cap = customer.get("wallet_balance") or 0
+
     target = min(
         customer.get("target_daily") or pacing.DEFAULT_TARGET_DAILY,
         ramp,
         pacing.MAX_DAILY,
-        customer.get("wallet_balance") or 0,
+        wallet_cap,
     )
 
     already_committed = _count_committed_today(conn, customer_id, today_utc_start, today_utc_end)
@@ -385,12 +400,21 @@ def build_queue_for_customer(conn: Connection, customer: dict, today: date, rng:
             skipped += 1
             continue
 
-        try:
-            new_balance, ledger_id = _debit_one_credit(conn, customer_id)
-        except ValueError:
-            _mark_skipped(conn, cand["opportunity_id"], "insufficient_credit")
-            skipped += 1
-            break
+        # B10: عميل billing_mode='wallet' لا يلمس wallets/ledger القديمين
+        # إطلاقًا — سقف `target` أعلاه (floor(wallet_balance_sar/rate)) هو
+        # الضابط الوحيد لعدد الصفوف المُدرَجة هنا؛ الخصم الفعلي بالريال
+        # يقع لاحقًا عند تأكيد الإرسال الناجح فقط (sender._mark_success)،
+        # لا هنا وقت البناء — لا حاجة لفحص/خصم "رصيد كافٍ" هنا لأن الحلقة
+        # أصلًا لن تتجاوز `remaining` (المشتقّ من target المحدود بالرصيد).
+        if billing_mode == "wallet":
+            ledger_id = None
+        else:
+            try:
+                new_balance, ledger_id = _debit_one_credit(conn, customer_id)
+            except ValueError:
+                _mark_skipped(conn, cand["opportunity_id"], "insufficient_credit")
+                skipped += 1
+                break
 
         attachments = [{"path": cv_variant["pdf_path"], "filename": f"CV_{customer.get('name') or customer_id}.pdf"}]
         insert_row = conn.execute(
@@ -419,10 +443,11 @@ def build_queue_for_customer(conn: Connection, customer: dict, today: date, rng:
         ).first()
         queue_id = insert_row[0]
 
-        conn.execute(
-            text("UPDATE ledger SET ref_id = :ref WHERE id = :id"),
-            {"ref": f"send_queue:{queue_id}", "id": ledger_id},
-        )
+        if ledger_id is not None:
+            conn.execute(
+                text("UPDATE ledger SET ref_id = :ref WHERE id = :id"),
+                {"ref": f"send_queue:{queue_id}", "id": ledger_id},
+            )
         # 'queued' لا 'sent' هنا عمدًا (تصحيح Critical/High 2 بمراجعة B4
         # الأوفلاين، docs/reports/B4-offline-review.md): الإدراج بـsend_queue
         # لا يعني إرسالًا فعليًا بعد — 'sent' الحقيقية تُضبط فقط داخل
