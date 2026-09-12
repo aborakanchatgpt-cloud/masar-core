@@ -6,18 +6,18 @@ Postgres الفعلية اليوم؛ هذا الملف يعيد بناء نفس 
 customers/subscriptions الحقيقيتين، راجع migrations/versions/0004_b3_customers.py).
 
 الفكرتان المنقولتان من n8n حرفيًا:
-    1. تذكير تجديد — اشتراك على وشك الانتهاء (≤3 أيام) يُرسل له العميل
+    1. تذكير تجديد — اشتراك على وشك الانتهاء (≤ 3 أيام) يُرسل له العميل
        تذكيرًا وديًا + إشعار أحمد، مرة واحدة في اليوم كحد أقصى (idempotent
        عبر subscriptions.reminder_sent_date — ترحيل 0013_b8_telegram_outbound).
     2. إشعار انتهاء — اشتراك انتقل فعليًا لحالة 'closed' يُرسل له العميل
        إشعارًا بتوقف البحث + إشعار أحمد، مرة واحدة فقط لكل فترة (idempotent
        عبر subscriptions.expiry_notified_at).
 
-**فرق جوهري متعمَّد عن n8n السابق (وليس نقصًا)**: نسخة n8n كانت تُقارن
-subscriptionEndDate بالتاريخ مباشرة **وتُحدِّث** subscriptionStatus بنفسها
-("Expired") — أي تُقرِّر انتهاء الاشتراك بمعزل عن أي منطق تمديد/ضمان. اليوم
+**فرق جوهري متعمّد عن n8n السابق (وليس نقصًا)**: نسخة n8n كانت تُقارن
+subscriptionEndDate بالتاريخ مباشرة **وتُحدّث** subscriptionStatus بنفسها
+("Expired") — أي تُقرّر انتهاء الاشتراك بمعزل عن أي منطق تمديد/ضمان. اليوم
 core/app/guarantee.py هو المالك الوحيد لمتى/كيف تنتقل subscriptions.status
-(active→extended→closed، بما فيه منطق مهلة الأداء الإلزامية وتمديد انقطاع
+(active→extended→closed، بما فيها منطق مهلة الأداء الإلزامية وتمديد انقطاع
 البريد والتعويض التناسبي — راجع توثيق ذلك الملف بالكامل). لو أعاد هذا
 الملف نفس قرار "انتهى" بمعزل عن guarantee.py لتصادم القراران (مثال: عميل
 بلغ ends_at لكنه لا يزال مؤهّلًا لمهلة يومين تلقائية بـguarantee.py — تعليمه
@@ -25,7 +25,7 @@ core/app/guarantee.py هو المالك الوحيد لمتى/كيف تنتقل 
 أبدًا** إلى subscriptions.status — فقط يقرأ الحالة **التي قرّرها guarantee.py
 فعلًا** (active/extended → تذكير اقتراب، closed → إشعار انتهاء) ويرسل
 الإشعارات المناظرة فقط. هذا هو المقصود بـ"تجنّب ازدواج المنطق" بالتكليف،
-مطبَّقًا هنا كما طُبِّق بملف reports.py مع reports_relay.py."""
+مطبّق هنا كما طُبّق بملف reports.py مع reports_relay.py."""
 from __future__ import annotations
 
 import logging
@@ -36,6 +36,7 @@ from sqlalchemy.engine import Engine
 
 from app.discovery import get_engine
 from app.pacing import to_riyadh_naive, utc_now
+from app.telegram_admin_settings import support_whatsapp
 from app.telegram_notify import send_message
 from app.telegram_notify_admin import notify_admin
 
@@ -45,18 +46,16 @@ logger = logging.getLogger("masar.retention")
 # (`daysLeft <= 3`، عقدة Compute Subscription Status).
 REMINDER_WINDOW_DAYS = 3
 
-# رقم واتساب أحمد بمحتوى الرسائل — نفس القيمة الحرفية المستخدَمة بكل رسائل
-# n8n السابقة الموجَّهة للعميل (retention-auto). لا عمود واتساب مخصَّص
-# بالتصميم الجديد (customers.phone عام) — الرقم الثابت هنا هو "طريقة تواصل
-# أحمد نفسه معنا"، لا رقم العميل، فبقاؤه ثابتًا بالنص صحيح ومقصود.
-_SUPPORT_WHATSAPP = "+966544161255"
-
+# B4/v2-B6 (12 سبتمبر): رقم واتساب الدعم كان مكتوبًا هنا حرفيًا (نفس القيمة
+# بكل رسائل n8n السابقة) — استُبدل بـ`support_whatsapp()` الموحّدة
+# (`app.telegram_admin_settings`، القراءة الوحيدة من `app_settings.support_whatsapp`
+# الآن بكل الملفات، راجع docstring ذلك الملف: "B4/B6 القادمتين ستستوردانها").
 _REMINDER_TEXT = (
     "مرحبًا {name} 🌟\n\n"
     "حبينا نذكرك بود قلب إن اشتراكك في مسار راح ينتهي خلال {days} يوم/أيام "
     "(بتاريخ {end_date}).\n\n"
-    "إذا عجبتك خدماتنا وتحب تكمل معنا بدون انقطاع، بادر بالتواصل معنا على "
-    f"واتساب: {_SUPPORT_WHATSAPP}\n\n"
+    "إذا عجبتك خدماتنا وتحب تكمل معنا بدون انقطاع، اضغط 💳 تجديد الاشتراك "
+    "أدناه، أو تواصل معنا على واتساب: {whatsapp}\n\n"
     "وإن شاء الله دايم في تيسير ورزق يوصلك 🤍"
 )
 
@@ -64,10 +63,23 @@ _EXPIRY_TEXT = (
     "مرحبًا {name}،\n\n"
     "نود إعلامك أن اشتراكك في مسار انتهى، وتوقف البحث والتقديم التلقائي "
     "لك مؤقتًا.\n\n"
-    "إذا تحب ترجع وتكمل معنا، تواصل معنا على واتساب: "
-    f"{_SUPPORT_WHATSAPP}\n\n"
+    "إذا تحب ترجع وتكمل معنا، اضغط 💳 تجديد الاشتراك أدناه، أو تواصل معنا "
+    "على واتساب: {whatsapp}\n\n"
     "ونتمنى لك التوفيق والرزق الطيّب 🤍"
 )
+
+# B4/v2-B6: زرّا إجراء بدل الاكتفاء بنص واتساب فقط (قرار تصميم مطابق لأسلوب
+# المشروع) — "menu:subscription"/"menu:contact" يعملان بلا أي كود توجيه
+# جديد: `telegram_onboarding.handle_update` يوجّه هذين الاستدعاءين بالفعل
+# لكلا مساري العميل النشط والموقوف/المنتهي (راجع `_handle_active_menu`/
+# `_handle_inactive_customer`)، فضغطة الزر تُحسم وقتها بحالة العميل
+# الفعلية عند الضغط، لا بحالته وقت إرسال رسالة التذكير/الانتهاء.
+_ACTION_KEYBOARD = {
+    "inline_keyboard": [
+        [{"text": "💳 تجديد الاشتراك", "callback_data": "menu:subscription"}],
+        [{"text": "📞 تواصل معنا", "callback_data": "menu:contact"}],
+    ]
+}
 
 
 def _riyadh_today() -> date:
@@ -87,7 +99,7 @@ def _fetch_reminder_candidates(conn) -> list[dict]:
     أُرسل التذكير اليوم؟) تقع بالكود بايثون بـ_send_reminders (لا بالـSQL)
     لأنها تحتاج تحويل الرياض عبر pacing.to_riyadh_naive (نفس مبرّر عدم
     استخدام `AT TIME ZONE` مباشرة بـSQL — راجع تعليق رأس core/app/pacing.py
-    عن فخ التوقيت). دالة مستقلة (بدل استعلام inline) حتى تُختبَر منطق
+    عن فخ التوقيت). دالة مستقلة (بدل استعلام inline) حتى تُختبر منطق
     الفلترة/التنسيق بـtest_retention.py بلا اتصال قاعدة بيانات حقيقي."""
     rows = conn.execute(
         text(
@@ -117,7 +129,7 @@ def _fetch_expiry_candidates(conn) -> list[dict]:
 
 def _send_reminders(engine: Engine, today: date) -> dict:
     """اشتراكات active/extended تنتهي خلال REMINDER_WINDOW_DAYS يومًا، لم
-    يُرسَل لها تذكير اليوم بعد."""
+    يُرسل لها تذكير اليوم بعد."""
     sent = 0
     skipped_no_chat = 0
     errors = 0
@@ -141,7 +153,13 @@ def _send_reminders(engine: Engine, today: date) -> dict:
             name = customer.get("name") or "عميلنا"
             if chat_id:
                 try:
-                    send_message(chat_id, _REMINDER_TEXT.format(name=name, days=days_left, end_date=end_riyadh_date.isoformat()))
+                    send_message(
+                        chat_id,
+                        _REMINDER_TEXT.format(
+                            name=name, days=days_left, end_date=end_riyadh_date.isoformat(), whatsapp=support_whatsapp()
+                        ),
+                        reply_markup=_ACTION_KEYBOARD,
+                    )
                 except Exception:  # noqa: BLE001 — عزل خطأ عميل واحد عن بقية الجولة
                     logger.exception("فشل إرسال تذكير التجديد للعميل %s", sub["customer_id"])
                     errors += 1
@@ -152,7 +170,7 @@ def _send_reminders(engine: Engine, today: date) -> dict:
             notify_admin(
                 "🔔 تذكير تجديد اشتراك:\n\n"
                 f"العميل: {name} (id={sub['customer_id']})\n"
-                f"الهاتف: {customer.get('phone') or 'غير مسجَّل'}\n"
+                f"الهاتف: {customer.get('phone') or 'غير مسجّل'}\n"
                 f"ينتهي الاشتراك خلال {days_left} يوم/أيام ({end_riyadh_date.isoformat()})\n\n"
                 + ("تم إرسال تذكير للعميل أيضًا عبر تيليجرام. تابع معه للتجديد قبل الانتهاء."
                    if chat_id else
@@ -169,7 +187,7 @@ def _send_reminders(engine: Engine, today: date) -> dict:
 
 
 def _send_expiry_notices(engine: Engine) -> dict:
-    """اشتراكات انتقلت لحالة 'closed' (قرار guarantee.py الحصري) ولم يُشعَر
+    """اشتراكات انتقلت لحالة 'closed' (قرار guarantee.py الحصري) ولم يُشعر
     عملاؤها/أحمد بعد."""
     sent = 0
     skipped_no_chat = 0
@@ -181,7 +199,7 @@ def _send_expiry_notices(engine: Engine) -> dict:
         for sub in subs:
             customer = _fetch_customer(conn, sub["customer_id"])
             if not customer:
-                # عميل محذوف أو غير موجود (نادر) — نُعلِّم كمُشعَر حتى لا تتكرر
+                # عميل محذوف أو غير موجود (نادر) — نُعلّم كمُشعَر حتى لا تتكرر
                 # المحاولة للأبد على صفّ لا يمكن إكماله أصلًا.
                 conn.execute(
                     text("UPDATE subscriptions SET expiry_notified_at = now() WHERE id = :id"),
@@ -193,7 +211,9 @@ def _send_expiry_notices(engine: Engine) -> dict:
             name = customer.get("name") or "عميلنا"
             if chat_id:
                 try:
-                    send_message(chat_id, _EXPIRY_TEXT.format(name=name))
+                    send_message(
+                        chat_id, _EXPIRY_TEXT.format(name=name, whatsapp=support_whatsapp()), reply_markup=_ACTION_KEYBOARD
+                    )
                 except Exception:  # noqa: BLE001
                     logger.exception("فشل إرسال إشعار انتهاء الاشتراك للعميل %s", sub["customer_id"])
                     errors += 1
@@ -202,9 +222,9 @@ def _send_expiry_notices(engine: Engine) -> dict:
                 skipped_no_chat += 1
 
             notify_admin(
-                "⚠️ انتهى اشتراك عميل ولم يُجدَّد بعد:\n\n"
+                "⚠️ انتهى اشتراك عميل ولم يُجدّد بعد:\n\n"
                 f"العميل: {name} (id={sub['customer_id']})\n"
-                f"الهاتف: {customer.get('phone') or 'غير مسجَّل'}\n\n"
+                f"الهاتف: {customer.get('phone') or 'غير مسجّل'}\n\n"
                 "توقّف البحث التلقائي له تلقائيًا (guarantee.py). إذا جدّد اشتراكه، "
                 "أنشئ اشتراكًا جديدًا له بحسب المسار المعتاد."
             )
