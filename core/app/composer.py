@@ -129,16 +129,33 @@ def build_email(
 ) -> ComposedEmail:
     """نقطة الدخول الرئيسية — يبني رسالة كاملة (موضوع + نص) بلغة الإعلان
     (يُكتشف من job_text_for_language عبر detect_language)، حتمية لكل زوج
-    (customer_id, job_key)."""
+    (customer_id, job_key).
+
+    B12.4: `email_class="speculative"` (التقديم المبادر — عمل جديد يُقدّم
+    لشركة بمجال العميل بلا وظيفة معلنة فعليًا) يختار بنك عبارات فرعي مختلف
+    (`openings_speculative`/`why_me_speculative`/`subject_templates_speculative`
+    بـ phrases_*.yaml) لا يذكر مطلقًا "الوظيفة المعلنة" أو مسمّى وظيفي
+    مُختلَق — بدلًا من ذلك يذكر مجال الشركة (`job_title` هنا يُمرّر كاسم
+    العائلة المهنية بالعربية/الإنجليزية لا كمسمى وظيفي، راجع
+    core/app/planner.py:_speculative_job_title). يتراجع بصمت لعبارات
+    `email_class="posted"` العادية إن كانت مفاتيح `*_speculative` غير
+    موجودة بملف اللغة (توافق خلفي — لا كسر لو نُشر composer.py قبل تحديث
+    ملفات phrases_*.yaml بنفس الدفعة)."""
     language = detect_language(job_text_for_language, job_title)
     phrases = _load_phrases(language)
     rng = _rng_for(customer_id, job_key)
 
-    opening = rng.choice(phrases["openings"])
+    is_speculative = email_class == "speculative"
+    openings_pool = phrases.get("openings_speculative") if is_speculative else None
+    opening = rng.choice(openings_pool or phrases["openings"])
+
     skill_a, skill_b = _pick_two_skills(profile_skills, job_skills, rng, language)
     years_text = _years_phrase(years_exp, language)
-    why_me_template = rng.choice(phrases["why_me"])
+
+    why_me_pool = phrases.get("why_me_speculative") if is_speculative else None
+    why_me_template = rng.choice(why_me_pool or phrases["why_me"])
     why_me = why_me_template.format(title=job_title, years=years_text, skill_a=skill_a, skill_b=skill_b)
+
     attachment_line = rng.choice(phrases["attachment_lines"])
     closing = rng.choice(phrases["closings"])
     signature = phrases["signature_template"].format(
@@ -147,6 +164,9 @@ def build_email(
 
     if email_class == "generic":
         subject = phrases.get("subject_generic_prefix", "") or f"{job_title}"
+    elif is_speculative:
+        subject_pool = phrases.get("subject_templates_speculative") or phrases["subject_templates"]
+        subject = rng.choice(subject_pool).format(title=job_title)
     else:
         subject_template = rng.choice(phrases["subject_templates"])
         subject = subject_template.format(title=job_title)
