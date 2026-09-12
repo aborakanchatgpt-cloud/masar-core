@@ -14,7 +14,7 @@ from app import reports, reports_relay
 
 
 class _FakeEngine:
-    """كائن بديل بلا أي منطق — كل الدوال التي تستقبله بهذا الملف مُموَّهة
+    """كائن بديل بلا أي منطق — كل الدوال التي تستقبله بهذا الملف مُموّهة
     (monkeypatched)، فلا تستدعيه فعليًا؛ يمرَّر فقط لأن run_relay_round
     يتوقّع Engine بتوقيعه."""
 
@@ -80,7 +80,7 @@ def test_run_relay_round_skips_customer_without_chat_id(monkeypatch: pytest.Monk
     assert result["skipped_no_chat"] == 1
     assert result["delivered"] == 0
     assert send_calls == []
-    assert delivered_calls == []  # لا تعليم كمُسلَّم — يبقى queued لمحاولة لاحقة
+    assert delivered_calls == []  # لا تعليم كمُسلّم — يبقى queued لمحاولة لاحقة
 
 
 def test_run_relay_round_splits_long_text_and_attaches_keyboard_only_to_last_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -127,4 +127,57 @@ def test_run_relay_round_counts_error_and_continues_on_send_failure(monkeypatch:
 
     assert result["errors"] == 1
     assert result["delivered"] == 1
-    assert delivered_calls == [5]  # فقط التقرير الثاني عُلِّم كمُسلَّم
+    assert delivered_calls == [5]  # فقط التقرير الثاني عُلِّم كمُسلّم
+
+
+def test_run_relay_round_respects_25_per_second_cap_between_sends(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B11.5: ثلاثة تقارير (رسالة واحدة لكل منها) لعملاء مختلفين → تنتظر
+    الفاصل الأدنى (1/25 ثانية) بين كل إرسال والتالي، لا قبل أول إرسال بالجولة."""
+    pending = [_pending_row(i, 100 + i) for i in range(3)]
+    monkeypatch.setattr(reports, "fetch_pending_reports", lambda engine, limit=200: pending)
+    monkeypatch.setattr(reports, "fetch_customer_chat_id", lambda engine, cid: cid)
+    monkeypatch.setattr(reports, "mark_report_delivered", lambda engine, rid, ch: {"id": rid, "status": "delivered"})
+    monkeypatch.setattr(reports_relay, "send_message", lambda *a, **kw: {"ok": True})
+
+    fake_clock = {"t": 1000.0}
+    monkeypatch.setattr(reports_relay.time, "monotonic", lambda: fake_clock["t"])
+    sleeps: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        fake_clock["t"] += seconds  # الوقت المُحاكى يتقدّم فعليًا بمقدار الانتظار
+
+    monkeypatch.setattr(reports_relay, "_sleep_fn", fake_sleep)
+
+    result = reports_relay.run_relay_round(engine=_FakeEngine())
+
+    assert result["delivered"] == 3
+    # لا انتظار قبل أول إرسال؛ انتظار الفاصل الأدنى (0.04s) قبل كل إرسال تالژ
+    assert len(sleeps) == 2
+    for s in sleeps:
+        assert s == pytest.approx(reports_relay._MIN_INTERVAL_SECONDS)
+
+
+def test_run_relay_round_does_not_wait_when_previous_send_already_slower_than_cap(monkeypatch: pytest.MonkeyPatch) -> None:
+    """B11.5: لو استغرق الإرسال الفعلي نفسه أطول من الفاصل الأدنى أصلًا
+    (شبكة بطيئة) → لا انتظار إضافي قبل التالي."""
+    pending = [_pending_row(i, 100 + i) for i in range(2)]
+    monkeypatch.setattr(reports, "fetch_pending_reports", lambda engine, limit=200: pending)
+    monkeypatch.setattr(reports, "fetch_customer_chat_id", lambda engine, cid: cid)
+    monkeypatch.setattr(reports, "mark_report_delivered", lambda engine, rid, ch: {"id": rid, "status": "delivered"})
+
+    fake_clock = {"t": 1000.0}
+    monkeypatch.setattr(reports_relay.time, "monotonic", lambda: fake_clock["t"])
+
+    def fake_send(chat_id, text, *, reply_markup=None, **kw):
+        fake_clock["t"] += 1.0  # إرسال "بطيء" — أبطأ من الفاصل الأدنى بكثير
+        return {"ok": True}
+
+    monkeypatch.setattr(reports_relay, "send_message", fake_send)
+    sleeps: list[float] = []
+    monkeypatch.setattr(reports_relay, "_sleep_fn", lambda s: sleeps.append(s))
+
+    result = reports_relay.run_relay_round(engine=_FakeEngine())
+
+    assert result["delivered"] == 2
+    assert sleeps == []
