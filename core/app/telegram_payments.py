@@ -18,7 +18,7 @@
 المعتادة.
 
 **التسعير**: باقة بلا `price_sar` (لم يحدّده أحمد بعد من ⚙️ الإعدادات) لا
-تظهر للعميل إطلاقًا — إن لم تكن أي باقة مُسعّرة بعد، العميل الجديد لا يقدر
+تظهر للعميل إطلاقًا؛ إن لم تكن أي باقة مُسعّرة بعد، العميل الجديد لا يقدر
 يكمل تسجيله، ويُخبَر بانتظار قصير بدل رسالة فنية، ويُنبّه أحمد فورًا (نفس
 منطق `PRICE_TBD` بـ`catalog.py` — لا سعر تخميني أبدًا).
 
@@ -38,12 +38,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
 from sqlalchemy import text as sql_text
 
-from app import catalog
+from app import catalog, wallet
 from app import telegram_admin_settings as settings_mod
 from app.discovery import get_engine
 from app.telegram_client import ChatEvent, TelegramAPIError, TelegramClient, get_admin_bot_client
@@ -68,6 +69,12 @@ PAYMENT_FLOW_STEPS = {
     "await_receipt_amount",
     "await_amount_confirm",
     "await_receipt_sender",
+    # B10 — تدفّق "💰 ادفع حسب الاستخدام (محفظة)": اختيار مسار الشحن (عدد
+    # تقديمات محدد/مبلغ حر) ثم رقم واحد بحسب المسار المختار — بعدها يتّحد
+    # التدفّق مع بقية الباقات (await_receipt_file فصاعدًا) بلا أي فرق.
+    "await_wallet_mode",
+    "await_wallet_count",
+    "await_wallet_amount",
 }
 
 
@@ -104,6 +111,10 @@ def _clear_session(chat_id: int) -> None:
 
 
 def _fetch_priced_products() -> list[dict[str, Any]]:
+    # B10: wallet_topup (رمز WALLET) مبلغه متغيّر — price_sar فيه NULL دومًا
+    # عمدًا (لا سعر ثابت)، فيُستثنى صراحة من شرط "price_sar IS NOT NULL"
+    # القديم حتى يظهر للعميل رغم ذلك (باقة إضافية دومًا، راجع docstring
+    # الملف قسم B10). يُرتّب أخيرًا (بعد subscription/credits/standalone_cv).
     engine = get_engine()
     with engine.connect() as conn:
         rows = conn.execute(
@@ -111,8 +122,10 @@ def _fetch_priced_products() -> list[dict[str, Any]]:
                 """
                 SELECT code, name_ar, type AS kind, price_sar, days, applications_included
                 FROM products
-                WHERE active = true AND price_sar IS NOT NULL
-                ORDER BY CASE type WHEN 'subscription' THEN 0 WHEN 'credits' THEN 1 ELSE 2 END, price_sar
+                WHERE active = true AND (price_sar IS NOT NULL OR type = 'wallet_topup')
+                ORDER BY
+                    CASE type WHEN 'subscription' THEN 0 WHEN 'credits' THEN 1 WHEN 'wallet_topup' THEN 3 ELSE 2 END,
+                    price_sar
                 """
             )
         ).mappings().all()
@@ -125,7 +138,7 @@ def _fetch_product(code: str) -> dict[str, Any] | None:
         row = conn.execute(
             sql_text(
                 "SELECT code, name_ar, type AS kind, price_sar, days, applications_included "
-                "FROM products WHERE code = :c AND active = true AND price_sar IS NOT NULL"
+                "FROM products WHERE code = :c AND active = true AND (price_sar IS NOT NULL OR type = 'wallet_topup')"
             ),
             {"c": code},
         ).mappings().first()
@@ -221,9 +234,24 @@ def _fetch_payment_request(request_id: int) -> dict[str, Any] | None:
 # =========================================================================
 
 
-def build_packages_message(products: list[dict[str, Any]]) -> str:
+def build_packages_message(products: list[dict[str, Any]], wallet_rate: Decimal | None = None) -> str:
+    """دالة نقية (بلا قاعدة بيانات) — `wallet_rate` يُمرّر جاهزًا من المستدعي
+    (`start()` يقرأه عبر `wallet.per_application_rate()` قبل الاستدعاء) بدل
+    قراءته هنا مباشرة، فتبقى هذه الدالة قابلة للاختبار بلا اتصال قاعدة
+    بيانات (نفس وعد قسم "دوال نقية" بأعلى الملف) — تستخدم `wallet.DEFAULT_RATE_SAR`
+    إن لم يُمرّر شيء (اختبارات الوحدة فقط؛ الاستدعاء الحي دومًا يمرّره)."""
+    rate = wallet_rate if wallet_rate is not None else wallet.DEFAULT_RATE_SAR
     lines = ["اخترنا لك أفضل الباقات، وربنا يوفقنا نوفّق لك أفضل اختيار 🤍\n"]
     for p in products:
+        if p["kind"] == "wallet_topup":
+            # B10: لا سعر ثابت (مبلغ يحدّده العميل) — يُعرَض سعر التقديم
+            # الواحد الحالي بدل سطر السعر المعتاد.
+            lines.append(
+                f"📦 {p['name_ar']}\n"
+                f"تدفع فقط {rate:.3f} ريال على كل تقديم فعلي ناجح نرسله لك — رصيدك ما ينتهي أبدًا، "
+                "وتشحنه بأي وقت (بلا ضمان، بنفس الوتيرة اليومية)\n"
+            )
+            continue
         price = f"{float(p['price_sar']):.0f} ريال"
         if p["kind"] == "subscription":
             desc = f"اشتراك شهري — تقديم يومي لمدة {p['days']} يومًا (حتى {p['applications_included']} تقديم)، مع ضمان استكمال العدد أو تعويض الفرق، وسيرة ذاتية بصيغة ATS مجانًا"
@@ -242,7 +270,7 @@ def build_packages_buttons(products: list[dict[str, Any]]) -> list[list[dict[str
 
 
 WHICH_PACKAGE_ADVICE = (
-    "إذا تبي بحثًا مستمرَّا يوميًا وتضمن عدد تقديمات ثابت كل شهر، الاشتراك الشهري أنسب لك 🤍\n\n"
+    "إذا تبي بحثًا مستمرّا يوميًا وتضمن عدد تقديمات ثابت كل شهر، الاشتراك الشهري أنسب لك 🤍\n\n"
     "وإذا تبي تجرب الخدمة أو تحتاج عدد تقديمات محدد بلا التزام شهري، باقات الرصيد أنسب — رصيدك ما "
     "ينتهي أبدًا مهما طال الوقت."
 )
@@ -251,9 +279,9 @@ WHICH_PACKAGE_ADVICE = (
 def build_terms_message(domain: str) -> str:
     link = f"https://{domain}/terms" if domain else "(الرابط غير متاح حاليًا، تواصل معنا)"
     return (
-        "قبل ما نكمل، هذي شروط الخدمة وطريقة تعاملنا مع بياناتك:\n"
+        "قبل ما نكمّل، هذي شروط الخدمة وطريقة تعاملنا مع بياناتك:\n"
         f"{link}\n\n"
-        "لما تقرأها اضغط \"أوافق\" ونكمل 🌿"
+        "لما تقرأها اضغط \"أوافق\" ونكمّل 🌿"
     )
 
 
@@ -263,12 +291,16 @@ def build_bank_message(banks: list[dict[str, Any]], package_name: str, price_sar
     — قد تكون أكثر من حساب واحد الآن، فيُعرَض كل حساب مرقّمًا إن كان أكثر
     من واحد.
 
-    B3-متابعة٢: `account_number`/`iban` أصبحا اختياريَّين بمصدر البيانات
-    (راجع `telegram_admin_settings`) — يُعرَض للعميل فقط ما هو مُعبَّأ
+    B3-متابعة²: `account_number`/`iban` أصبحا اختياريّين بمصدر البيانات
+    (راجع `telegram_admin_settings`) — يُعرَض للعميل فقط ما هو مُعبّأ
     فعليًا من الاثنين (واحد على الأقل مضمون بقيد CHECK بقاعدة البيانات).
     `name_language` لا يظهر هنا إطلاقًا — تنظيم داخلي للأدمن فقط، اسم
     البنك يُكتب مرّة واحدة كما أدخله أحمد، لا بلغتين معًا أبدًا."""
-    intro = f"تمام ✅ اخترت {package_name} بقيمة {price_sar:.0f} ريال.\n"
+    # B10: .2f لا .0f — مبلغ شحن المحفظة قد يحمل هلالات (مثال 2.35 ريال)،
+    # كان .0f يُقرّبه خطأًا لأقرب ريال بالعرض فقط (المبلغ الفعلي المحفوظ لم
+    # يتأثر) — .2f يعرض المبلغ الحقيقي بدقّة لكل الباقات (الثابتة أيضًا،
+    # 90.00 بدل 90، بلا أي فرق جوهري لها).
+    intro = f"تمام ✅ اخترت {package_name} بقيمة {price_sar:.2f} ريال.\n"
     lead = "حوّل المبلغ على أي من الحسابات التالية:" if len(banks) > 1 else "حوّل المبلغ على:"
     lines = [intro, lead]
     for i, b in enumerate(banks, start=1):
@@ -292,17 +324,17 @@ async def start(client: TelegramClient, chat_id: int, customer_id: int) -> None:
     products = _fetch_priced_products()
     if not products:
         await client.send_message(
-            chat_id, "نجهّز باقاتنا حاليًا، بنكمل معك خلال وقت قصير بإذن الله 🤍"
+            chat_id, "نجهّز باقاتنا حاليًا، بنكمّل معك خلال وقت قصير بإذن الله 🤍"
         )
         await _notify_admin_urgent(
             f"نحتاجك فورا — عميل جديد #{customer_id} وصل لخطوة اختيار الباقة، لكن ولا باقة مُسعّرة "
-            "بعد بـ⚙️ الإعدادات → 💼 الباقات. أضف الأسعار حتى يقدر يكمل تسجيله."
+            "بعد ب⚙️ الإعدادات → 💼 الباقات. أضف الأسعار حتى يقدر يكمل تسجيله."
         )
         _save_session(chat_id, "await_package", {})
         return
     _save_session(chat_id, "await_package", {})
     await client.send_message(
-        chat_id, build_packages_message(products), buttons=build_packages_buttons(products)
+        chat_id, build_packages_message(products, wallet_rate=wallet.per_application_rate()), buttons=build_packages_buttons(products)
     )
 
 
@@ -346,10 +378,25 @@ async def handle_step(event: ChatEvent, client: TelegramClient, customer_id: int
                 event.chat_id, f"تواصل معنا عبر واتساب على: {settings_mod.support_whatsapp()}"
             )
             return
+        if cb.startswith("wallet:mode:"):
+            await _handle_wallet_mode_chosen(event, client, data, cb[len("wallet:mode:") :])
+            return
         return
 
     if step == "await_bank_retry":
         await client.send_message(event.chat_id, "لسّة نجهّز بيانات التحويل، صبرك علينا شوي 🙏")
+        return
+
+    if step == "await_wallet_mode":
+        await client.send_message(event.chat_id, "اختر عبر الأزرار 👇")
+        return
+
+    if step == "await_wallet_count":
+        await _handle_wallet_count_text(event, client, customer_id, data)
+        return
+
+    if step == "await_wallet_amount":
+        await _handle_wallet_amount_text(event, client, customer_id, data)
         return
 
     if step == "await_receipt_file":
@@ -405,7 +452,7 @@ async def _handle_package_chosen(event: ChatEvent, client: TelegramClient, custo
         )
         return
 
-    await _show_bank_and_create_request(event.chat_id, client, customer_id, product)
+    await _proceed_after_terms(event.chat_id, client, customer_id, product)
 
 
 async def _handle_terms_accepted(event: ChatEvent, client: TelegramClient, customer_id: int, data: dict) -> None:
@@ -420,7 +467,103 @@ async def _handle_terms_accepted(event: ChatEvent, client: TelegramClient, custo
         )
         return
     _accept_terms(customer_id)
-    await _show_bank_and_create_request(event.chat_id, client, customer_id, product)
+    await _proceed_after_terms(event.chat_id, client, customer_id, product)
+
+
+async def _proceed_after_terms(chat_id: int, client: TelegramClient, customer_id: int, product: dict[str, Any]) -> None:
+    """B10: بعد الشروط (أو مباشرة لعميل قبِلها سابقًا) — wallet_topup يمرّ
+    أولاً بخطوة اختيار مسار الشحن (عدد تقديمات/مبلغ حر) قبل بيانات التحويل
+    (لا سعر ثابت معروف بعد)؛ أي باقة أخرى تكمل كالمعتاد مباشرة."""
+    if product["kind"] == "wallet_topup":
+        await _start_wallet_flow(chat_id, client, product)
+        return
+    await _show_bank_and_create_request(chat_id, client, customer_id, product)
+
+
+# -------------------------------------------------------------------
+# B10 — 💰 ادفع حسب الاستخدام (محفظة): مسار الشحن (عدد تقديمات محدد أو
+# مبلغ حر) قبل بيانات التحويل — بعد تحديد المبلغ النهائي، يُعاد استخدام
+# `_show_bank_and_create_request` كليًا (نفس التدفّق حرفيًا لبقية الباقات:
+# بنك → إيصال → مبلغ → اسم مُحوّل → إشعار الأدمن بزرّي ✅/❌).
+# -------------------------------------------------------------------
+
+
+async def _start_wallet_flow(chat_id: int, client: TelegramClient, product: dict[str, Any]) -> None:
+    rate = wallet.per_application_rate()
+    _save_session(chat_id, "await_wallet_mode", {"product_code": product["code"]})
+    await client.send_message(
+        chat_id,
+        (
+            f"تمام 🤍 {product['name_ar']} — تدفع بس على التقديمات الفعلية اللي نرسلها لك، "
+            f"بسعر {rate:.3f} ريال لكل تقديم ناجح. رصيدك ما ينتهي أبدًا مهما طال الوقت.\n\n"
+            "كيف تحب تشحن رصيدك؟"
+        ),
+        buttons=[
+            [
+                {"text": "🔢 عدد تقديمات محدد", "callback_data": "wallet:mode:count"},
+                {"text": "💵 مبلغ حر", "callback_data": "wallet:mode:amount"},
+            ]
+        ],
+    )
+
+
+async def _handle_wallet_mode_chosen(event: ChatEvent, client: TelegramClient, data: dict, mode: str) -> None:
+    if mode == "count":
+        _save_session(event.chat_id, "await_wallet_count", data)
+        await client.send_message(event.chat_id, "كم عدد التقديمات اللي تبي رصيدك يغطّيها؟ (رقم صحيح، مثال: 100)")
+        return
+    if mode == "amount":
+        _save_session(event.chat_id, "await_wallet_amount", data)
+        await client.send_message(event.chat_id, "كم المبلغ اللي تبي تشحنه بالريال؟ (أرقام فقط، مثال: 50)")
+        return
+    await client.send_message(event.chat_id, "اختر عبر الأزرار 👇")
+
+
+async def _handle_wallet_count_text(event: ChatEvent, client: TelegramClient, customer_id: int, data: dict) -> None:
+    text_ = (event.text or "").strip()
+    try:
+        count = int(text_)
+    except ValueError:
+        count = -1
+    if count <= 0:
+        await client.send_message(event.chat_id, "اكتب عدد تقديمات صحيحًا أكبر من صفر (مثال: 100):")
+        return
+
+    product = _fetch_product(data.get("product_code", ""))
+    if not product:
+        await client.send_message(event.chat_id, "عذرًا 🙏 صار خلل، ابدأ من جديد من قائمة الباقات.")
+        return
+
+    rate = wallet.per_application_rate()
+    amount = wallet.amount_for_count(count, rate)
+    await client.send_message(
+        event.chat_id, f"بهذا العدد ({count} تقديم) يكون المبلغ المطلوب تحويله {amount:.2f} ريال."
+    )
+    await _show_bank_and_create_request(
+        event.chat_id, client, customer_id, {**product, "price_sar": amount}
+    )
+
+
+async def _handle_wallet_amount_text(event: ChatEvent, client: TelegramClient, customer_id: int, data: dict) -> None:
+    amount = _parse_amount(event.text or "")
+    if amount is None or amount <= 0:
+        await client.send_message(event.chat_id, "اكتب المبلغ أرقامًا فقط (مثال: 50):")
+        return
+
+    product = _fetch_product(data.get("product_code", ""))
+    if not product:
+        await client.send_message(event.chat_id, "عذرًا 🙏 صار خلل، ابدأ من جديد من قائمة الباقات.")
+        return
+
+    try:
+        amount_decimal = Decimal(str(amount)).quantize(Decimal("0.01"))
+    except InvalidOperation:
+        await client.send_message(event.chat_id, "اكتب المبلغ أرقامًا فقط (مثال: 50):")
+        return
+
+    await _show_bank_and_create_request(
+        event.chat_id, client, customer_id, {**product, "price_sar": amount_decimal}
+    )
 
 
 # -------------------------------------------------------------------
@@ -439,7 +582,7 @@ async def _show_bank_and_create_request(
         await client.send_message(chat_id, "بنرسل لك بيانات التحويل خلال دقائق 🤍")
         await _notify_admin_urgent(
             f"نحتاجك فورا — عميل #{customer_id} اختار {product['name_ar']} لكن ولا حساب بنكي نشط "
-            "بـ⚙️ الإعدادات → 🏦 بيانات التحويل. أضف حسابًا واحدًا على الأقل."
+            "ب⚙️ الإعدادات → 🏦 بيانات التحويل. أضف حسابًا واحدًا على الأقل."
         )
         return
 
@@ -666,5 +809,11 @@ async def _handle_payment_retry(event: ChatEvent, client: TelegramClient, custom
             "عذرًا 🙏 هذي الباقة لم تعد متاحة، اختر من القائمة:",
             buttons=build_packages_buttons(products) if products else None,
         )
+        return
+    # B10: wallet_topup ليس له مبلغ ثابت مخزّن على المنتج نفسه (كل طلب
+    # مبلغه مختلف يحدّده العميل) — إعادة المحاولة تعني إعادة سؤاله عن
+    # المسار/المبلغ من جديد، لا استئناف مبلغ سابق ضاع بمسح الجلسة أصلًا.
+    if product["kind"] == "wallet_topup":
+        await _start_wallet_flow(event.chat_id, client, product)
         return
     await _show_bank_and_create_request(event.chat_id, client, customer_id, product)
