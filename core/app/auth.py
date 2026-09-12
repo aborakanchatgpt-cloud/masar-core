@@ -11,9 +11,18 @@ Authorization: Bearer <CORE_ADMIN_TOKEN> عبر اعتماد HTTP Header Auth ب
 """
 from __future__ import annotations
 
+import hmac
 import os
 
 from fastapi import Header, HTTPException, status
+
+
+def _constant_time_eq(a: str, b: str) -> bool:
+    # مقارنة بزمن ثابت لتفادي هجمات توقيت المقارنة (نفس نمط mcp_bridge.py)
+    try:
+        return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def require_admin_token(authorization: str | None = Header(default=None)) -> None:
@@ -33,5 +42,5 @@ def require_admin_token(authorization: str | None = Header(default=None)) -> Non
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authorization header مفقود")
 
     provided = authorization.removeprefix("Bearer ").strip()
-    if provided != expected:
+    if not _constant_time_eq(provided, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="توكن غير صحيح")
