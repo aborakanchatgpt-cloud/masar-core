@@ -189,7 +189,9 @@ def _main_menu_buttons(is_owner: bool) -> list[list[dict[str, str]]]:
             {"text": "⏯️ تفعيل/إيقاف عميل", "callback_data": "admin:status"},
             {"text": "⏳ تمديد اشتراك", "callback_data": "admin:extend"},
         ],
-        [{"text": "💰 الضمانات المعلّقة", "callback_data": "admin:guarantees"}],
+        # B11.6: بعد P0.5 (لا تحويل نقدي بأي مسار — الضمان تمديد بحت)، الزر
+        # أصبح للاطلاع فقط على آخر التمديدات التلقائية، لا لتسوية تعويضات.
+        [{"text": "⏳ التمديدات التلقائية", "callback_data": "admin:extensions"}],
         [{"text": "✉️ رسالة لعميل", "callback_data": "admin:msg"}],
     ]
     # B9/B2+B5: قائمة المفوّضين والإعدادات — للمالك فقط (المفوّض لا يديرهما).
@@ -422,8 +424,8 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
         )
         return
 
-    if data == "admin:guarantees":
-        await commands.reply_guarantees(client, event.chat_id)
+    if data == "admin:extensions":
+        await commands.reply_recent_extensions(client, event.chat_id)
         return
 
     if data == "admin:payments":
@@ -481,6 +483,23 @@ async def _handle_callback(event: ChatEvent, client: TelegramClient) -> None:
             return
         delegate_id = int(data[len("deleg:rm:") :])
         await delegates.reply_remove_delegate(client, event.chat_id, delegate_id)
+        return
+
+    # B11.3: تأكيد/رفض ربط مفوّض معلّق — للمالك حصرًا (نفس فحص deleg:rm:
+    # أعلاه؛ هذان الزرّان يصلان أصلًا فقط لمحادثة المالك عبر
+    # telegram_admin_delegates._notify_owner_pending_delegate).
+    if data.startswith("dlg:confirm:"):
+        if not is_owner_chat(event.chat_id):
+            return
+        delegate_id = int(data[len("dlg:confirm:") :])
+        await delegates.reply_confirm_delegate(client, event.chat_id, delegate_id)
+        return
+
+    if data.startswith("dlg:reject:"):
+        if not is_owner_chat(event.chat_id):
+            return
+        delegate_id = int(data[len("dlg:reject:") :])
+        await delegates.reply_reject_delegate(client, event.chat_id, delegate_id)
         return
 
     # B9/B5: ⚙️ الإعدادات — للمالك فقط (نفس نمط 👥 المفوّضون أعلاه).
