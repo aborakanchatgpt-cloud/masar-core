@@ -54,6 +54,25 @@ heart_to_heart|note`) قبل طلب النص. الرسالة تُسجَّل بج
 استخدام `telegram_admin_search.send_customer_message_and_log` الموجودة —
 لا منطق إرسال مكرَّر). هذا اتجاه معاكس تمامًا لـ"✉️ رسالة لعميل" (أدمن→عميل،
 موجودة أصلًا بـB3-متابعة).
+
+**B4 (دفعة ثانية) — توسيع القائمة النشطة لـ8 أزرار + شبكة اختيار مجالات:**
+تنفيذ كامل التصميم الأصلي §B4 بدليل البناء (masar_build_brief_v2): قائمة
+العميل النشط أصبحت 8 أزرار (📋 حالتي | 💳 الاشتراك والتجديد | 📄 تحديث سيرتي
+| 🏙️ مدني | 🧭 مجالاتي | 📧 بريدي | 📞 تواصل معنا | ❓ عن الخدمة)، اختيار
+المجال المهني أصبح شبكة أزرار (FAMILY_BUTTON_ORDER، 21 عائلة مُستبعدًا
+out_of_scope) بدل الاعتماد على الكتابة الحرّة فقط، مدني/مجالاتي بالقائمة
+النشطة تُعدَّل عبر محرِّر مبسَّط (`build_my_list_edit_buttons`) مُتعمَّد
+تبسيطه (بلا شبكة أزرار مناطق/مجالات كاملة كالتسجيل الأول — قرار تصميم
+موثَّق بدل سؤال أحمد)، وعميل مُوقَف/منتهٍ أصبح يقدر يجدّد اشتراكه مباشرة من
+نفس زرّ "💳" (`telegram_payments.start` نفسها) — ما استدعى إعادة ترتيب
+`handle_update` (فحص خطوة الدفع **قبل** فحص الحالة موقوف/منتهٍ، راجع
+docstring `handle_update`). "📞 تواصل معنا" أصبحت دالة مشتركة
+(`_handle_contact_flow`) بين القائمة النشطة والعميل الموقوف/المنتهي بدل
+تكرارها. اكتُشف أيضًا أثناء هذه الدفعة أن `classify_family_input` لا تستثني
+عائلات `out_of_scope` بنفسها (كانت تُضاف بالخطأ) — أُصلح بفحص صريح
+`EXCLUDED_FAMILY_NAMES` قبل كل استدعاء لها (`_step_families`/محرِّر
+المجالات بالقائمة النشطة)، لا بتغيير عقد `classify_family_input` نفسها
+(تبقى مطابقة لاختباراتها النقية الموجودة أصلًا).
 """
 from __future__ import annotations
 
@@ -69,8 +88,9 @@ from sqlalchemy import text as sql_text
 
 from app import customers_api, link_api
 from app import telegram_payments
-from app.discovery import classify_family, get_engine
+from app.discovery import EXCLUDED_FAMILY_NAMES, classify_family, get_engine
 from app.phone import canonical_phone
+from app.telegram_admin_settings import support_whatsapp
 from app.telegram_client import (
     ChatEvent,
     TelegramAPIError,
@@ -100,12 +120,49 @@ MIN_CV_TEXT_CHARS = 40  # أقل من هذا = فشل تحليل فعلي (مل�
 CONTACT_BUTTON_TEXT = "📱 مشاركة رقم الجوال"
 
 # B4: تصنيف قناة "📞 تواصل معنا" (عميل → أدمن) — راجع docstring
-# _handle_active_menu وترحيلة 0020_b4_customer_messages_category.
+# _handle_contact_flow وترحيلة 0020_b4_customer_messages_category.
 CONTACT_CATEGORY_LABELS: dict[str, str] = {
     "complaint": "😔 شكوى",
     "heart_to_heart": "💬 من قلب لقلب",
     "note": "📝 ملاحظة",
 }
+
+# B4 (دفعة ثانية): شبكة أزرار اختيار مجال مهني — 22 عائلة taxonomy_local.yaml
+# عدا out_of_scope المُستبعدة صراحةً، بترتيب الأكثر شيوعًا بعيّنة الوظائف
+# الفعلية (راجع docstring data/taxonomy_local.yaml وdocs/reports/B2-review*).
+FAMILY_BUTTON_ORDER: list[tuple[str, str]] = [
+    ("chem_process", "الهندسة الكيميائية / العمليات"),
+    ("quality", "الجودة"),
+    ("hse", "الصحة والسلامة والبيئة"),
+    ("maintenance_ops", "الصيانة والتشغيل"),
+    ("production", "الإنتاج"),
+    ("lab_chemistry", "المختبرات والكيمياء التحليلية"),
+    ("water_treatment", "معالجة المياه"),
+    ("coatings", "الطلاءات والدهانات"),
+    ("project_controls", "ضبط المشاريع"),
+    ("supply_chain", "سلسلة الإمداد"),
+    ("admin", "إداري / دعم"),
+    ("hospitality", "الضيافة والفندقة"),
+    ("customer_ops", "خدمة العملاء ومراكز الاتصال"),
+    ("finance_accounting", "المالية والمحاسبة"),
+    ("hr_recruiting", "الموارد البشرية والتوظيف"),
+    ("it_software", "تقنية المعلومات والبرمجيات"),
+    ("logistics_ops", "اللوجستيات والمستودعات"),
+    ("construction_pm", "الإنشاءات وإدارة المشاريع"),
+    ("marketing_comms", "الاتصال والإعلام"),
+    ("program_admin_ops", "إدارة البرامج والأعمال"),
+    ("legal_compliance", "الشؤون القانونية والامتثال"),
+]
+
+ABOUT_SERVICE_TEXT_TEMPLATE = (
+    "❓ عن خدمة مسار\n\n"
+    "نبحث يوميًا عن أنسب الوظائف لك بمجالاتك ومدنك المختارة، ونقدّم عليها نيابةً "
+    "عنك من بريدك الخاص المربوط بالخدمة.\n"
+    "تستلم تقريرًا يوميًا بكل ما قدّمنا عليه، وتقدر تخبرنا برأيك بكل فرصة.\n"
+    "خدمتنا إنسانية بالكامل خلف الكواليس، بهدف واحد: توصلك لوظيفة تليق فيك بإذن الله.\n\n"
+    "📄 الشروط الكاملة: {terms_link}\n"
+    "📞 تواصل واتساب: {whatsapp}"
+)
 
 
 # =========================================================================
@@ -190,11 +247,18 @@ def build_region_buttons() -> list[list[dict[str, str]]]:
     return rows
 
 
-def build_cities_confirm_buttons() -> list[list[dict[str, str]]]:
-    return [
-        [{"text": "✅ القائمة كافية، كمّل", "callback_data": "city:done"}],
-        [{"text": "➕ أضف منطقة أخرى", "callback_data": "city:more"}],
-    ]
+def build_cities_confirm_buttons(cities: list[str] | None = None) -> list[list[dict[str, str]]]:
+    """B4 (دفعة ثانية): أضيفت أزرار حذف لكل مدينة مختارة (كانت غائبة —
+    التصميم الأصلي §B4 يطلبها بنفس نمط أزرار حذف المجالات الموجودة أصلًا).
+    `cities` اختياري (افتراضي []) للتوافق الخلفي مع أي استدعاء قديم بلا
+    مُعامل — لا يوجد فعليًا بالمستودع لكنه احتياط رخيص."""
+    cities = cities or []
+    rows: list[list[dict[str, str]]] = [[{"text": "✅ القائمة كافية، كمّل", "callback_data": "city:done"}]]
+    if len(cities) < MAX_CITIES:
+        rows.append([{"text": "➕ أضف منطقة أخرى", "callback_data": "city:more"}])
+    for i, c in enumerate(cities):
+        rows.append([{"text": f"🗑️ احذف: {c}", "callback_data": f"city:rm:{i}"}])
+    return rows
 
 
 def build_cities_message(cities: list[str]) -> str:
@@ -213,14 +277,43 @@ def build_families_buttons(families: list[str]) -> list[list[dict[str, str]]]:
 
 
 def build_families_message(families: list[str]) -> str:
-    lines = [
-        f"بناءً على ما وصفته، هذي مجالاتك المهنية حتى الآن "
-        f"(بحد أقصى {MAX_FAMILIES}) اللي راح نقدّم عليها نيابةً عنك:\n"
-    ]
-    lines.extend(f"{i + 1}. {f}" for i, f in enumerate(families))
     if not families:
-        lines.append("(لا يوجد شيء بعد — اكتب أول مجال مهني تعمل به أو تبحث عنه)")
+        return f"اختر مجالاتك المهنية اللي تبي نقدّم عليها (حتى {MAX_FAMILIES}):"
+    lines = [f"هذي مجالاتك المهنية حتى الآن (بحد أقصى {MAX_FAMILIES}) اللي راح نقدّم عليها نيابةً عنك:\n"]
+    lines.extend(f"{i + 1}. {f}" for i, f in enumerate(families))
     return "\n".join(lines)
+
+
+def build_family_choice_buttons(existing: list[str]) -> list[list[dict[str, str]]]:
+    """B4 (دفعة ثانية): شبكة أزرار اختيار مجال مهني (صفّان بالسطر) بدل
+    الاعتماد على الكتابة الحرّة فقط — راجع FAMILY_BUTTON_ORDER. يستبعد ما
+    اختاره العميل مسبقًا. الزر الأخير دومًا "✏️ مجال آخر (اكتبه)" لإدخال حرّ
+    يمرّ بنفس classify_family_input/فحص الاستبعاد الموجودين — لا تكرار منطق
+    تصنيف هنا."""
+    available = [(code, label) for code, label in FAMILY_BUTTON_ORDER if code not in existing]
+    rows: list[list[dict[str, str]]] = []
+    for i in range(0, len(available), 2):
+        pair = available[i : i + 2]
+        rows.append([{"text": label, "callback_data": f"family:{code}"} for code, label in pair])
+    rows.append([{"text": "✏️ مجال آخر (اكتبه)", "callback_data": "family:other"}])
+    return rows
+
+
+def build_my_list_edit_buttons(
+    items: list[str], max_items: int, add_cb: str, rm_prefix: str, done_cb: str
+) -> list[list[dict[str, str]]]:
+    """B4 (دفعة ثانية): محرِّر مبسَّط عام (مدني/مجالاتي من القائمة النشطة) —
+    عرض/حذف/إضافة/حفظ. مبسَّط عمدًا مقارنةً بتدفّق onboarding (بلا شبكة
+    أزرار مناطق/مجالات هنا، إضافة نصّية حرّة فقط) لتفادي إعادة بناء واجهة
+    "اختيار أول مرة" كاملة لسياق "تعديل لاحق" — قرار تصميم موثَّق بدل سؤال
+    أحمد (تفويض صريح: "أي غموض تقني صغير... يُقرَّر بأفضل حكم")."""
+    rows: list[list[dict[str, str]]] = []
+    if len(items) < max_items:
+        rows.append([{"text": "➕ أضف", "callback_data": add_cb}])
+    for i, it in enumerate(items):
+        rows.append([{"text": f"🗑️ احذف: {it}", "callback_data": f"{rm_prefix}{i}"}])
+    rows.append([{"text": "✅ تم", "callback_data": done_cb}])
+    return rows
 
 
 def classify_family_input(existing: list[str], typed: str) -> tuple[str | None, list[str]]:
@@ -228,7 +321,11 @@ def classify_family_input(existing: list[str], typed: str) -> tuple[str | None, 
     بمعجم taxonomy_local.yaml عبر app.discovery.classify_family (نفس محرّك
     تصنيف الوظائف — لا منطق مستقل هنا)، ويضيفها للقائمة إن لم تكن موجودة
     ولم نتجاوز الحد الأقصى. يُرجع (اسم العائلة المُطابقة أو None، القائمة
-    الجديدة) — دالة نقية بالكامل، قابلة للاختبار بلا قاعدة بيانات."""
+    الجديدة) — دالة نقية بالكامل، قابلة للاختبار بلا قاعدة بيانات.
+
+    **لا تستثني عائلات out_of_scope بنفسها** — المستدعي مسؤول عن فحص
+    EXCLUDED_FAMILY_NAMES قبل النداء (راجع _step_families/_handle_active_menu)
+    حتى تبقى رسالة "خارج النطاق" مختلفة عن رسالة "ما قدرت أحدد مجالًا"."""
     if len(existing) >= MAX_FAMILIES:
         return None, existing
     family = classify_family(typed)
@@ -291,6 +388,66 @@ def _store_cv_pdf(customer_id: int, content: bytes) -> dict[str, Any]:
     return {"cv_pdf_path": str(cv_path), "cv_pdf_sha256": sha256_hex}
 
 
+async def _process_cv_upload(event: ChatEvent, client: TelegramClient, customer_id: int) -> str | None:
+    """B4 (دفعة ثانية): مُستخرَجة من _step_cv الأصلية حتى يعاد استخدامها من
+    "📄 تحديث سيرتي" بالقائمة النشطة أيضًا — تُنزّل المرفق وتتحقق من صيغته
+    (PDF فقط) وتخزّنه وتستخرج نصه وتحفظه بجدول profiles، وترسل بنفسها أي
+    رسالة خطأ مناسبة (صيغة غير مدعومة/فشل تنزيل/فشل تخزين/فشل تحليل).
+    تُرجع نص السيرة المستخرَج عند النجاح، أو None عند أي فشل (الرسالة
+    أُرسلت بالفعل)، أو None بصمت إن لم يصل أي مرفق أصلًا (لا document ولا
+    photo) — المستدعي عندها يقرر نص الطلب المناسب لسياقه (onboarding أول
+    مرة أو تحديث لاحق)."""
+    if event.document:
+        mime_type = str(event.document.get("mime_type") or "")
+        if mime_type != "application/pdf":
+            await client.send_message(
+                event.chat_id, "الصيغة غير مدعومة حاليًا 🙏 أرسل سيرتك الذاتية كملف PDF."
+            )
+            return None
+        try:
+            file_info = await client.get_file(event.document["file_id"])
+            # B9/A6: نمرّر حد التنزيل الفعلي (CV_MAX_BYTES=5MB) لا الافتراضي
+            # (8MB) حتى تكون رسالة الخطأ صحيحة ("يتجاوز 5MB") بدل رسالة تنزيل خطأ
+            # عامة مضلّلة لملف بين 5 و8 ميجابايت.
+            content = await client.download_file_bytes(file_info["file_path"], max_bytes=CV_MAX_BYTES)
+        except TelegramAPIError:
+            logger.warning("فشل تنزيل مرفق CV من Telegram", exc_info=True)
+            await client.send_message(event.chat_id, "تعذّر تنزيل الملف، حاول ترسله مرة ثانية 🙏")
+            return None
+
+        try:
+            _store_cv_pdf(customer_id, content)
+        except ValueError as exc:
+            await client.send_message(event.chat_id, f"تعذّر قبول الملف: {exc}")
+            return None
+
+        cv_text = extract_pdf_text(content)
+        if len(cv_text) < MIN_CV_TEXT_CHARS:
+            await client.send_message(
+                event.chat_id,
+                "عذرًا 🙏 ما قدرت أقرأ محتوى واضحًا من هذا الملف (قد يكون صورة ممسوحة ضوئيًا "
+                "بلا طبقة نص، أو ملفًا فارغًا/تالفًا).\n\n"
+                "حاول ترسل ملف PDF نصّيًا (وليس صورة مُصدرة كـPDF):",
+            )
+            await _notify_admin(
+                f"⚠️ فشل استخراج نص من سيرة عميل #{customer_id} — تحقق يدويًا إن تكرّر."
+            )
+            return None
+
+        await customers_api.upsert_profile(customer_id, customers_api.ProfileUpsertRequest(cv_text=cv_text))
+        return cv_text
+
+    if event.photo:
+        await client.send_message(
+            event.chat_id,
+            "حاليًا نحتاج ملف PDF لسيرتك الذاتية (لا صورة) حتى نقرأه بدقّة 🙏\n\n"
+            "صدّرها كـPDF من الجوال/الحاسب وأرسلها هنا:",
+        )
+        return None
+
+    return None
+
+
 # =========================================================================
 # استعلامات عميل قصيرة
 # =========================================================================
@@ -311,6 +468,33 @@ def _fetch_onboarding_state(customer_id: int) -> dict[str, Any]:
             {"id": customer_id},
         ).mappings().first()
     return dict(row) if row else {}
+
+
+def _fetch_mail_status(customer_id: int) -> dict[str, Any] | None:
+    """B4 (دفعة ثانية): حالة ربط البريد لعرضها بزرّ "📧 بريدي" بالقائمة
+    النشطة — لا secret_enc إطلاقًا (نفس قيد app.mail_api.get_mail_link)."""
+    engine = get_engine()
+    with engine.connect() as conn:
+        row = conn.execute(
+            sql_text("SELECT address, status FROM mail_links WHERE customer_id = :id"),
+            {"id": customer_id},
+        ).mappings().first()
+    return dict(row) if row else None
+
+
+async def _generate_mail_link_url(customer_id: int) -> str | None:
+    """يولّد رابط `/link/{token}` جديدًا لربط/تحديث البريد — نفس منطق نهاية
+    onboarding بـ`_finalize_onboarding` بالضبط، بلا تكرار المنطق الجوهري
+    (`link_api.create_link_token`)، فقط مُستخرَج لدالة مستقلة لأنه يُستدعى
+    أيضًا من "📧 بريدي" بالقائمة النشطة الآن."""
+    try:
+        token_result = await link_api.create_link_token(customer_id)
+        domain = os.environ.get("MASAR_DOMAIN", "")
+        if domain:
+            return f"https://{domain}{token_result['path']}"
+    except Exception:  # noqa: BLE001 — فشل توليد الرابط لا يجب أن يُسقط الرسالة نفسها
+        logger.warning("تعذّر توليد رابط ربط البريد للعميل #%s", customer_id, exc_info=True)
+    return None
 
 
 def _finalize_preferences(customer_id: int, cities: list[str], families: list[str]) -> None:
@@ -434,7 +618,14 @@ async def handle_update(update: dict[str, Any], event: ChatEvent, client: Telegr
     العملاء (chat_id != MASAR_OWNER_CHAT_ID). `event` مُستخرَج مسبقًا
     بالمستدعي (extract_chat_event) و`client` هو عميل بوت العملاء الجاهز —
     كلاهما يُمرّر بدل إعادة استخراجهما هنا تفاديًا لازدواج المنطق مع
-    app.telegram_admin الذي يمرّ بنفس نقطة الدخول بالموجّه المشترك."""
+    app.telegram_admin الذي يمرّ بنفس نقطة الدخول بالموجّه المشترك.
+
+    **B4 (دفعة ثانية):** فحص "هل الجلسة بمنتصف تدفّق دفع" أصبح **أول** فرع
+    بعد التأكد من وجود عميل — قبل حتى فرع الموقوف/المنتهي — لأن "💳 الاشتراك
+    والتجديد" بالقائمة النشطة يُستخدَم أيضًا من عميل مُوقَف/منتهٍ (`_handle_inactive_customer`)
+    لتجديد اشتراكه؛ بلا هذا الفرع المبكّر كانت رسالته التالية (اختيار باقة/
+    إرسال إيصال) ستُعاد توجيهها خطأً لرسالة "اشتراكك موقوف" الثابتة بدل
+    إكمال تدفّق الدفع الفعلي."""
     try:
         lookup = await customers_api.get_customer_by_telegram(event.chat_id)
         customer_id: int | None = lookup["customer_id"]
@@ -445,6 +636,11 @@ async def handle_update(update: dict[str, Any], event: ChatEvent, client: Telegr
 
     if customer_id is None:
         await _handle_unlinked(event, client)
+        return
+
+    step, _session_data = _get_session(event.chat_id)
+    if step in telegram_payments.PAYMENT_FLOW_STEPS:
+        await _handle_onboarding_step(event, client, customer_id, _fetch_onboarding_state(customer_id))
         return
 
     if customer_status in ("paused", "expired"):
@@ -515,16 +711,89 @@ async def _handle_unlinked(event: ChatEvent, client: TelegramClient) -> None:
     )
 
 
+# -------------------------------------------------------------------
+# B4: تدفّق "📞 تواصل معنا" المصنَّف — مشترك بين القائمة النشطة والعميل
+# الموقوف/المنتهي (كلاهما قد يحتاج تصعيد شكوى رغم توقّف الحساب).
+# -------------------------------------------------------------------
+
+
+async def _handle_contact_flow(
+    event: ChatEvent, client: TelegramClient, customer_id: int, state: dict[str, Any], step: str, data: dict
+) -> bool:
+    """يُرجع True إن عالج الحدث (المستدعي يتوقف فورًا بعدها)، False إن لم
+    يكن الحدث متعلّقًا بتدفّق التواصل إطلاقًا فيُكمل المستدعي فحوصاته الخاصة."""
+    if step == "awaiting_contact_message" and not event.is_callback and event.text:
+        # B4: قناة "تواصل معنا" أصبحت مصنَّفة (شكوى/قلب لقلب/ملاحظة) —
+        # `data["category"]` مضبوطة بخطوة اختيار الفئة أدناه؛ "note" احتياط
+        # فقط لجلسة قديمة جدًا وصلت بلا فئة (لا يُفترض حدوثه عمليًا).
+        category = data.get("category") or "note"
+        name = state.get("name") or "غير معروف"
+        phone = state.get("phone") or "غير متوفر"
+        message_id = _log_customer_message_in(customer_id, category, event.text)
+        cat_label = CONTACT_CATEGORY_LABELS.get(category, category)
+        await _notify_admin_with_buttons(
+            f"📨 {cat_label} من عميل #{customer_id}\n👤 {name}\n📱 {phone}\n\n💬 {event.text}",
+            buttons=[[{"text": "↩️ رد", "callback_data": f"inbox:reply:{message_id}"}]],
+        )
+        _clear_session(event.chat_id)
+        await client.send_message(
+            event.chat_id,
+            "تم استلام رسالتك ✅ وصلت لفريق مسار، وبنرد عليك أو نتواصل معك قريبًا بإذن الله 🤍",
+        )
+        return True
+
+    if event.is_callback and event.callback_data == "menu:contact":
+        buttons = [
+            [{"text": lbl, "callback_data": f"contact:cat:{key}"}]
+            for key, lbl in CONTACT_CATEGORY_LABELS.items()
+        ]
+        await client.send_message(event.chat_id, "وش نوع رسالتك؟ اختر من الأسفل 👇", buttons=buttons)
+        return True
+
+    if event.is_callback and event.callback_data.startswith("contact:cat:"):
+        category = event.callback_data[len("contact:cat:") :]
+        if category not in CONTACT_CATEGORY_LABELS:
+            return True
+        _save_session(event.chat_id, "awaiting_contact_message", {"category": category})
+        await client.send_message(event.chat_id, "اكتب رسالتك وبنوصّلها لفريق مسار مباشرة:")
+        return True
+
+    return False
+
+
 async def _handle_inactive_customer(
     event: ChatEvent, client: TelegramClient, customer_id: int, status: str
 ) -> None:
+    """B4 (دفعة ثانية): بدل رسالة واتساب ثابتة فقط — أزرار 💳 تجديد الاشتراك
+    (يعيد استخدام telegram_payments.start، نفس تدفّق العميل الجديد) /
+    📞 تواصل معنا (نفس _handle_contact_flow) / 📋 حالتي."""
+    state = _fetch_onboarding_state(customer_id)
+    step, data = _get_session(event.chat_id)
+
+    if await _handle_contact_flow(event, client, customer_id, state, step, data):
+        return
+
+    if event.is_callback and event.callback_data == "menu:subscription":
+        await telegram_payments.start(client, event.chat_id, customer_id)
+        return
+
+    if event.is_callback and event.callback_data == "menu:status":
+        await client.send_message(event.chat_id, _build_status_text(state))
+        return
+
     if event.is_callback:
         return
+
     label = "مُوقَف مؤقتًا" if status == "paused" else "منتهي"
     await client.send_message(
         event.chat_id,
         f"اشتراكك حاليًا {label} 🙏\n\n"
-        "تواصل معنا عبر واتساب على: +966544161255 وبنساعدك تكمل معنا بأسرع وقت.",
+        f"تواصل معنا عبر واتساب على: {support_whatsapp()} وبنساعدك تكمل معنا بأسرع وقت.",
+        buttons=[
+            [{"text": "💳 تجديد الاشتراك", "callback_data": "menu:subscription"}],
+            [{"text": "📞 تواصل معنا", "callback_data": "menu:contact"}],
+            [{"text": "📋 حالتي", "callback_data": "menu:status"}],
+        ],
     )
 
 
@@ -578,62 +847,21 @@ async def _step_cv(
     if event.is_callback:
         return
 
-    if event.document:
-        mime_type = str(event.document.get("mime_type") or "")
-        if mime_type != "application/pdf":
-            await client.send_message(
-                event.chat_id, "الصيغة غير مدعومة حاليًا 🙏 أرسل سيرتك الذاتية كملف PDF."
-            )
-            return
-        try:
-            file_info = await client.get_file(event.document["file_id"])
-            # B9/A6: نمرّر حد التنزيل الفعلي (CV_MAX_BYTES=5MB) لا الافتراضي
-            # (8MB) حتى تكون رسالة الخطأ صحيحة ("يتجاوز 5MB") بدل رسالة تنزيل خطأ
-            # عامة مضلّلة لملف بين 5 ور8 ميجابايت.
-            content = await client.download_file_bytes(file_info["file_path"], max_bytes=CV_MAX_BYTES)
-        except TelegramAPIError:
-            logger.warning("فشل تنزيل مرفق CV من Telegram", exc_info=True)
-            await client.send_message(event.chat_id, "تعذّر تنزيل الملف، حاول ترسله مرة ثانية 🙏")
-            return
-
-        try:
-            _store_cv_pdf(customer_id, content)
-        except ValueError as exc:
-            await client.send_message(event.chat_id, f"تعذّر قبول الملف: {exc}")
-            return
-
-        cv_text = extract_pdf_text(content)
-        if len(cv_text) < MIN_CV_TEXT_CHARS:
-            await client.send_message(
-                event.chat_id,
-                "عذرًا 🙏 ما قدرت أقرأ محتوى واضحًا من هذا الملف (قد يكون صورة ممسوحة ضوئيًا "
-                "بلا طبقة نص، أو ملفًا فارغًا/تالفًا).\n\n"
-                "حاول ترسل ملف PDF نصّيًا (وليس صورة مُصدرة كـPDF):",
-            )
-            await _notify_admin(
-                f"⚠️ فشل استخراج نص من سيرة عميل #{customer_id} — تحقق يدويًا إن تكرّر."
-            )
-            return
-
-        await customers_api.upsert_profile(customer_id, customers_api.ProfileUpsertRequest(cv_text=cv_text))
-        _save_session(event.chat_id, "ask_cities", {})
-        await client.send_message(
-            event.chat_id,
-            "تم تحليل سيرتك بنجاح ✅\n\nالآن اختر منطقتك المفضّلة للعمل بالمملكة "
-            "(تقدر تختار أكثر من منطقة):",
-            buttons=build_region_buttons(),
-        )
+    if not event.document and not event.photo:
+        await client.send_message(event.chat_id, "لسّة وصلت! 📄 أرسل سيرتك الذاتية كملف PDF عشان نبدأ:")
         return
 
-    if event.photo:
-        await client.send_message(
-            event.chat_id,
-            "حاليًا نحتاج ملف PDF لسيرتك الذاتية (لا صورة) حتى نقرأه بدقّة 🙏\n\n"
-            "صدّرها كـPDF من الجوال/الحاسب وأرسلها هنا:",
-        )
+    cv_text = await _process_cv_upload(event, client, customer_id)
+    if cv_text is None:
         return
 
-    await client.send_message(event.chat_id, "لسّة وصلت! 📄 أرسل سيرتك الذاتية كملف PDF عشان نبدأ:")
+    _save_session(event.chat_id, "ask_cities", {})
+    await client.send_message(
+        event.chat_id,
+        "تم تحليل سيرتك بنجاح ✅\n\nالآن اختر منطقتك المفضّلة للعمل بالمملكة "
+        "(تقدر تختار أكثر من منطقة):",
+        buttons=build_region_buttons(),
+    )
 
 
 async def _step_cities(
@@ -647,6 +875,7 @@ async def _step_cities(
             await client.send_message(
                 event.chat_id,
                 "تمام ✅ اخترت المرونة الكاملة.\n\n" + build_families_message([]),
+                buttons=build_family_choice_buttons([]),
             )
             return
         if action == "other":
@@ -665,14 +894,28 @@ async def _step_cities(
                 )
                 return
             _save_session(event.chat_id, "ask_families", {**data, "cities": cities})
-            await client.send_message(event.chat_id, build_families_message([]))
+            await client.send_message(event.chat_id, build_families_message([]), buttons=build_family_choice_buttons([]))
+            return
+        if action.startswith("rm:"):
+            try:
+                idx = int(action[len("rm:") :])
+            except ValueError:
+                idx = -1
+            if 0 <= idx < len(cities):
+                cities = cities[:idx] + cities[idx + 1 :]
+            _save_session(event.chat_id, "ask_cities", {**data, "cities": cities})
+            await client.send_message(
+                event.chat_id,
+                build_cities_message(cities) if cities else "ما اخترت أي منطقة الآن — اختر من تحت:",
+                buttons=build_cities_confirm_buttons(cities) if cities else build_region_buttons(),
+            )
             return
         if action in REGIONS:
             if action not in cities and len(cities) < MAX_CITIES:
                 cities = cities + [action]
             _save_session(event.chat_id, "ask_cities", {**data, "cities": cities})
             await client.send_message(
-                event.chat_id, build_cities_message(cities), buttons=build_cities_confirm_buttons()
+                event.chat_id, build_cities_message(cities), buttons=build_cities_confirm_buttons(cities)
             )
             return
         return
@@ -682,7 +925,7 @@ async def _step_cities(
             cities = cities + [event.text]
         _save_session(event.chat_id, "ask_cities", {**data, "cities": cities})
         await client.send_message(
-            event.chat_id, build_cities_message(cities), buttons=build_cities_confirm_buttons()
+            event.chat_id, build_cities_message(cities), buttons=build_cities_confirm_buttons(cities)
         )
         return
 
@@ -690,7 +933,7 @@ async def _step_cities(
     await client.send_message(
         event.chat_id,
         "اختر من الأزرار بالأسفل 👇\n\n" + (build_cities_message(cities) if cities else "اختر منطقتك المفضّلة:"),
-        buttons=build_region_buttons() if not cities else build_cities_confirm_buttons(),
+        buttons=build_region_buttons() if not cities else build_cities_confirm_buttons(cities),
     )
 
 
@@ -698,6 +941,26 @@ async def _step_families(
     event: ChatEvent, client: TelegramClient, customer_id: int, step: str, data: dict, families: list[str]
 ) -> None:
     cities = _as_list(data.get("cities"))
+
+    if event.is_callback and event.callback_data.startswith("family:"):
+        choice = event.callback_data[len("family:") :]
+        if choice == "other":
+            await client.send_message(event.chat_id, "تمام، اكتب المجال المهني الإضافي:")
+            return
+        label_map = dict(FAMILY_BUTTON_ORDER)
+        if choice not in label_map or choice in EXCLUDED_FAMILY_NAMES:
+            return
+        if len(families) >= MAX_FAMILIES or choice in families:
+            await client.send_message(
+                event.chat_id, build_families_message(families), buttons=build_families_buttons(families)
+            )
+            return
+        new_families = families + [choice]
+        _save_session(event.chat_id, "ask_families", {**data, "families": new_families})
+        await client.send_message(
+            event.chat_id, build_families_message(new_families), buttons=build_families_buttons(new_families)
+        )
+        return
 
     if event.is_callback and event.callback_data.startswith("families:"):
         action = event.callback_data[len("families:") :]
@@ -710,7 +973,9 @@ async def _step_families(
             await _finalize_onboarding(event, client, customer_id, cities, families)
             return
         if action == "add":
-            await client.send_message(event.chat_id, "تمام، اكتب المجال المهني الإضافي:")
+            await client.send_message(
+                event.chat_id, "اختر مجالًا إضافيًا أو اكتبه:", buttons=build_family_choice_buttons(families)
+            )
             return
         if action.startswith("rm:"):
             try:
@@ -727,6 +992,18 @@ async def _step_families(
         return
 
     if not event.is_callback and event.text:
+        # B4 (دفعة ثانية): فحص الاستبعاد (out_of_scope) قبل classify_family_input
+        # — كانت هذه الثغرة موجودة فعليًا: classify_family_input تُضيف أي
+        # عائلة مُطابَقة بصرف النظر عن كونها مُستبعدة صراحةً بـtaxonomy_local.yaml.
+        prospective = classify_family(event.text)
+        if prospective in EXCLUDED_FAMILY_NAMES:
+            await client.send_message(
+                event.chat_id,
+                "هذا المجال حاليًا خارج نطاق خدمتنا 🙏 اختر مجالًا آخر أو أقرب مجال من القائمة:",
+                buttons=build_family_choice_buttons(families),
+            )
+            return
+
         matched, new_families = classify_family_input(families, event.text)
         _save_session(event.chat_id, "ask_families", {**data, "families": new_families})
         if matched:
@@ -758,14 +1035,7 @@ async def _finalize_onboarding(
     _finalize_preferences(customer_id, cities, families)
     _clear_session(event.chat_id)
 
-    link_url = None
-    try:
-        token_result = await link_api.create_link_token(customer_id)
-        domain = os.environ.get("MASAR_DOMAIN", "")
-        if domain:
-            link_url = f"https://{domain}{token_result['path']}"
-    except Exception:  # noqa: BLE001 — فشل توليد الرابط لا يجب أن يُسقط رسالة النجاح نفسها
-        logger.warning("تعذّر توليد رابط ربط البريد للعميل #%s", customer_id, exc_info=True)
+    link_url = await _generate_mail_link_url(customer_id)
 
     closing = (
         "🎉 تم كل شي بنجاح! سيرتك جاهزة، ومدنك ومجالاتك محفوظة، وراح نبدأ نبحث ونقدم لك "
@@ -793,8 +1063,32 @@ async def _send_active_menu(client: TelegramClient, chat_id: int, text: str) -> 
         text,
         buttons=[
             [{"text": "📋 حالتي", "callback_data": "menu:status"}],
+            [{"text": "💳 الاشتراك والتجديد", "callback_data": "menu:subscription"}],
+            [{"text": "📄 تحديث سيرتي", "callback_data": "menu:update_cv"}],
+            [{"text": "🏙️ مدني", "callback_data": "menu:cities"}],
+            [{"text": "🧭 مجالاتي", "callback_data": "menu:families"}],
+            [{"text": "📧 بريدي", "callback_data": "menu:mail"}],
             [{"text": "📞 تواصل معنا", "callback_data": "menu:contact"}],
+            [{"text": "❓ عن الخدمة", "callback_data": "menu:about"}],
         ],
+    )
+
+
+async def _handle_cv_update(event: ChatEvent, client: TelegramClient, customer_id: int) -> None:
+    """B4 (دفعة ثانية): "📄 تحديث سيرتي" — يعيد استخدام _process_cv_upload
+    المشتركة مع onboarding، لكن بلا الانتقال لخطوة المدن/المجالات (الملف
+    محدَّث فقط، بقية التفضيلات كما هي)."""
+    if event.is_callback:
+        return
+    if not event.document and not event.photo:
+        await client.send_message(event.chat_id, "أرسل سيرتك الذاتية الجديدة كملف PDF 📄")
+        return
+    cv_text = await _process_cv_upload(event, client, customer_id)
+    if cv_text is None:
+        return
+    _clear_session(event.chat_id)
+    await client.send_message(
+        event.chat_id, "تم تحديث سيرتك الذاتية بنجاح ✅ راح نعتمد عليها بالتقديمات القادمة بإذن الله."
     )
 
 
@@ -803,44 +1097,170 @@ async def _handle_active_menu(
 ) -> None:
     step, data = _get_session(event.chat_id)
 
-    if step == "awaiting_contact_message" and not event.is_callback and event.text:
-        # B4: قناة "تواصل معنا" أصبحت مصنَّفة (شكوى/قلب لقلب/ملاحظة) —
-        # `data["category"]` مضبوطة بخطوة اختيار الفئة أدناه؛ "note" احتياط
-        # فقط لجلسة قديمة جدًا وصلت بلا فئة (لا يُفترض حدوثه عمليًا).
-        category = data.get("category") or "note"
-        name = state.get("name") or "غير معروف"
-        phone = state.get("phone") or "غير متوفر"
-        message_id = _log_customer_message_in(customer_id, category, event.text)
-        cat_label = CONTACT_CATEGORY_LABELS.get(category, category)
-        await _notify_admin_with_buttons(
-            f"📨 {cat_label} من عميل #{customer_id}\n👤 {name}\n📱 {phone}\n\n💬 {event.text}",
-            buttons=[[{"text": "↩️ رد", "callback_data": f"inbox:reply:{message_id}"}]],
-        )
-        _clear_session(event.chat_id)
-        await client.send_message(
-            event.chat_id,
-            "تم استلام رسالتك ✅ وصلت لفريق مسار، وبنرد عليك أو نتواصل معك قريبًا بإذن الله 🤍",
-        )
+    if await _handle_contact_flow(event, client, customer_id, state, step, data):
         return
 
     if event.is_callback and event.callback_data == "menu:status":
         await client.send_message(event.chat_id, _build_status_text(state))
         return
 
-    if event.is_callback and event.callback_data == "menu:contact":
-        buttons = [
-            [{"text": lbl, "callback_data": f"contact:cat:{key}"}]
-            for key, lbl in CONTACT_CATEGORY_LABELS.items()
-        ]
-        await client.send_message(event.chat_id, "وش نوع رسالتك؟ اختر من الأسفل 👇", buttons=buttons)
+    if event.is_callback and event.callback_data == "menu:subscription":
+        await telegram_payments.start(client, event.chat_id, customer_id)
         return
 
-    if event.is_callback and event.callback_data.startswith("contact:cat:"):
-        category = event.callback_data[len("contact:cat:") :]
-        if category not in CONTACT_CATEGORY_LABELS:
+    if event.is_callback and event.callback_data == "menu:update_cv":
+        _save_session(event.chat_id, "awaiting_cv_update", {})
+        await client.send_message(event.chat_id, "أرسل سيرتك الذاتية الجديدة كملف PDF 📄")
+        return
+
+    if step == "awaiting_cv_update" and not event.is_callback:
+        await _handle_cv_update(event, client, customer_id)
+        return
+
+    # --- 🏙️ مدني: محرِّر مبسَّط (عرض/حذف/إضافة نصّية/حفظ) ---
+    if event.is_callback and event.callback_data == "menu:cities":
+        cities = _as_list(state.get("cities"))
+        _save_session(event.chat_id, "menu_cities_edit", {"cities": cities})
+        await client.send_message(
+            event.chat_id,
+            build_cities_message(cities) if cities else "ما عندك مدن مختارة الآن.",
+            buttons=build_my_list_edit_buttons(cities, MAX_CITIES, "mymenu:city_add", "mymenu:city_rm:", "mymenu:done"),
+        )
+        return
+
+    if step == "menu_cities_edit" and event.is_callback and event.callback_data == "mymenu:city_add":
+        _save_session(event.chat_id, "menu_cities_add_text", data)
+        await client.send_message(event.chat_id, "اكتب اسم المدينة أو المنطقة الجديدة:")
+        return
+
+    if step == "menu_cities_add_text" and not event.is_callback and event.text:
+        cities = _as_list(data.get("cities"))
+        new_cities = cities if (event.text in cities or len(cities) >= MAX_CITIES) else cities + [event.text]
+        _finalize_preferences(customer_id, new_cities, _as_list(state.get("families")))
+        _save_session(event.chat_id, "menu_cities_edit", {"cities": new_cities})
+        await client.send_message(
+            event.chat_id,
+            build_cities_message(new_cities),
+            buttons=build_my_list_edit_buttons(new_cities, MAX_CITIES, "mymenu:city_add", "mymenu:city_rm:", "mymenu:done"),
+        )
+        return
+
+    if step == "menu_cities_edit" and event.is_callback and event.callback_data.startswith("mymenu:city_rm:"):
+        try:
+            idx = int(event.callback_data[len("mymenu:city_rm:") :])
+        except ValueError:
+            idx = -1
+        cities = _as_list(data.get("cities"))
+        new_cities = cities[:idx] + cities[idx + 1 :] if 0 <= idx < len(cities) else cities
+        _finalize_preferences(customer_id, new_cities, _as_list(state.get("families")))
+        _save_session(event.chat_id, "menu_cities_edit", {"cities": new_cities})
+        await client.send_message(
+            event.chat_id,
+            build_cities_message(new_cities) if new_cities else "ما عندك مدن مختارة الآن.",
+            buttons=build_my_list_edit_buttons(new_cities, MAX_CITIES, "mymenu:city_add", "mymenu:city_rm:", "mymenu:done"),
+        )
+        return
+
+    # --- 🧭 مجالاتي: محرِّر مبسَّط (عرض/حذف/إضافة نصّية مصنَّفة/حفظ) ---
+    if event.is_callback and event.callback_data == "menu:families":
+        families = _as_list(state.get("families"))
+        _save_session(event.chat_id, "menu_families_edit", {"families": families})
+        await client.send_message(
+            event.chat_id,
+            build_families_message(families),
+            buttons=build_my_list_edit_buttons(
+                families, MAX_FAMILIES, "mymenu:family_add", "mymenu:family_rm:", "mymenu:done"
+            ),
+        )
+        return
+
+    if step == "menu_families_edit" and event.is_callback and event.callback_data == "mymenu:family_add":
+        _save_session(event.chat_id, "menu_families_add_text", data)
+        await client.send_message(event.chat_id, "اكتب المجال المهني الجديد:")
+        return
+
+    if step == "menu_families_add_text" and not event.is_callback and event.text:
+        families = _as_list(data.get("families"))
+        prospective = classify_family(event.text)
+        if prospective in EXCLUDED_FAMILY_NAMES:
+            await client.send_message(event.chat_id, "هذا المجال حاليًا خارج نطاق خدمتنا 🙏 اكتب مجالًا آخر:")
             return
-        _save_session(event.chat_id, "awaiting_contact_message", {"category": category})
-        await client.send_message(event.chat_id, "اكتب رسالتك وبنوصّلها لفريق مسار مباشرة:")
+        matched, new_families = classify_family_input(families, event.text)
+        if not matched:
+            await client.send_message(
+                event.chat_id,
+                "ما قدرت أحدد مجالًا مهنيًا واضحًا 🙏 حاول تكتبه بشكل أوضح (مثال: محاسبة، هندسة مدنية):",
+            )
+            return
+        _finalize_preferences(customer_id, _as_list(state.get("cities")), new_families)
+        _save_session(event.chat_id, "menu_families_edit", {"families": new_families})
+        await client.send_message(
+            event.chat_id,
+            build_families_message(new_families),
+            buttons=build_my_list_edit_buttons(
+                new_families, MAX_FAMILIES, "mymenu:family_add", "mymenu:family_rm:", "mymenu:done"
+            ),
+        )
+        return
+
+    if step == "menu_families_edit" and event.is_callback and event.callback_data.startswith("mymenu:family_rm:"):
+        try:
+            idx = int(event.callback_data[len("mymenu:family_rm:") :])
+        except ValueError:
+            idx = -1
+        families = _as_list(data.get("families"))
+        new_families = families[:idx] + families[idx + 1 :] if 0 <= idx < len(families) else families
+        _finalize_preferences(customer_id, _as_list(state.get("cities")), new_families)
+        _save_session(event.chat_id, "menu_families_edit", {"families": new_families})
+        await client.send_message(
+            event.chat_id,
+            build_families_message(new_families),
+            buttons=build_my_list_edit_buttons(
+                new_families, MAX_FAMILIES, "mymenu:family_add", "mymenu:family_rm:", "mymenu:done"
+            ),
+        )
+        return
+
+    if step in ("menu_cities_edit", "menu_families_edit") and event.is_callback and event.callback_data == "mymenu:done":
+        _clear_session(event.chat_id)
+        await client.send_message(event.chat_id, "تم الحفظ ✅")
+        return
+
+    # --- 📧 بريدي ---
+    if event.is_callback and event.callback_data == "menu:mail":
+        info = _fetch_mail_status(customer_id)
+        if not info:
+            text_ = "📧 بريدك\n\nما ربطت بريدًا إلكترونيًا بعد."
+            btn_label = "🔗 ربط بريد"
+        elif info.get("status") == "ok":
+            text_ = f"📧 بريدك\n\n✅ مربوط بنجاح: {info.get('address')}"
+            btn_label = "🔗 تحديث الربط"
+        else:
+            text_ = f"📧 بريدك\n\n⚠️ آخر محاولة ربط لم تنجح ({info.get('address')}). جرّب مرة ثانية:"
+            btn_label = "🔗 إعادة الربط"
+        await client.send_message(
+            event.chat_id, text_, buttons=[[{"text": btn_label, "callback_data": "menu:mail_link"}]]
+        )
+        return
+
+    if event.is_callback and event.callback_data == "menu:mail_link":
+        link_url = await _generate_mail_link_url(customer_id)
+        if link_url:
+            await client.send_message(
+                event.chat_id, f"افتح هذا الرابط لربط بريدك (صالح لعدة ساعات):\n{link_url}"
+            )
+        else:
+            await client.send_message(event.chat_id, "تعذّر توليد رابط الربط الآن، حاول لاحقًا أو تواصل معنا 🙏")
+        return
+
+    # --- ❓ عن الخدمة ---
+    if event.is_callback and event.callback_data == "menu:about":
+        domain = os.environ.get("MASAR_DOMAIN", "")
+        terms_link = f"https://{domain}/terms" if domain else "تواصل معنا للحصول على رابط الشروط"
+        await client.send_message(
+            event.chat_id,
+            ABOUT_SERVICE_TEXT_TEMPLATE.format(terms_link=terms_link, whatsapp=support_whatsapp()),
+        )
         return
 
     await _send_active_menu(
