@@ -8,8 +8,19 @@ B9/B5: أضيفت 4 حقول لخدمة "📊 نظرة عامة" المعاد ت
 §B5): `sends_failed_today` (send_queue.status='failed' اليوم)،
 `pending_payment_requests` (جدول B0 — يبقى 0 حتى يبدأ B3 الكتابة إليه)،
 `top_families`/`top_cities` (أعلى 5 — نفس استعلام `_reply_segments` القديم
-ببوت الأدمن لكن Limit 5 لا 10، مُوحَّد هنا الآن كمصدر واحد بدل تكراره
+ببوت الأدمن لكن Limit 5 لا 10، مُوَحَّد هنا الآن كمصدر واحد بدل تكراره
 بملفين). كل الحقول القديمة بلا تغيير — إضافة بحتة، لا كسر لأي مستهلك حالي.
+
+B12.7: 3 حقول جديدة (إضافة بحتة أيضًا):
+    `sendable_ratio_in_region`: نسبة وظائف jobs داخل النطاق (out_of_region
+        = false) القابلة فعليًا للإرسال بالبريد (apply_mode != 'external_form'
+        — راجع matching.EXTERNAL_FORM_APPLY_MODE وB12.5) من إجمالي الوظائف
+        داخل النطاق؛ 1.0 حين لا توجد وظائف داخل النطاق أصلًا (لا قسمة على صفر).
+    `speculative_pool`: عدد شركات company_directory النشطة (نفس
+        company_directory.stats()["active_total"]) — حجم مصدر التقديم
+        المبادر المتاح حاليًا.
+    `telegram_collector_enabled`: telegram_channels.is_enabled() — انعكاس
+        مباشر لحالة fail-closed (TELEGRAM_READER_* + حزمة telethon معًا).
 """
 from __future__ import annotations
 
@@ -18,8 +29,9 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy import text
 
-from app import sender
+from app import company_directory, sender
 from app.auth import require_admin_token
+from app.collectors import telegram_channels
 from app.discovery import get_engine
 
 router = APIRouter(prefix="/admin", tags=["overview"], dependencies=[Depends(require_admin_token)])
@@ -108,6 +120,25 @@ async def overview() -> dict:
         # مسح جدول jobs الكامل (قد يبلغ عشرات الآلاف من الصفوف).
         latest_job_discovered_at = conn.execute(text("SELECT max(first_seen_at) FROM jobs")).scalar()
 
+        # B12.7: sendable_ratio_in_region — إجمالي/قابل-للبريد داخل النطاق
+        # فقط (استعلام واحد بـFILTER بدل استعلامين منفصلين).
+        sendable_row = conn.execute(
+            text(
+                """
+                SELECT
+                    count(*) AS total_in_region,
+                    count(*) FILTER (WHERE apply_mode != 'external_form') AS sendable_in_region
+                FROM jobs WHERE out_of_region = false
+                """
+            )
+        ).mappings().first()
+        total_in_region = int(sendable_row["total_in_region"] or 0)
+        sendable_in_region = int(sendable_row["sendable_in_region"] or 0)
+        sendable_ratio_in_region = 1.0 if total_in_region == 0 else round(sendable_in_region / total_in_region, 4)
+
+        # B12.7: حجم بركة التقديم المبادر (شركات company_directory النشطة).
+        speculative_pool = company_directory.stats(conn)["active_total"]
+
     return {
         "generated_at": now.isoformat(),
         "customers_by_status": customers_by_status,
@@ -126,4 +157,7 @@ async def overview() -> dict:
             "latest_job_discovered_at": latest_job_discovered_at.isoformat() if latest_job_discovered_at else None,
         },
         "dry_run": sender.is_dry_run(),
+        "sendable_ratio_in_region": sendable_ratio_in_region,
+        "speculative_pool": int(speculative_pool or 0),
+        "telegram_collector_enabled": telegram_channels.is_enabled(),
     }
