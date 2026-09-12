@@ -17,7 +17,7 @@ Masar Core — كتالوج المنتجات وطلبات الأدمن (B7، ا�
                                     مع note ("بانتظار توليد السيرة الذاتية") —
                                     التوليد الفعلي عبر cv_builder.ensure_cv_variant
                                     يحدث لاحقًا (يحتاج ملفًا مؤكّدًا + Gotenberg
-                                    حيًّا، خارج نطاق هذه النقطة المتزامنة عمدًا).
+                                    حيًّا، خارج نطاق هذه النقطة المتزامنة عمدًا).
     GET  /admin/orders?customer_id=  طلبات عميل واحد، الأحدث أولًا
 
 **PRICE_TBD (قاعدة B7 غير قابلة للتفاوض):** الأسعار مؤقتة حتى يقرر أحمد —
@@ -110,7 +110,7 @@ class AdminOrderCreateRequest(BaseModel):
 
 def _fetch_customer(conn, customer_id: int) -> dict | None:
     row = conn.execute(
-        text("SELECT id, name, status, price_sar FROM customers WHERE id = :id"), {"id": customer_id}
+        text("SELECT id, name, status, price_sar, billing_mode FROM customers WHERE id = :id"), {"id": customer_id}
     ).mappings().first()
     return dict(row) if row else None
 
@@ -201,27 +201,52 @@ async def create_order(body: AdminOrderCreateRequest) -> dict:
         credits_granted: int | None = None
         ends_at: datetime | None = None
         note: str | None = None
+        merged_into_subscription_id: int | None = None
         new_status = "pending"
 
         if product["kind"] == "subscription":
             days = product["days"] or DEFAULT_SUBSCRIPTION_DAYS
-            ends_at = starts_at + timedelta(days=days)
-            sub_row = conn.execute(
+
+            # B11.1: اشتراك سارٍ أصلًا لنفس العميل (active/extended — يشمل
+            # "تجديد بعد الانتهاء": ends_at قد يكون بالماضي فعلًا لو لم تُشغّل
+            # جولة guarantee.py اليومية بعد لإغلاقه) → يُمدّد بدل إدراج صفّ
+            # جديد، فيحافظ على نفس customer_id+period_start لسجلّ guarantee_ledger
+            # القائم (لا يبدأ ضمان جديد من الصفر عند تجديد مبكر).
+            existing_sub = conn.execute(
                 text(
-                    """
-                    INSERT INTO subscriptions (customer_id, product_code, starts_at, ends_at, daily_target, status)
-                    VALUES (:cid, :code, :starts, :ends, :target, 'active') RETURNING id
-                    """
+                    "SELECT id, ends_at FROM subscriptions WHERE customer_id = :cid "
+                    "AND status IN ('active', 'extended') ORDER BY ends_at DESC LIMIT 1"
                 ),
-                {
-                    "cid": body.customer_id,
-                    "code": product["code"],
-                    "starts": starts_at,
-                    "ends": ends_at,
-                    "target": planner.DEFAULT_TARGET_DAILY,
-                },
-            ).first()
-            subscription_id = sub_row[0]
+                {"cid": body.customer_id},
+            ).mappings().first()
+
+            if existing_sub:
+                base = existing_sub["ends_at"] if existing_sub["ends_at"] > starts_at else starts_at
+                ends_at = base + timedelta(days=days)
+                conn.execute(
+                    text("UPDATE subscriptions SET ends_at = :ends, status = 'active' WHERE id = :id"),
+                    {"ends": ends_at, "id": existing_sub["id"]},
+                )
+                subscription_id = existing_sub["id"]
+                merged_into_subscription_id = existing_sub["id"]
+            else:
+                ends_at = starts_at + timedelta(days=days)
+                sub_row = conn.execute(
+                    text(
+                        """
+                        INSERT INTO subscriptions (customer_id, product_code, starts_at, ends_at, daily_target, status)
+                        VALUES (:cid, :code, :starts, :ends, :target, 'active') RETURNING id
+                        """
+                    ),
+                    {
+                        "cid": body.customer_id,
+                        "code": product["code"],
+                        "starts": starts_at,
+                        "ends": ends_at,
+                        "target": planner.DEFAULT_TARGET_DAILY,
+                    },
+                ).first()
+                subscription_id = sub_row[0]
 
             if product["applications_included"]:
                 credits_granted = product["applications_included"]
@@ -229,7 +254,7 @@ async def create_order(body: AdminOrderCreateRequest) -> dict:
                     conn, body.customer_id, credits_granted, ref=f"order:{order_id}"
                 )
 
-            # يُثبَّت سعر الفترة على العميل فقط إن كان معروفًا (ليس TBD) —
+            # يُثبّت سعر الفترة على العميل فقط إن كان معروفًا (ليس TBD) —
             # guarantee.py يقرأه لاحقًا لحساب التعويض التناسبي؛ يبقى NULL
             # بأمان (يتعامل معه `if price_sar is not None`) طالما لم يقرر
             # أحمد السعر بعد.
@@ -238,6 +263,18 @@ async def create_order(body: AdminOrderCreateRequest) -> dict:
                     text("UPDATE customers SET price_sar = :p, updated_at = now() WHERE id = :id"),
                     {"p": product["price_sar"], "id": body.customer_id},
                 )
+
+            # B11.1: عميل billing_mode='wallet' يشتري اشتراكًا → يتحوّل
+            # لـ'subscription' (السقف اليومي يصبح target_daily/ramp/MAX_DAILY
+            # العادي بدل floor(wallet_balance_sar/rate))، لكن wallet_balance_sar
+            # نفسه **لا يُمسّ إطلاقًا** — يُستأنف تلقائيًا لو عاد العميل للمحفظة
+            # لاحقًا بشحن جديد (راجع wallet.py: أول شحن يضبط billing_mode مجددًا).
+            if customer.get("billing_mode") == "wallet":
+                conn.execute(
+                    text("UPDATE customers SET billing_mode = 'subscription', updated_at = now() WHERE id = :id"),
+                    {"id": body.customer_id},
+                )
+                note = "تحويل من نظام المحفظة إلى اشتراك — رصيد المحفظة السابق محفوظ بلا تغيير"
 
             new_status = "active"
 
@@ -291,6 +328,7 @@ async def create_order(body: AdminOrderCreateRequest) -> dict:
         "product_code": product["code"],
         "kind": product["kind"],
         "subscription_id": subscription_id,
+        "merged_into_subscription_id": merged_into_subscription_id,
         "credits_granted": credits_granted,
         "wallet_balance": wallet_balance,
         "wallet_balance_sar": float(wallet_balance_sar) if wallet_balance_sar is not None else None,
