@@ -164,9 +164,34 @@ def _accept_terms(customer_id: int) -> None:
         )
 
 
-def _create_payment_request(customer_id: int, product_code: str, expected_amount: float) -> int:
+def _create_payment_request(customer_id: int, product_code: str, expected_amount: float) -> tuple[int, bool]:
+    """B11.2: إن وُجد طلب دفع بحالة 'pending' أصلًا لنفس العميل (مثال: بدأ
+    تدفّق شراء آخر قبل إتمام السابق، أو غيّر رأيه بالمنتج) → يُحدّث (المنتج/
+    المبلغ المتوقّع، مع تصفير أي بيانات إيصال/تأكيد سابقة كانت مُرفَقة به)
+    بدل إدراج صفّ جديد — يمنع تراكم طلبات pending يتيمة لنفس العميل. يرجع
+    (request_id, was_updated) — `was_updated` تُستخدَم لاحقًا لإبلاغ الأدمن
+    أن الطلب مُحدّث لا جديد (راجع _notify_admin_with_receipt)."""
     engine = get_engine()
     with engine.begin() as conn:
+        existing = conn.execute(
+            sql_text("SELECT id FROM payment_requests WHERE customer_id = :cid AND status = 'pending' LIMIT 1"),
+            {"cid": customer_id},
+        ).first()
+        if existing:
+            conn.execute(
+                sql_text(
+                    """
+                    UPDATE payment_requests
+                    SET product_code = :code, expected_amount = :amount,
+                        receipt_path = NULL, receipt_kind = NULL, declared_amount = NULL,
+                        sender_name = NULL, admin_note = NULL
+                    WHERE id = :id
+                    """
+                ),
+                {"code": product_code, "amount": expected_amount, "id": existing[0]},
+            )
+            return existing[0], True
+
         row = conn.execute(
             sql_text(
                 """
@@ -176,7 +201,7 @@ def _create_payment_request(customer_id: int, product_code: str, expected_amount
             ),
             {"cid": customer_id, "code": product_code, "amount": expected_amount},
         ).first()
-    return row[0]
+    return row[0], False
 
 
 def _update_payment_receipt(request_id: int, path: str, kind: str) -> None:
@@ -328,7 +353,7 @@ async def start(client: TelegramClient, chat_id: int, customer_id: int) -> None:
         )
         await _notify_admin_urgent(
             f"نحتاجك فورا — عميل جديد #{customer_id} وصل لخطوة اختيار الباقة، لكن ولا باقة مُسعّرة "
-            "بعد ب⚙️ الإعدادات → 💼 الباقات. أضف الأسعار حتى يقدر يكمل تسجيله."
+            "بعد ب⚙️ الإعدادات ← 💼 الباقات. أضف الأسعار حتى يقدر يكمل تسجيله."
         )
         _save_session(chat_id, "await_package", {})
         return
@@ -483,7 +508,7 @@ async def _proceed_after_terms(chat_id: int, client: TelegramClient, customer_id
 # -------------------------------------------------------------------
 # B10 — 💰 ادفع حسب الاستخدام (محفظة): مسار الشحن (عدد تقديمات محدد أو
 # مبلغ حر) قبل بيانات التحويل — بعد تحديد المبلغ النهائي، يُعاد استخدام
-# `_show_bank_and_create_request` كليًا (نفس التدفّق حرفيًا لبقية الباقات:
+# `_show_bank_and_create_request` كليًّا (نفس التدفّق حرفيًا لبقية الباقات:
 # بنك → إيصال → مبلغ → اسم مُحوّل → إشعار الأدمن بزرّي ✅/❌).
 # -------------------------------------------------------------------
 
@@ -582,15 +607,20 @@ async def _show_bank_and_create_request(
         await client.send_message(chat_id, "بنرسل لك بيانات التحويل خلال دقائق 🤍")
         await _notify_admin_urgent(
             f"نحتاجك فورا — عميل #{customer_id} اختار {product['name_ar']} لكن ولا حساب بنكي نشط "
-            "ب⚙️ الإعدادات → 🏦 بيانات التحويل. أضف حسابًا واحدًا على الأقل."
+            "ب⚙️ الإعدادات ← 🏦 بيانات التحويل. أضف حسابًا واحدًا على الأقل."
         )
         return
 
-    request_id = _create_payment_request(customer_id, product["code"], float(product["price_sar"]))
+    request_id, request_updated = _create_payment_request(customer_id, product["code"], float(product["price_sar"]))
     _save_session(
         chat_id,
         "await_receipt_file",
-        {"request_id": request_id, "product_code": product["code"], "expected_amount": float(product["price_sar"])},
+        {
+            "request_id": request_id,
+            "product_code": product["code"],
+            "expected_amount": float(product["price_sar"]),
+            "request_updated": request_updated,
+        },
     )
     await client.send_message(
         chat_id,
@@ -704,9 +734,10 @@ async def _handle_receipt_sender(event: ChatEvent, client: TelegramClient, data:
     request_id = int(data.get("request_id", 0))
     declared_amount = float(data.get("declared_amount", 0))
     amount_mismatch = bool(data.get("amount_mismatch", False))
+    request_updated = bool(data.get("request_updated", False))
     _finalize_payment_request(request_id, declared_amount, sender_name, amount_mismatch=amount_mismatch)
 
-    await _notify_admin_with_receipt(event.chat_id, request_id, sender_name, amount_mismatch)
+    await _notify_admin_with_receipt(event.chat_id, request_id, sender_name, amount_mismatch, request_updated)
 
     _clear_session(event.chat_id)
     await client.send_message(
@@ -717,7 +748,11 @@ async def _handle_receipt_sender(event: ChatEvent, client: TelegramClient, data:
 
 
 async def _notify_admin_with_receipt(
-    customer_chat_id: int, request_id: int, sender_name: str, amount_mismatch: bool
+    customer_chat_id: int,
+    request_id: int,
+    sender_name: str,
+    amount_mismatch: bool,
+    request_updated: bool = False,
 ) -> None:
     admin_client = get_admin_bot_client()
     owner_chat_id = os.environ.get("MASAR_OWNER_CHAT_ID", "")
@@ -730,7 +765,7 @@ async def _notify_admin_with_receipt(
     customer = _fetch_customer_basic(int(pr["customer_id"]))
 
     caption_lines = [
-        f"💳 طلب دفع #{request_id}",
+        f"💳 طلب دفع #{request_id}" + (" (مُحدَّث — كان طلبًا معلّقًا أصلًا 🔄)" if request_updated else ""),
         f"👤 {customer.get('name') or 'بلا اسم'} (#{pr['customer_id']}) — {customer.get('phone') or ''}",
         f"📦 {pr['product_name_ar']} — المتوقع {float(pr['expected_amount']):.0f} ريال",
         f"💰 المكتوب: {float(pr['declared_amount']):.0f} ريال — باسم: {sender_name}",
