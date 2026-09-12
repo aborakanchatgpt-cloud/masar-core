@@ -247,6 +247,47 @@ async def reply_guarantees(client: TelegramClient, chat_id: int) -> None:
     await client.send_message(chat_id, "\n".join(lines), buttons=buttons)
 
 
+async def reply_recent_extensions(client: TelegramClient, chat_id: int) -> None:
+    """B11.6: بعد P0.5 (الضمان تمديد بحت، لا تحويل نقدي بأي مسار بعد
+    الآن) — يعرض آخر 20 فترة ضمان امتدّت تلقائيًا (عميل، مجموع أيام
+    التمديد، تاريخ آخر تحديث) **للاطلاع فقط**، بلا أي زرّ إجراء (لا شيء
+    يحتاج اعتماد المالك بعد الآن — كل تمديد يقع تلقائيًا بالكامل). استعلام
+    SQL مباشر على guarantee_ledger (لا استدعاء guarantee_api.py — هذا
+    الملف لا يملكه هذا الوكيل)."""
+    engine = get_engine()
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                sql_text(
+                    """
+                    SELECT gl.id, gl.customer_id, c.name AS customer_name,
+                           gl.extension_days_total, gl.status, gl.updated_at
+                    FROM guarantee_ledger gl
+                    LEFT JOIN customers c ON c.id = gl.customer_id
+                    WHERE gl.status IN ('extended', 'extended_final')
+                    ORDER BY gl.updated_at DESC
+                    LIMIT 20
+                    """
+                )
+            ).mappings().all()
+    except Exception:  # noqa: BLE001 — B9/B5-hotfix: شبكة أمان لأي عطل غير متوقع (راجع docstring الملف)
+        logger.exception("خطأ غير متوقّع بجلب التمديدات التلقائية الأخيرة")
+        await client.send_message(chat_id, "⚠️ تعذّر جلب التمديدات الآن (خطأ داخلي) — سنراجعه.")
+        return
+
+    if not rows:
+        await client.send_message(chat_id, "لا توجد تمديدات تلقائية مسجّلة بعد.", buttons=nav_rows(None, "admin:menu"))
+        return
+
+    lines = ["⏳ آخر التمديدات التلقائية (للاطلاع فقط — لا تحويل نقدي بعد الآن):"]
+    for g in rows:
+        name = g.get("customer_name") or f"عميل {g['customer_id']}"
+        date_str = g["updated_at"].date().isoformat() if g.get("updated_at") else "-"
+        final_tag = " (بلغ سقف 30 يومًا)" if g["status"] == "extended_final" else ""
+        lines.append(f"#{g['id']} — {name} — {g['extension_days_total']} يومًا إجماليًا{final_tag} — {date_str}")
+    await client.send_message(chat_id, "\n".join(lines), buttons=nav_rows(None, "admin:menu"))
+
+
 async def reply_settle_guarantee(client: TelegramClient, chat_id: int, ledger_id: int) -> None:
     try:
         result = await guarantee_api.settle_guarantee(ledger_id)
