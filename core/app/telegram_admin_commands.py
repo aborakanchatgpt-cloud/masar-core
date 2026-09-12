@@ -20,7 +20,6 @@ Query نفسه) → SQL يفشل بصمت (`cannot adapt type 'Query'`) والز
 from __future__ import annotations
 
 import logging
-import os
 
 from fastapi import HTTPException
 from sqlalchemy import text as sql_text
@@ -38,8 +37,8 @@ logger = logging.getLogger("masar.telegram_admin_commands")
 
 
 async def reply_create_customer(client: TelegramClient, chat_id: int, name: str, phone_text: str) -> None:
-    # B9/A1: توحيد الصيغة هنا يضمن تطابقها لاحقًا مع الرقم الذي يرسله
-    # تيليجرام فعليًا (966xxxxxxxxx) عند مشاركة العميل رقمه — راجع app/phone.py
+    # B9/A1: توحيد الصيغة هنا يضمن تطابقها لاحقًا مع الرقم الذي يرسله تيليجرام
+    # فعليًا (966xxxxxxxxx) عند مشاركة العميل رقمه — راجع app/phone.py
     phone_digits = canonical_phone(phone_text)
     try:
         result = await customers_api.create_customer(
@@ -51,17 +50,17 @@ async def reply_create_customer(client: TelegramClient, chat_id: int, name: str,
     await client.send_message(
         chat_id,
         f"✅ تم تسجيل العميل #{result['customer_id']} — {name}\n"
-        f"الجوال: {phone_digits or 'غير محدَّد'}\n\n"
+        f"الجوال: {phone_digits or 'غير محدّد'}\n\n"
         "سيربط العميل حسابه بنفسه عند مراسلة بوت مسار ومشاركة رقم جواله.\n"
         # B9/B0: customers.status الافتراضي أصبح 'pending' (ترحيل
         # 0017_b9_payments_delegates) — لم يعد العميل الجديد active فورًا.
-        "سيُفعَّل عند تأكيد الدفع أو يدويًا من بطاقته.",
+        "سيُفعّل عند تأكيد الدفع أو يدويًا من بطاقته.",
     )
 
 
 async def reply_overview(client: TelegramClient, chat_id: int) -> None:
-    """B9/B5: صيغة منسَّقة بدل قواميس بايثون خام (راجع الدليل §B5) — تدمج
-    🧩 تصنيف العملاء (أعلى 5 مجالات/مدن) بنهايتها بدل زر مستقل. كل الأرقام
+    """B9/B5: صيغة منسّقة بدل قواميس بايثون خام (راجع الدليل §B5) — تدمج
+    🧭 تصنيف العملاء (أعلى 5 مجالات/مدن) بنهايتها بدل زر مستقل. كل الأرقام
     من `overview_api.overview()` (مصدر واحد — لا إعادة استعلام هنا)."""
     o = await overview_api.overview()
     by_status = o["customers_by_status"]
@@ -85,16 +84,17 @@ async def reply_overview(client: TelegramClient, chat_id: int) -> None:
         f"🧭 أكثر المجالات: {families_line}",
         f"🏙️ أكثر المدن: {cities_line}",
         f"✉️ وضع الإرسال: {'تجريبي 🧪' if o['dry_run'] else 'حقيقي ✅'}",
-        # B9/B6 القادمة تستبدل نصيحة الجمعة باعتماد إحصائي مجاني (لا
-        # ANTHROPIC_API_KEY) — لحين ذلك، الحالة الفعلية تعكس توفّر التوكن
-        # المدفوع الحالي بدل ادّعاء "مفعّلة" دومًا.
-        f"🌟 نصيحة الجمعة: {'مفعّلة' if os.environ.get('ANTHROPIC_API_KEY') else 'معطّلة'}",
+        # B4/v2-B6 (12 سبتمبر): skill_gap.py استبدل اعتماد ANTHROPIC_API_KEY
+        # ببديل إحصائي مجاني بالكامل (راجع docstring رأس ذلك الملف) — الميزة
+        # مفعّلة دومًا الآن بلا أي بوابة مفتاح خارجي؛ عميل واحد قد يُتخطّى
+        # بصمت فقط لو قلّت بيانات وظائف مجاله عن 10 آخر 30 يومًا.
+        "🌟 نصيحة الجمعة: مفعّلة (إحصائية، بلا اعتماد خارجي)",
     ]
     await client.send_message(chat_id, "\n".join(lines), buttons=nav_rows(None, "admin:menu"))
 
 
 async def reply_segments(client: TelegramClient, chat_id: int) -> None:
-    """B9/B5: لم تعد زرًا مستقلًا بالقائمة (أُدمِجت بـ📊 نظرة عامة)، لكن
+    """B9/B5: لم تعد زرًا مستقلًا بالقائمة (أُدمجت ب📊 نظرة عامة)، لكن
     الدالة/المسار يبقيان فعّالين لأي مرجع قديم (`admin:segments`)."""
     engine = get_engine()
     with engine.connect() as conn:
@@ -118,7 +118,7 @@ async def reply_segments(client: TelegramClient, chat_id: int) -> None:
             )
         ).all()
 
-    lines = ["🧩 تصنيف العملاء", "", f"حسب الحالة: {by_status}", "", "أكثر 10 مجالات مهنية:"]
+    lines = ["🧭 تصنيف العملاء", "", f"حسب الحالة: {by_status}", "", "أكثر 10 مجالات مهنية:"]
     if by_family:
         lines.extend(f"  {family}: {n}" for family, n in by_family)
     else:
@@ -173,11 +173,11 @@ async def reply_set_status(client: TelegramClient, chat_id: int, customer_id: in
     except HTTPException as exc:
         await client.send_message(chat_id, f"⚠️ {exc.detail}")
         return
-    label = "مُفعَّل ▶️" if new_status == "active" else "مُوقَف ⏸️"
+    label = "مُفعّل ▶️" if new_status == "active" else "مُوقف ⏸️"
     await client.send_message(chat_id, f"✅ تم تحديث حالة العميل #{result['customer_id']} إلى {label}.")
     # B4/v2 §تحديثات تلقائية: نُشعر العميل نفسه فور تغيير حالته — best-effort
     # (notify_customer لا يرفع استثناءً أبدًا)؛ عميل بلا chat_id (لم يربط
-    # حسابه بعد عبر تيليجرام) يُتجاهَل بصمت هنا، لا خطأ للأدمن.
+    # حسابه بعد عبر تيليجرام) يُتجاهل بصمت هنا، لا خطأ للأدمن.
     customer_chat_id = fetch_customer_chat_id(get_engine(), customer_id)
     if customer_chat_id is not None:
         if new_status == "active":
@@ -190,9 +190,9 @@ async def reply_set_status(client: TelegramClient, chat_id: int, customer_id: in
 
 
 async def reply_extend_subscription(client: TelegramClient, chat_id: int, customer_id: int, days: int) -> None:
-    """يمدّد أحدث اشتراك فعّال للعميل بعدد أيام محدَّد — لا نقطة نهاية HTTP
-    جاهزة لهذا حاليًا بالمستودع، فيُنفَّذ هنا مباشرة (SQL بسيط، نفس نمط
-    الملفات الأخرى: UPDATE محمي بشرط status='active' فلا يُمدَّد اشتراك
+    """يمدّد أحدث اشتراك فعّال للعميل بعدد أيام محدّد — لا نقطة نهاية HTTP
+    جاهزة لهذا حاليًا بالمستودع، فيُنفذ هنا مباشرة (SQL بسيط، نفس نمط
+    الملفات الأخرى: UPDATE محمي بشرط status='active' فلا يُمدّد اشتراك
     مُغلَق سهوًا)."""
     engine = get_engine()
     with engine.begin() as conn:
