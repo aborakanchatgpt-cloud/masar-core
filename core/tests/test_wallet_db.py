@@ -142,6 +142,89 @@ def test_get_wallet_balance_and_per_application_rate_read_seeded_defaults(engine
 
 
 # ---------------------------------------------------------------------------
+# P0.6 — قيد الرصيد غير السالب (ck_customers_wallet_balance_nonneg، ترحيلة
+# 0022) + استرداد الارتداد (refund_bounce_conn).
+# ---------------------------------------------------------------------------
+
+
+def test_apply_wallet_delta_conn_rejects_debit_past_zero(engine, customer_id):
+    wallet.apply_wallet_delta(engine, customer_id, Decimal("0.10"), "topup")
+    with pytest.raises(ValueError, match="insufficient_wallet_balance"):
+        wallet.apply_wallet_delta(engine, customer_id, Decimal("-0.235"), "consumption")
+    # لا كتابة جزئية — الرصيد يبقى كما كان قبل محاولة الخصم المرفوضة.
+    assert _get_customer(engine, customer_id)["wallet_balance_sar"] == Decimal("0.100")
+
+
+def _make_application(engine: Engine, customer_id: int) -> dict:
+    with engine.begin() as conn:
+        company_id = conn.execute(
+            text("INSERT INTO companies (name, status) VALUES (:n, 'active') RETURNING id"),
+            {"n": f"Refund Co {uuid.uuid4().hex[:8]}"},
+        ).scalar_one()
+        source_id = conn.execute(
+            text("INSERT INTO sources (company_id, source_type, source_url) VALUES (:cid, 'greenhouse', :url) RETURNING id"),
+            {"cid": company_id, "url": f"https://example.invalid/refund/{uuid.uuid4().hex[:8]}"},
+        ).scalar_one()
+        job_id = conn.execute(
+            text(
+                "INSERT INTO jobs (source_id, company_id, title, dedup_key, company_name) "
+                "VALUES (:sid, :cid, 'Engineer', :dk, 'Refund Co') RETURNING id"
+            ),
+            {"sid": source_id, "cid": company_id, "dk": f"dedup-refund-{uuid.uuid4().hex[:8]}"},
+        ).scalar_one()
+        application_id = conn.execute(
+            text(
+                "INSERT INTO applications (customer_id, job_id, sent_at, message_id, status, created_at) "
+                "VALUES (:cid, :jid, now(), :mid, 'sent', now()) RETURNING id"
+            ),
+            {"cid": customer_id, "jid": job_id, "mid": f"<{uuid.uuid4().hex}@masar.local>"},
+        ).scalar_one()
+    return {"application_id": application_id, "job_id": job_id, "company_id": company_id}
+
+
+def _cleanup_application(engine: Engine, made: dict) -> None:
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM applications WHERE id = :id"), {"id": made["application_id"]})
+        conn.execute(text("DELETE FROM jobs WHERE id = :id"), {"id": made["job_id"]})
+        conn.execute(text("DELETE FROM sources WHERE company_id = :id"), {"id": made["company_id"]})
+        conn.execute(text("DELETE FROM companies WHERE id = :id"), {"id": made["company_id"]})
+
+
+def test_refund_bounce_conn_refunds_original_consumption_and_is_idempotent(engine, customer_id):
+    wallet.apply_wallet_delta(engine, customer_id, Decimal("1.000"), "topup")
+    made = _make_application(engine, customer_id)
+    application_id = made["application_id"]
+    try:
+        with engine.begin() as conn:
+            wallet.consume_application_conn(conn, customer_id, application_id)
+        assert _get_customer(engine, customer_id)["wallet_balance_sar"] == Decimal("0.765")
+
+        with engine.begin() as conn:
+            result = wallet.refund_bounce_conn(conn, application_id)
+        assert result["amount"] == Decimal("0.235")
+        assert _get_customer(engine, customer_id)["wallet_balance_sar"] == Decimal("1.000")
+
+        # استرداد مكرر لنفس application_id (مثال: إعادة معالجة نفس ارتداد) —
+        # يُتجاهل بصمت (الفهرس الفريد الجزئي بترحيلة 0022) بلا استرداد مضاعف.
+        with engine.begin() as conn:
+            second = wallet.refund_bounce_conn(conn, application_id)
+        assert second is None
+        assert _get_customer(engine, customer_id)["wallet_balance_sar"] == Decimal("1.000")
+
+        rows = _wallet_tx_rows(engine, customer_id)
+        types = [r["type"] for r in rows]
+        assert types.count("bounce_refund") == 1
+    finally:
+        _cleanup_application(engine, made)
+
+
+def test_refund_bounce_conn_returns_none_without_prior_consumption(engine, customer_id):
+    with engine.begin() as conn:
+        result = wallet.refund_bounce_conn(conn, 999_999_999)
+    assert result is None
+
+
+# ---------------------------------------------------------------------------
 # 2. app.catalog.create_order — منتج wallet_topup
 # ---------------------------------------------------------------------------
 
@@ -430,7 +513,7 @@ def test_build_queue_for_customer_wallet_mode_capped_by_balance(engine, send_ctx
     كحد أقصى — حتى لو توفّرت أكثر من 4 فرصة مؤهّلة، ولا يُخصَم شيء من
     wallets/ledger القديمين (billing_mode='wallet' يتجاوزهما بالكامل).
 
-    يُموّه cv_builder.ensure_cv_variant (يحتاج Gotenberg حيًّا لتحويل HTML→PDF
+    يُموّه cv_builder.ensure_cv_variant (يحتاج Gotenberg حيًّا لتحويل HTML→PDF
     فعليًا — غير متاح ببيئة الاختبار المحلية هنا) حتى يبقى الاختبار مركّزًا
     على منطق سقف رصيد المحفظة وحده، لا على بنية تحتية خارجية غير ذات صلة —
     نفس مبرّر تمويه _smtp_send/resolve_transport بـtest_sender_idempotency.py."""
